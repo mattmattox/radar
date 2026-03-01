@@ -10,6 +10,7 @@ import { CertificateHealthCard } from './CertificateHealthCard'
 import { CostCard } from './CostCard'
 import { ClusterHealthCard } from './ClusterHealthCard'
 import { AlertTriangle, Loader2 } from 'lucide-react'
+import { InvestigateButton } from '../ai/InvestigateButton'
 import { clsx } from 'clsx'
 
 interface HomeViewProps {
@@ -136,7 +137,7 @@ function ProblemsPanel({ problems, onResourceClick }: ProblemsPanelProps) {
       <div className="overflow-y-auto flex-1 min-h-0">
         <div className="divide-y divide-theme-border">
           {problems.map((p, i) => (
-            <button
+            <div
               key={`${p.kind}-${p.namespace}-${p.name}-${i}`}
               className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-theme-hover transition-colors text-left"
               onClick={() => onResourceClick({
@@ -145,22 +146,32 @@ function ProblemsPanel({ problems, onResourceClick }: ProblemsPanelProps) {
                 name: p.name,
               })}
             >
-              <span className={clsx(
-                'w-1.5 h-1.5 rounded-full shrink-0',
-                p.status === 'error' ? 'bg-red-500' : 'bg-yellow-500'
-              )} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-theme-text-tertiary bg-theme-elevated px-1 py-0.5 rounded">{p.kind}</span>
-                  <span className="text-xs text-theme-text-primary truncate font-medium">{p.name}</span>
-                  <span className="text-[10px] text-theme-text-tertiary ml-auto shrink-0">{p.age}</span>
+              <button
+                className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
+                onClick={() => onResourceClick({
+                  kind: kindToPlural(p.kind),
+                  namespace: p.namespace,
+                  name: p.name,
+                })}
+              >
+                <span className={clsx(
+                  'w-1.5 h-1.5 rounded-full shrink-0',
+                  p.status === 'error' ? 'bg-red-500' : 'bg-yellow-500'
+                )} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-theme-text-tertiary bg-theme-elevated px-1 py-0.5 rounded">{p.kind}</span>
+                    <span className="text-xs text-theme-text-primary truncate font-medium">{p.name}</span>
+                    <span className="text-[10px] text-theme-text-tertiary ml-auto shrink-0">{p.age}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="text-[11px] text-theme-text-secondary truncate">{p.reason}</span>
+                    <span className="text-[10px] text-theme-text-tertiary shrink-0">{p.namespace}</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <span className="text-[11px] text-theme-text-secondary truncate">{p.reason}</span>
-                  <span className="text-[10px] text-theme-text-tertiary shrink-0">{p.namespace}</span>
-                </div>
-              </div>
-            </button>
+              </button>
+              <InvestigateButton kind={p.kind} namespace={p.namespace} name={p.name} />
+            </div>
           ))}
         </div>
       </div>

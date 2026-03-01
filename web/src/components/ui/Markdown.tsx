@@ -14,13 +14,13 @@ export function Markdown({ children, className }: MarkdownProps) {
         remarkPlugins={[remarkGfm]}
         components={{
         h1: ({ children }) => (
-          <h1 className="text-lg font-bold text-theme-text-primary mt-4 mb-2 first:mt-0">{children}</h1>
+          <h1 className="text-base font-bold text-theme-text-primary mt-4 mb-2 first:mt-0">{children}</h1>
         ),
         h2: ({ children }) => (
-          <h2 className="text-base font-semibold text-theme-text-primary mt-4 mb-2 first:mt-0">{children}</h2>
+          <h2 className="text-[13.5px] font-semibold text-theme-text-primary mt-4 mb-2 first:mt-0">{children}</h2>
         ),
         h3: ({ children }) => (
-          <h3 className="text-sm font-semibold text-theme-text-primary mt-3 mb-1.5">{children}</h3>
+          <h3 className="text-[13px] font-semibold text-theme-text-primary mt-3 mb-1.5">{children}</h3>
         ),
         h4: ({ children }) => (
           <h4 className="text-sm font-medium text-theme-text-primary mt-2 mb-1">{children}</h4>
@@ -39,10 +39,10 @@ export function Markdown({ children, className }: MarkdownProps) {
           </a>
         ),
         ul: ({ children }) => (
-          <ul className="list-disc list-inside my-2 space-y-1 text-theme-text-secondary">{children}</ul>
+          <ul className="list-disc list-outside pl-4 my-2 space-y-1 text-theme-text-secondary">{children}</ul>
         ),
         ol: ({ children }) => (
-          <ol className="list-decimal list-inside my-2 space-y-1 text-theme-text-secondary">{children}</ol>
+          <ol className="list-decimal list-outside pl-4 my-2 space-y-1 text-theme-text-secondary">{children}</ol>
         ),
         li: ({ children }) => (
           <li className="leading-relaxed">{children}</li>

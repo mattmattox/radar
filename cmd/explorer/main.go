@@ -43,6 +43,11 @@ func main() {
 	prometheusURL := flag.String("prometheus-url", "", "Manual Prometheus/VictoriaMetrics URL (skips auto-discovery)")
 	// MCP server
 	noMCP := flag.Bool("no-mcp", false, "Disable MCP (Model Context Protocol) server for AI tools")
+	// AI investigation
+	aiProvider := flag.String("ai-provider", "", "AI provider for investigations: openai or anthropic")
+	aiAPIKey := flag.String("ai-api-key", "", "API key for the AI provider")
+	aiBaseURL := flag.String("ai-base-url", "", "Base URL for OpenAI-compatible endpoints (e.g. http://localhost:11434/v1 for Ollama)")
+	aiModel := flag.String("ai-model", "", "Model override for AI provider (default: provider-specific)")
 	flag.Parse()
 
 	if *showVersion {
@@ -80,6 +85,10 @@ func main() {
 		PrometheusURL:    *prometheusURL,
 		MCPEnabled:       !*noMCP,
 		Version:          version,
+		AIProvider:       *aiProvider,
+		AIAPIKey:         *aiAPIKey,
+		AIBaseURL:        *aiBaseURL,
+		AIModel:          *aiModel,
 	}
 
 	// Set global flags

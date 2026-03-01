@@ -2231,3 +2231,46 @@ export function useDiagnostics(enabled: boolean) {
     gcTime: 0,
   })
 }
+
+// ============================================================================
+// AI Investigation
+// ============================================================================
+
+export interface AIConfig {
+  provider: string
+  baseUrl: string
+  model: string
+  configured: boolean
+}
+
+export function useAIConfig() {
+  return useQuery<AIConfig>({
+    queryKey: ['ai-config'],
+    queryFn: () => fetchJSON('/ai/config'),
+  })
+}
+
+export function useUpdateAIConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (config: { provider: string; apiKey?: string; baseUrl?: string; model?: string }) => {
+      const response = await fetch(`${API_BASE}/ai/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: 'Unknown error' }))
+        throw new ApiError(err.error || `HTTP ${response.status}`, response.status)
+      }
+      return response.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ai-config'] })
+    },
+    meta: {
+      errorMessage: 'Failed to update AI configuration',
+      successMessage: 'AI configuration updated',
+    },
+  })
+}

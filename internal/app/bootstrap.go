@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/skyhook-io/radar/internal/ai/llm"
 	"github.com/skyhook-io/radar/internal/helm"
 	"github.com/skyhook-io/radar/internal/k8s"
 	mcppkg "github.com/skyhook-io/radar/internal/mcp"
@@ -39,6 +40,12 @@ type AppConfig struct {
 	PrometheusURL    string
 	Version          string
 	MCPEnabled       bool
+
+	// AI investigation
+	AIProvider string
+	AIAPIKey   string
+	AIBaseURL  string
+	AIModel    string
 }
 
 // SetGlobals applies debug/test flags to global state.
@@ -157,6 +164,14 @@ func CreateServer(cfg AppConfig) *server.Server {
 		serverCfg.MCPHandler = mcppkg.NewHandler()
 		log.Printf("MCP server enabled at http://localhost:%d/mcp", cfg.Port)
 	}
+
+	// Initialize AI provider from CLI flags + saved settings
+	server.LoadAIConfigFromSettings(llm.Config{
+		Provider: cfg.AIProvider,
+		APIKey:   cfg.AIAPIKey,
+		BaseURL:  cfg.AIBaseURL,
+		Model:    cfg.AIModel,
+	})
 
 	return server.New(serverCfg)
 }

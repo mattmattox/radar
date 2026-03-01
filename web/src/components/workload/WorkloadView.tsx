@@ -47,6 +47,7 @@ import { LogsViewer } from '../logs/LogsViewer'
 import { getKindColor, formatKindName } from '../resources/drawer-components'
 import { useCanUpdateSecrets } from '../../contexts/CapabilitiesContext'
 import { useUpdateResource } from '../../api/client'
+import { InvestigateButton } from '../ai/InvestigateButton'
 
 type TabType = 'overview' | 'timeline' | 'logs' | 'metrics' | 'yaml'
 
@@ -357,6 +358,7 @@ export function WorkloadView({
               )}
             </div>
             <div className="flex items-center gap-1">
+              <InvestigateButton kind={apiKind} namespace={namespace} name={name} />
               {onExpand && (
                 <button
                   onClick={onExpand}
@@ -483,6 +485,8 @@ export function WorkloadView({
               )}
             </div>
           </div>
+
+          <InvestigateButton kind={apiKind} namespace={namespace} name={name} />
 
           {/* Refresh */}
           <button

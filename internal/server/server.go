@@ -123,6 +123,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/pods/{namespace}/{name}/exec", s.handlePodExec)
 		r.Get("/pods/{namespace}/{name}/files/download", s.handlePodFileDownload)
 		r.Get("/workloads/{kind}/{namespace}/{name}/logs/stream", s.handleWorkloadLogsStream)
+		r.Post("/ai/investigate", s.handleInvestigate) // AI investigation SSE stream
 
 		// All other API routes get a 60-second timeout
 		r.Group(func(r chi.Router) {
@@ -219,6 +220,10 @@ func (s *Server) setupRoutes() {
 			// AI resource preview (minified output for MCP/debugging)
 			r.Get("/ai/resources/{kind}", s.handleAIListResources)
 			r.Get("/ai/resources/{kind}/{namespace}/{name}", s.handleAIGetResource)
+
+			// AI investigation configuration
+			r.Get("/ai/config", s.handleAIConfig)
+			r.Put("/ai/config", s.handleUpdateAIConfig)
 
 			// Debug routes (for event pipeline diagnostics)
 			r.Get("/debug/events", s.handleDebugEvents)

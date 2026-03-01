@@ -19,6 +19,12 @@ type PinnedKind struct {
 type Settings struct {
 	Theme       string       `json:"theme,omitempty"`
 	PinnedKinds []PinnedKind `json:"pinnedKinds,omitempty"`
+
+	// AI investigation provider configuration
+	AIProvider string `json:"aiProvider,omitempty"` // "openai" or "anthropic"
+	AIBaseURL  string `json:"aiBaseUrl,omitempty"`  // for OpenAI-compatible endpoints (Ollama, etc.)
+	AIAPIKey   string `json:"aiApiKey,omitempty"`   // API key (stored locally in ~/.radar/settings.json)
+	AIModel    string `json:"aiModel,omitempty"`    // model override (empty = provider default)
 }
 
 // mu serializes Load-Decode-Save cycles to prevent concurrent PUTs from
