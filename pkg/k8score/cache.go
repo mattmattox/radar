@@ -278,13 +278,13 @@ func buildInformerSetups(factory informers.SharedInformerFactory) []informerSetu
 func (rc *ResourceCache) addChangeHandlers(inf cache.SharedIndexInformer, kind string, ch chan<- ResourceChange) error {
 	_, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
-			rc.enqueueChange(ch, kind, obj, nil, "add")
+			rc.enqueueChange(ch, kind, obj, nil, OpAdd)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
-			rc.enqueueChange(ch, kind, newObj, oldObj, "update")
+			rc.enqueueChange(ch, kind, newObj, oldObj, OpUpdate)
 		},
 		DeleteFunc: func(obj any) {
-			rc.enqueueChange(ch, kind, obj, nil, "delete")
+			rc.enqueueChange(ch, kind, obj, nil, OpDelete)
 		},
 	})
 	return err
@@ -295,13 +295,13 @@ func (rc *ResourceCache) addChangeHandlers(inf cache.SharedIndexInformer, kind s
 func (rc *ResourceCache) addEventHandlers(inf cache.SharedIndexInformer, ch chan<- ResourceChange) error {
 	_, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
-			rc.enqueueEvent(ch, obj, "add")
+			rc.enqueueEvent(ch, obj, OpAdd)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
-			rc.enqueueEvent(ch, newObj, "update")
+			rc.enqueueEvent(ch, newObj, OpUpdate)
 		},
 		DeleteFunc: func(obj any) {
-			rc.enqueueEvent(ch, obj, "delete")
+			rc.enqueueEvent(ch, obj, OpDelete)
 		},
 	})
 	return err
@@ -438,7 +438,7 @@ func (rc *ResourceCache) Stop() {
 		return
 	}
 	rc.stopOnce.Do(func() {
-		log.Println("Stopping resource cache")
+		rc.stdlog.Println("Stopping resource cache")
 		close(rc.stopCh)
 		go func() {
 			done := make(chan struct{})
@@ -448,9 +448,9 @@ func (rc *ResourceCache) Stop() {
 			}()
 			select {
 			case <-done:
-				log.Println("Resource cache factory shutdown complete")
+				rc.stdlog.Println("Resource cache factory shutdown complete")
 			case <-time.After(5 * time.Second):
-				log.Println("Resource cache factory shutdown taking >5s, abandoning")
+				rc.stdlog.Println("Resource cache factory shutdown taking >5s, abandoning")
 			}
 		}()
 	})

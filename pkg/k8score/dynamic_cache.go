@@ -42,6 +42,9 @@ func NewDynamicResourceCache(cfg DynamicCacheConfig) (*DynamicResourceCache, err
 	if cfg.DynamicClient == nil {
 		return nil, fmt.Errorf("dynamic client must not be nil")
 	}
+	if cfg.NamespaceScoped && cfg.Namespace == "" {
+		return nil, fmt.Errorf("namespace must be set when NamespaceScoped is true")
+	}
 
 	var factory dynamicinformer.DynamicSharedInformerFactory
 	if cfg.NamespaceScoped && cfg.Namespace != "" {
@@ -212,6 +215,16 @@ func (d *DynamicResourceCache) gvrToKind(gvr schema.GroupVersionResource) string
 // Change handlers
 // ---------------------------------------------------------------------------
 
+// safeCallback invokes fn with panic recovery to protect informer goroutines.
+func (d *DynamicResourceCache) safeCallback(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ERROR: k8score dynamic cache %s callback panicked: %v", name, r)
+		}
+	}()
+	fn()
+}
+
 func (d *DynamicResourceCache) addDynamicChangeHandlers(inf cache.SharedIndexInformer, kind string, gvr schema.GroupVersionResource) {
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
@@ -244,7 +257,7 @@ func (d *DynamicResourceCache) enqueueDynamicChange(kind string, gvr schema.Grou
 	uid := string(u.GetUID())
 
 	if d.config.OnReceived != nil {
-		d.config.OnReceived(kind)
+		d.safeCallback("OnReceived", func() { d.config.OnReceived(kind) })
 	}
 
 	// During initial sync, still fire OnChange (for historical recording)
@@ -265,7 +278,7 @@ func (d *DynamicResourceCache) enqueueDynamicChange(kind string, gvr schema.Grou
 
 	var diff *DiffInfo
 	if op == OpUpdate && oldObj != nil && obj != nil && d.config.ComputeDiff != nil {
-		diff = d.config.ComputeDiff(kind, oldObj, obj)
+		d.safeCallback("ComputeDiff", func() { diff = d.config.ComputeDiff(kind, oldObj, obj) })
 	}
 
 	change := ResourceChange{
@@ -279,7 +292,7 @@ func (d *DynamicResourceCache) enqueueDynamicChange(kind string, gvr schema.Grou
 
 	// Always fire OnChange (even during sync adds — Radar uses this for timeline)
 	if d.config.OnChange != nil {
-		d.config.OnChange(change, obj, oldObj)
+		d.safeCallback("OnChange", func() { d.config.OnChange(change, obj, oldObj) })
 	}
 
 	// Skip channel send during initial sync
@@ -293,7 +306,7 @@ func (d *DynamicResourceCache) enqueueDynamicChange(kind string, gvr schema.Grou
 		case d.config.Changes <- change:
 		default:
 			if d.config.OnDrop != nil {
-				d.config.OnDrop(kind, namespace, name, "channel_full", op)
+				d.safeCallback("OnDrop", func() { d.config.OnDrop(kind, namespace, name, "channel_full", op) })
 			}
 			if d.config.DebugEvents {
 				log.Printf("[DEBUG] Dynamic change channel full, dropped: %s/%s/%s op=%s", kind, namespace, name, op)
@@ -302,7 +315,7 @@ func (d *DynamicResourceCache) enqueueDynamicChange(kind string, gvr schema.Grou
 	}
 
 	if d.config.OnRecorded != nil {
-		d.config.OnRecorded(kind)
+		d.safeCallback("OnRecorded", func() { d.config.OnRecorded(kind) })
 	}
 }
 
