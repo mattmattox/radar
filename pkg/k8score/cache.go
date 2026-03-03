@@ -512,28 +512,71 @@ func (rc *ResourceCache) GetEnabledResources() map[string]bool {
 	return result
 }
 
-// GetResourceCount returns total cached resources across core listers.
+// GetResourceCount returns total cached resources across all enabled non-Event listers.
 func (rc *ResourceCache) GetResourceCount() int {
 	if rc == nil {
 		return 0
 	}
-	count := 0
-	type listerFunc func() int
-	countFuncs := []listerFunc{
-		func() int { return listCount(rc.Services()) },
-		func() int { return listCount(rc.Pods()) },
-		func() int { return listCount(rc.Nodes()) },
-		func() int { return listCount(rc.Namespaces()) },
-		func() int { return listCount(rc.Deployments()) },
-		func() int { return listCount(rc.DaemonSets()) },
-		func() int { return listCount(rc.StatefulSets()) },
-		func() int { return listCount(rc.ReplicaSets()) },
-		func() int { return listCount(rc.Ingresses()) },
+	counts := rc.GetKindObjectCounts()
+	total := 0
+	for kind, n := range counts {
+		if kind == "Event" {
+			continue // Events are not counted as "resources"
+		}
+		total += n
 	}
-	for _, f := range countFuncs {
-		count += f()
+	return total
+}
+
+// kindLister maps a Kind name to a lister accessor for table-driven counting.
+type kindLister struct {
+	kind   string
+	lister func(rc *ResourceCache) any
+}
+
+// allKindListers is the table of all resource kinds and their lister accessors.
+var allKindListers = []kindLister{
+	{"Pod", func(rc *ResourceCache) any { return rc.Pods() }},
+	{"Service", func(rc *ResourceCache) any { return rc.Services() }},
+	{"Node", func(rc *ResourceCache) any { return rc.Nodes() }},
+	{"Namespace", func(rc *ResourceCache) any { return rc.Namespaces() }},
+	{"ConfigMap", func(rc *ResourceCache) any { return rc.ConfigMaps() }},
+	{"Secret", func(rc *ResourceCache) any { return rc.Secrets() }},
+	{"Event", func(rc *ResourceCache) any { return rc.Events() }},
+	{"PersistentVolumeClaim", func(rc *ResourceCache) any { return rc.PersistentVolumeClaims() }},
+	{"PersistentVolume", func(rc *ResourceCache) any { return rc.PersistentVolumes() }},
+	{"Deployment", func(rc *ResourceCache) any { return rc.Deployments() }},
+	{"DaemonSet", func(rc *ResourceCache) any { return rc.DaemonSets() }},
+	{"StatefulSet", func(rc *ResourceCache) any { return rc.StatefulSets() }},
+	{"ReplicaSet", func(rc *ResourceCache) any { return rc.ReplicaSets() }},
+	{"Ingress", func(rc *ResourceCache) any { return rc.Ingresses() }},
+	{"IngressClass", func(rc *ResourceCache) any { return rc.IngressClasses() }},
+	{"Job", func(rc *ResourceCache) any { return rc.Jobs() }},
+	{"CronJob", func(rc *ResourceCache) any { return rc.CronJobs() }},
+	{"HorizontalPodAutoscaler", func(rc *ResourceCache) any { return rc.HorizontalPodAutoscalers() }},
+	{"StorageClass", func(rc *ResourceCache) any { return rc.StorageClasses() }},
+	{"PodDisruptionBudget", func(rc *ResourceCache) any { return rc.PodDisruptionBudgets() }},
+	{"ServiceAccount", func(rc *ResourceCache) any { return rc.ServiceAccounts() }},
+}
+
+// GetKindObjectCounts returns the number of cached objects per resource kind.
+// Only includes kinds that are enabled. Returns nil if cache is nil.
+func (rc *ResourceCache) GetKindObjectCounts() map[string]int {
+	if rc == nil {
+		return nil
 	}
-	return count
+	counts := make(map[string]int)
+	for _, kl := range allKindListers {
+		l := kl.lister(rc)
+		if l == nil {
+			continue
+		}
+		n := listCount(l)
+		if n > 0 {
+			counts[kl.kind] = n
+		}
+	}
+	return counts
 }
 
 // isEnabled returns true if the resource type has an informer running.

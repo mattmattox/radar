@@ -1,37 +1,23 @@
 package k8s
 
 import (
-	"fmt"
-	"log"
-	"regexp"
-	"strconv"
-	"strings"
 	"sync"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
-// APIResource represents a discovered API resource type
-type APIResource struct {
-	Group      string   `json:"group"`
-	Version    string   `json:"version"`
-	Kind       string   `json:"kind"`
-	Name       string   `json:"name"` // Plural name (e.g., "deployments")
-	Namespaced bool     `json:"namespaced"`
-	IsCRD      bool     `json:"isCrd"`
-	Verbs      []string `json:"verbs"`
+// ResourceDiscovery wraps the shared k8score implementation.
+// The singleton pattern (Init/Get/Reset) stays here because it depends on
+// the package-level GetDiscoveryClient() function.
+type ResourceDiscovery struct {
+	*k8score.ResourceDiscovery
 }
 
-// ResourceDiscovery manages discovery and caching of API resources
-type ResourceDiscovery struct {
-	resources   []APIResource
-	resourceMap map[string]APIResource // keyed by lowercase kind
-	gvrMap      map[string]schema.GroupVersionResource
-	lastRefresh time.Time
-	cacheTTL    time.Duration
-	mu          sync.RWMutex
-}
+// Re-export types so existing callers compile without changes.
+type APIResource = k8score.APIResource
+type DiscoveryStats = k8score.DiscoveryStats
 
 var (
 	resourceDiscovery *ResourceDiscovery
@@ -39,88 +25,26 @@ var (
 	discoveryMu       sync.Mutex
 )
 
-// coreAPIGroups are groups that ship with Kubernetes core
-var coreAPIGroups = map[string]bool{
-	"":                             true,
-	"apps":                         true,
-	"batch":                        true,
-	"autoscaling":                  true,
-	"networking.k8s.io":            true,
-	"policy":                       true,
-	"rbac.authorization.k8s.io":    true,
-	"storage.k8s.io":               true,
-	"admissionregistration.k8s.io": true,
-	"apiextensions.k8s.io":         true,
-	"certificates.k8s.io":          true,
-	"coordination.k8s.io":          true,
-	"discovery.k8s.io":             true,
-	"events.k8s.io":                true,
-	"flowcontrol.apiserver.k8s.io": true,
-	"node.k8s.io":                  true,
-	"scheduling.k8s.io":            true,
-}
+// isMoreStableVersion delegates to the shared implementation.
+// Needed by dynamic_cache.go (same package, calls it without qualifier).
+var isMoreStableVersion = k8score.IsMoreStableVersion
 
-// versionStability returns a score for API version stability.
-// Higher is more stable: stable (3) > beta (2) > alpha (1).
-func versionStability(version string) int {
-	if strings.Contains(version, "alpha") {
-		return 1
-	}
-	if strings.Contains(version, "beta") {
-		return 2
-	}
-	return 3 // v1, v2, etc.
-}
-
-// versionRegex parses Kubernetes API versions like "v1", "v2beta1", "v1alpha2".
-var versionRegex = regexp.MustCompile(`^v(\d+)(?:(alpha|beta)(\d+))?$`)
-
-// parseVersion extracts the numeric components of a Kubernetes API version.
-func parseVersion(version string) (major, qualifierNum int) {
-	m := versionRegex.FindStringSubmatch(version)
-	if m == nil {
-		return 0, 0
-	}
-	major, _ = strconv.Atoi(m[1])
-	if m[3] != "" {
-		qualifierNum, _ = strconv.Atoi(m[3])
-	}
-	return
-}
-
-// isMoreStableVersion returns true if newVersion is more stable than oldVersion.
-// Compares stability tier first (stable > beta > alpha), then numeric version
-// within the same tier (v1beta3 > v1beta2, v2 > v1).
-func isMoreStableVersion(newVersion, oldVersion string) bool {
-	newStab := versionStability(newVersion)
-	oldStab := versionStability(oldVersion)
-	if newStab != oldStab {
-		return newStab > oldStab
-	}
-	// Same stability tier — compare numerically
-	newMajor, newQual := parseVersion(newVersion)
-	oldMajor, oldQual := parseVersion(oldVersion)
-	if newMajor != oldMajor {
-		return newMajor > oldMajor
-	}
-	return newQual > oldQual
-}
-
-// InitResourceDiscovery initializes the resource discovery module
+// InitResourceDiscovery initializes the resource discovery module.
 func InitResourceDiscovery() error {
 	var initErr error
 	discoveryOnce.Do(func() {
-		resourceDiscovery = &ResourceDiscovery{
-			resourceMap: make(map[string]APIResource),
-			gvrMap:      make(map[string]schema.GroupVersionResource),
-			cacheTTL:    5 * time.Minute,
+		client := GetDiscoveryClient()
+		core, err := k8score.NewResourceDiscovery(client)
+		if err != nil {
+			initErr = err
+			return
 		}
-		initErr = resourceDiscovery.refresh()
+		resourceDiscovery = &ResourceDiscovery{ResourceDiscovery: core}
 	})
 	return initErr
 }
 
-// GetResourceDiscovery returns the singleton discovery instance
+// GetResourceDiscovery returns the singleton discovery instance.
 func GetResourceDiscovery() *ResourceDiscovery {
 	return resourceDiscovery
 }
@@ -135,269 +59,40 @@ func ResetResourceDiscovery() {
 	discoveryOnce = new(sync.Once)
 }
 
-// refresh fetches all API resources from the cluster
-func (d *ResourceDiscovery) refresh() error {
-	client := GetDiscoveryClient()
-	if client == nil {
-		return fmt.Errorf("discovery client not initialized")
-	}
+// Refresh delegates to the embedded implementation.
+// Note: GetAPIResources, GetGVR, GetGVRWithGroup, GetResource, IsKnownResource,
+// IsCRD, SupportsWatch, SupportsWatchGVR, GetKindForGVR, and Stats are all
+// promoted from the embedded *k8score.ResourceDiscovery and work without wrappers.
 
-	start := time.Now()
-	_, apiResourceLists, err := client.ServerGroupsAndResources()
-	if err != nil {
-		// Log partial results - some resources may fail but others succeed
-		log.Printf("Warning: partial error discovering API resources: %v", err)
-	}
-	log.Printf("API resource discovery took %v", time.Since(start))
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.resources = nil
-	d.resourceMap = make(map[string]APIResource)
-	d.gvrMap = make(map[string]schema.GroupVersionResource)
-
-	for _, apiList := range apiResourceLists {
-		if apiList == nil {
-			continue
-		}
-
-		// Parse group/version from apiList.GroupVersion (format: "group/version" or "version" for core)
-		gv, err := schema.ParseGroupVersion(apiList.GroupVersion)
-		if err != nil {
-			continue
-		}
-
-		for _, apiRes := range apiList.APIResources {
-			// Skip subresources (e.g., pods/log, deployments/scale)
-			if strings.Contains(apiRes.Name, "/") {
-				continue
-			}
-
-			// Determine if this is a CRD based on group
-			isCRD := !coreAPIGroups[gv.Group]
-
-			resource := APIResource{
-				Group:      gv.Group,
-				Version:    gv.Version,
-				Kind:       apiRes.Kind,
-				Name:       apiRes.Name,
-				Namespaced: apiRes.Namespaced,
-				IsCRD:      isCRD,
-				Verbs:      apiRes.Verbs,
-			}
-
-			d.resources = append(d.resources, resource)
-
-			gvr := schema.GroupVersionResource{
-				Group:    gv.Group,
-				Version:  gv.Version,
-				Resource: apiRes.Name,
-			}
-
-			// Store in map by lowercase kind for lookup.
-			// Prefer: non-CRD over CRD, then stable versions over beta/alpha.
-			kindKey := strings.ToLower(apiRes.Kind)
-			if existing, ok := d.resourceMap[kindKey]; !ok ||
-				(!isCRD && existing.IsCRD) ||
-				(isCRD == existing.IsCRD && existing.Group == gv.Group && isMoreStableVersion(gv.Version, existing.Version)) {
-				d.resourceMap[kindKey] = resource
-				d.gvrMap[kindKey] = gvr
-			}
-
-			// Also store by plural name (lowercase)
-			nameKey := strings.ToLower(apiRes.Name)
-			if existing, ok := d.resourceMap[nameKey]; !ok ||
-				(!isCRD && existing.IsCRD) ||
-				(isCRD == existing.IsCRD && existing.Group == gv.Group && isMoreStableVersion(gv.Version, existing.Version)) {
-				d.resourceMap[nameKey] = resource
-				d.gvrMap[nameKey] = gvr
-			}
-		}
-	}
-
-	d.lastRefresh = time.Now()
-	log.Printf("Discovered %d API resources (%d unique kinds)", len(d.resources), len(d.resourceMap)/2)
-
-	return nil
-}
-
-// DiscoveryStats holds read-only stats about API discovery state
-type DiscoveryStats struct {
-	TotalResources int
-	CRDCount       int
-	LastRefresh    time.Time
-}
-
-// Stats returns lightweight stats without triggering a refresh
-func (d *ResourceDiscovery) Stats() DiscoveryStats {
-	if d == nil {
-		return DiscoveryStats{}
-	}
-
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	crdCount := 0
-	for _, res := range d.resources {
-		if res.IsCRD {
-			crdCount++
-		}
-	}
-
-	return DiscoveryStats{
-		TotalResources: len(d.resources),
-		CRDCount:       crdCount,
-		LastRefresh:    d.lastRefresh,
-	}
-}
-
-// GetAPIResources returns all discovered API resources
-func (d *ResourceDiscovery) GetAPIResources() ([]APIResource, error) {
-	if d == nil {
-		return nil, fmt.Errorf("resource discovery not initialized")
-	}
-
-	d.mu.RLock()
-	needsRefresh := time.Since(d.lastRefresh) > d.cacheTTL
-	d.mu.RUnlock()
-
-	if needsRefresh {
-		if err := d.refresh(); err != nil {
-			log.Printf("Warning: failed to refresh API resources: %v", err)
-		}
-	}
-
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	// Deduplicate by name+group, keeping the most stable version.
-	// d.resources contains every version of every resource (e.g., GitRepository v1 AND v1beta2).
-	type entry struct {
-		index   int
-		version string
-	}
-	seen := make(map[string]entry, len(d.resources))
-	result := make([]APIResource, 0, len(d.resources))
-
-	for _, res := range d.resources {
-		key := res.Name + "/" + res.Group
-		if existing, ok := seen[key]; !ok {
-			seen[key] = entry{index: len(result), version: res.Version}
-			result = append(result, res)
-		} else if isMoreStableVersion(res.Version, existing.version) {
-			result[existing.index] = res
-			seen[key] = entry{index: existing.index, version: res.Version}
-		}
-	}
-
-	return result, nil
-}
-
-// GetGVR returns the GroupVersionResource for a given kind or plural name.
-// WARNING: If multiple CRDs share the same Kind across different API groups
-// (e.g., Application in argoproj.io vs app.k8s.io), this returns whichever
-// was discovered first. Use GetGVRWithGroup to disambiguate.
+// GetGVR returns the GroupVersionResource — needed as a direct method because
+// the embedded type is accessed via pointer and callers pass *ResourceDiscovery.
 func (d *ResourceDiscovery) GetGVR(kindOrName string) (schema.GroupVersionResource, bool) {
-	if d == nil {
+	if d == nil || d.ResourceDiscovery == nil {
 		return schema.GroupVersionResource{}, false
 	}
-
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	gvr, ok := d.gvrMap[strings.ToLower(kindOrName)]
-	return gvr, ok
+	return d.ResourceDiscovery.GetGVR(kindOrName)
 }
 
-// GetGVRWithGroup returns the GroupVersionResource for a kind with a specific API group
-// This is needed to disambiguate resources with the same name in different groups
-// (e.g., "nodes" in core vs "nodemetrics" in metrics.k8s.io)
+// GetGVRWithGroup returns the GroupVersionResource for a kind with a specific API group.
 func (d *ResourceDiscovery) GetGVRWithGroup(kindOrName string, group string) (schema.GroupVersionResource, bool) {
-	if d == nil {
+	if d == nil || d.ResourceDiscovery == nil {
 		return schema.GroupVersionResource{}, false
 	}
-
-	// If no group specified, fall back to standard lookup
-	if group == "" {
-		return d.GetGVR(kindOrName)
-	}
-
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	// Search through all resources for matching kind/name AND group
-	kindLower := strings.ToLower(kindOrName)
-	for _, res := range d.resources {
-		if (strings.ToLower(res.Kind) == kindLower || strings.ToLower(res.Name) == kindLower) && res.Group == group {
-			return schema.GroupVersionResource{
-				Group:    res.Group,
-				Version:  res.Version,
-				Resource: res.Name,
-			}, true
-		}
-	}
-
-	return schema.GroupVersionResource{}, false
+	return d.ResourceDiscovery.GetGVRWithGroup(kindOrName, group)
 }
 
-// GetResource returns the APIResource for a given kind or plural name
-func (d *ResourceDiscovery) GetResource(kindOrName string) (APIResource, bool) {
-	if d == nil {
-		return APIResource{}, false
-	}
-
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	res, ok := d.resourceMap[strings.ToLower(kindOrName)]
-	return res, ok
-}
-
-// IsKnownResource checks if a kind or plural name is a known resource
-func (d *ResourceDiscovery) IsKnownResource(kindOrName string) bool {
-	_, ok := d.GetResource(kindOrName)
-	return ok
-}
-
-// IsCRD checks if a kind or plural name is a CRD (not a core resource)
-func (d *ResourceDiscovery) IsCRD(kindOrName string) bool {
-	res, ok := d.GetResource(kindOrName)
-	return ok && res.IsCRD
-}
-
-// SupportsWatch checks if a resource supports list and watch verbs
-// Resources like selfsubjectreviews and tokenreviews are create-only and cannot be watched
-func (d *ResourceDiscovery) SupportsWatch(kindOrName string) bool {
-	res, ok := d.GetResource(kindOrName)
-	if !ok {
+// SupportsWatchGVR checks if a GVR supports list and watch verbs.
+func (d *ResourceDiscovery) SupportsWatchGVR(gvr schema.GroupVersionResource) bool {
+	if d == nil || d.ResourceDiscovery == nil {
 		return false
 	}
-	hasList := false
-	hasWatch := false
-	for _, verb := range res.Verbs {
-		if verb == "list" {
-			hasList = true
-		}
-		if verb == "watch" {
-			hasWatch = true
-		}
-	}
-	return hasList && hasWatch
+	return d.ResourceDiscovery.SupportsWatchGVR(gvr)
 }
 
-// SupportsWatchGVR checks if a GVR supports list and watch verbs
-func (d *ResourceDiscovery) SupportsWatchGVR(gvr schema.GroupVersionResource) bool {
-	// Look up by plural resource name
-	return d.SupportsWatch(gvr.Resource)
-}
-
-// GetKindForGVR returns the Kind name for a given GVR
-// e.g., for GVR{Resource: "rollouts"}, returns "Rollout"
+// GetKindForGVR returns the Kind name for a given GVR.
 func (d *ResourceDiscovery) GetKindForGVR(gvr schema.GroupVersionResource) string {
-	res, ok := d.GetResource(gvr.Resource)
-	if ok {
-		return res.Kind
+	if d == nil || d.ResourceDiscovery == nil {
+		return ""
 	}
-	return ""
+	return d.ResourceDiscovery.GetKindForGVR(gvr)
 }

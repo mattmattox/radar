@@ -3,7 +3,10 @@ package k8s
 import (
 	"testing"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"github.com/skyhook-io/radar/pkg/k8score"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	fakediscovery "k8s.io/client-go/discovery/fake"
+	fakeclientset "k8s.io/client-go/kubernetes/fake"
 )
 
 func TestIsMoreStableVersion(t *testing.T) {
@@ -33,19 +36,32 @@ func TestIsMoreStableVersion(t *testing.T) {
 }
 
 func TestGetGVRWithGroup_DisambiguatesSameKind(t *testing.T) {
-	// Simulate two CRDs with the same Kind but different groups:
-	// - argoproj.io/v1alpha1 Application
-	// - app.k8s.io/v1beta1 Application
-	d := &ResourceDiscovery{
-		resourceMap: make(map[string]APIResource),
-		gvrMap:      make(map[string]schema.GroupVersionResource),
-		resources: []APIResource{
-			{Group: "argoproj.io", Version: "v1alpha1", Kind: "Application", Name: "applications", Namespaced: true, IsCRD: true},
-			{Group: "app.k8s.io", Version: "v1beta1", Kind: "Application", Name: "applications", Namespaced: true, IsCRD: true},
+	// Create a fake clientset with two CRDs sharing the same Kind but different groups
+	client := fakeclientset.NewSimpleClientset()
+	fakeDisc := client.Discovery().(*fakediscovery.FakeDiscovery)
+	fakeDisc.Resources = []*metav1.APIResourceList{
+		{
+			GroupVersion: "argoproj.io/v1alpha1",
+			APIResources: []metav1.APIResource{
+				{Name: "applications", Kind: "Application", Namespaced: true, Verbs: metav1.Verbs{"list", "watch", "get"}},
+			},
+		},
+		{
+			GroupVersion: "app.k8s.io/v1beta1",
+			APIResources: []metav1.APIResource{
+				{Name: "applications", Kind: "Application", Namespaced: true, Verbs: metav1.Verbs{"list", "watch", "get"}},
+			},
 		},
 	}
 
-	// GetGVRWithGroup should return the correct group regardless of map contents
+	// Build ResourceDiscovery via the real constructor
+	core, err := k8score.NewResourceDiscovery(fakeDisc)
+	if err != nil {
+		t.Fatalf("NewResourceDiscovery failed: %v", err)
+	}
+	d := &ResourceDiscovery{ResourceDiscovery: core}
+
+	// GetGVRWithGroup should return the correct group
 	gvr, ok := d.GetGVRWithGroup("Application", "argoproj.io")
 	if !ok {
 		t.Fatal("expected to find Application in argoproj.io")

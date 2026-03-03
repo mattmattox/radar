@@ -11,6 +11,7 @@ package k8score
 import (
 	"log"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -144,4 +145,60 @@ type CacheConfig struct {
 
 	// TimingLogger is called to emit startup timing lines. May be nil.
 	TimingLogger func(format string, args ...any)
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic (CRD / unstructured) cache types
+// ---------------------------------------------------------------------------
+
+// CRDDiscoveryStatus represents the state of CRD discovery.
+type CRDDiscoveryStatus string
+
+const (
+	CRDDiscoveryIdle       CRDDiscoveryStatus = "idle"        // Not started
+	CRDDiscoveryInProgress CRDDiscoveryStatus = "discovering" // Discovery in progress
+	CRDDiscoveryComplete   CRDDiscoveryStatus = "ready"       // Discovery complete
+)
+
+// DynamicCacheConfig holds configuration for creating a DynamicResourceCache.
+// All application-specific behavior is injected via callbacks — the cache
+// itself has no imports of any internal/ package.
+type DynamicCacheConfig struct {
+	// DynamicClient is the dynamic Kubernetes client used to create informers.
+	DynamicClient dynamic.Interface
+
+	// Discovery is used for GVR→Kind resolution and watch-verb checks.
+	// May be nil; when nil the cache falls back to heuristic kind names.
+	Discovery *ResourceDiscovery
+
+	// Changes is the shared channel for resource change notifications.
+	// May be nil if the caller does not need change events.
+	Changes chan ResourceChange
+
+	// OnReceived is called for every dynamic resource change before processing.
+	// May be nil.
+	OnReceived func(kind string)
+
+	// OnChange is called for each change after it is recorded. It receives
+	// the ResourceChange plus the raw new and old objects. May be nil.
+	OnChange func(change ResourceChange, obj, oldObj any)
+
+	// OnDrop is called when a change cannot be sent to the channel.
+	// Parameters: kind, namespace, name, reason, operation. May be nil.
+	OnDrop func(kind, ns, name, reason, op string)
+
+	// OnRecorded is called after a change is successfully sent to the channel.
+	// May be nil.
+	OnRecorded func(kind string)
+
+	// ComputeDiff is called for update operations to diff old/new objects.
+	// May be nil.
+	ComputeDiff func(kind string, oldObj, newObj any) *DiffInfo
+
+	// NamespaceScoped restricts informers to a single namespace.
+	NamespaceScoped bool
+	Namespace       string
+
+	// DebugEvents enables verbose debug logging.
+	DebugEvents bool
 }

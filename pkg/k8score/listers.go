@@ -158,69 +158,74 @@ func (rc *ResourceCache) ServiceAccounts() listerscorev1.ServiceAccountLister {
 	return rc.factory.Core().V1().ServiceAccounts().Lister()
 }
 
-// listCount is a helper that counts items from any lister that supports List(labels.Everything()).
+// listCount is a helper that counts items from any known lister type.
 func listCount(lister any) int {
 	if lister == nil {
 		return 0
 	}
-	type listable interface {
-		List(selector labels.Selector) ([]any, error)
-	}
-	// Use type switches for known lister types since Go generics don't help here
 	switch l := lister.(type) {
-	case listerscorev1.ServiceLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
-		return len(items)
 	case listerscorev1.PodLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listerscorev1.ServiceLister:
+		items, _ := l.List(labels.Everything())
 		return len(items)
 	case listerscorev1.NodeLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
+		items, _ := l.List(labels.Everything())
 		return len(items)
 	case listerscorev1.NamespaceLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listerscorev1.ConfigMapLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listerscorev1.SecretLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listerscorev1.EventLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listerscorev1.PersistentVolumeClaimLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listerscorev1.PersistentVolumeLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listerscorev1.ServiceAccountLister:
+		items, _ := l.List(labels.Everything())
 		return len(items)
 	case listersappsv1.DeploymentLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
+		items, _ := l.List(labels.Everything())
 		return len(items)
 	case listersappsv1.DaemonSetLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
+		items, _ := l.List(labels.Everything())
 		return len(items)
 	case listersappsv1.StatefulSetLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
+		items, _ := l.List(labels.Everything())
 		return len(items)
 	case listersappsv1.ReplicaSetLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
+		items, _ := l.List(labels.Everything())
 		return len(items)
 	case listersnetworkingv1.IngressLister:
-		items, err := l.List(labels.Everything())
-		if err != nil {
-			return 0
-		}
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listersnetworkingv1.IngressClassLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listersbatchv1.JobLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listersbatchv1.CronJobLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listersautoscalingv2.HorizontalPodAutoscalerLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listersstoragev1.StorageClassLister:
+		items, _ := l.List(labels.Everything())
+		return len(items)
+	case listerspolicyv1.PodDisruptionBudgetLister:
+		items, _ := l.List(labels.Everything())
 		return len(items)
 	}
 	return 0

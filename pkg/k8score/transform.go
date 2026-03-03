@@ -9,6 +9,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // DropManagedFields is a SharedInformer transform that reduces memory usage
@@ -55,4 +56,29 @@ func DropManagedFields(obj any) (any, error) {
 	}
 
 	return obj, nil
+}
+
+// StripUnstructuredFields removes managedFields and the last-applied-configuration
+// annotation from an unstructured object. Returns a deep copy — the cached object
+// is never mutated. Safe for use by both Radar and skyhook-connector.
+func StripUnstructuredFields(u *unstructured.Unstructured) *unstructured.Unstructured {
+	if u == nil {
+		return nil
+	}
+
+	cp := u.DeepCopy()
+
+	unstructured.RemoveNestedField(cp.Object, "metadata", "managedFields")
+
+	annotations := cp.GetAnnotations()
+	if annotations != nil {
+		delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		if len(annotations) == 0 {
+			cp.SetAnnotations(nil)
+		} else {
+			cp.SetAnnotations(annotations)
+		}
+	}
+
+	return cp
 }

@@ -995,60 +995,22 @@ func (c *ResourceCache) GetResourceStatus(kind, namespace, name string) *Resourc
 	}
 }
 
-// GetResourceCount shadows the embedded method to include dynamic cache resources.
+// GetResourceCount shadows the embedded method to count only core topology
+// resource types (the 9 types rendered in the UI topology view).
 func (c *ResourceCache) GetResourceCount() int {
 	if c == nil {
 		return 0
 	}
-
-	count := 0
-	if lister := c.Services(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
+	counts := c.ResourceCache.GetKindObjectCounts()
+	total := 0
+	for kind, n := range counts {
+		switch kind {
+		case "Pod", "Service", "Node", "Namespace", "Deployment",
+			"DaemonSet", "StatefulSet", "ReplicaSet", "Ingress":
+			total += n
 		}
 	}
-	if lister := c.Pods(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
-		}
-	}
-	if lister := c.Nodes(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
-		}
-	}
-	if lister := c.Namespaces(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
-		}
-	}
-	if lister := c.Deployments(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
-		}
-	}
-	if lister := c.DaemonSets(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
-		}
-	}
-	if lister := c.StatefulSets(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
-		}
-	}
-	if lister := c.ReplicaSets(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
-		}
-	}
-	if lister := c.Ingresses(); lister != nil {
-		if items, err := lister.List(labels.Everything()); err == nil {
-			count += len(items)
-		}
-	}
-
-	return count
+	return total
 }
 
 // getPodReadyCount returns the ready container count as "ready/total"
