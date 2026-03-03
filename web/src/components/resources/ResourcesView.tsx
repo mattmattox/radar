@@ -136,7 +136,7 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       resourceQueries={resourceQueryResults}
       topPodMetrics={topPodMetrics}
       topNodeMetrics={topNodeMetrics}
-      certExpiry={certExpiry as any}
+      certExpiry={certExpiry}
       certExpiryError={certExpiryError}
       // Pinned kinds
       pinned={pinned}
@@ -147,7 +147,7 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       locationPathname={location.pathname}
       onNavigate={handleNavigate}
       // Dock actions
-      onOpenLogs={openLogs as any}
+      onOpenLogs={openLogs}
       onOpenWorkloadLogs={openWorkloadLogs}
     />
   )

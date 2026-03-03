@@ -1324,9 +1324,9 @@ const MetricsContext = React.createContext<MetricsLookup>({ pods: new Map(), nod
 // Context for deeply nested sub-components (PodCell, SecretCell) to access injected platform data
 interface ResourcesViewData {
   onNavigate?: (path: string, options?: { replace?: boolean }) => void
-  certExpiry?: Record<string, { expired: boolean; daysLeft: number }>
+  certExpiry?: Record<string, { expired?: boolean; daysLeft: number }>
   certExpiryError?: boolean
-  onOpenLogs?: (params: { namespace: string; podName: string; containers?: string[] }) => void
+  onOpenLogs?: (params: { namespace: string; podName: string; containers: string[]; containerName?: string }) => void
   onOpenWorkloadLogs?: (params: { namespace: string; workloadKind: string; workloadName: string }) => void
 }
 
@@ -1356,7 +1356,7 @@ interface ResourcesViewProps {
   resourceQueries?: ResourceQueryResult[]
   topPodMetrics?: TopPodMetrics[]
   topNodeMetrics?: TopNodeMetrics[]
-  certExpiry?: Record<string, { expired: boolean; daysLeft: number }>
+  certExpiry?: Record<string, { expired?: boolean; daysLeft: number }>
   certExpiryError?: boolean
   // Pinned kinds
   pinned?: Array<{ name: string; kind: string; group: string }>
@@ -1367,7 +1367,7 @@ interface ResourcesViewProps {
   locationPathname?: string
   onNavigate?: (path: string, options?: { replace?: boolean }) => void
   // Dock actions
-  onOpenLogs?: (params: { namespace: string; podName: string; containers?: string[] }) => void
+  onOpenLogs?: (params: { namespace: string; podName: string; containers: string[]; containerName?: string }) => void
   onOpenWorkloadLogs?: (params: { namespace: string; workloadKind: string; workloadName: string }) => void
 }
 

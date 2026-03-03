@@ -147,12 +147,12 @@ Follow existing patterns: `AlertBanner` for problems, `Section` components, `Pro
 
 **File:** `packages/k8s-ui/src/components/resources/renderers/index.ts` — export new renderers
 
-**File:** `web/src/components/resources/ResourceDetailDrawer.tsx`
+**File:** `packages/k8s-ui/src/components/shared/ResourceRendererDispatch.tsx`
 
 Three wiring points (all must be updated):
 
-#### a. `knownKinds` array
-Add your kinds so the drawer shows the custom renderer instead of generic YAML.
+#### a. `KNOWN_KINDS` set
+Add your kinds so the dispatch shows the custom renderer instead of generic YAML.
 
 #### b. Render lines
 Add conditional render for each kind:
