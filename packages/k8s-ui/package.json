@@ -8,6 +8,9 @@
     ".": "./src/index.ts",
     "./types": "./src/types/index.ts",
     "./utils": "./src/utils/index.ts",
+    "./components/resources/*": "./src/components/resources/*.ts",
+    "./components/ui/*": "./src/components/ui/*.tsx",
+    "./hooks/*": "./src/hooks/*.ts",
     "./resources": "./src/components/resources/index.ts",
     "./theme": "./src/theme/index.css"
   },
@@ -16,12 +19,17 @@
     "format": "prettier --write \"src/**/*.{ts,tsx}\""
   },
   "peerDependencies": {
+    "clsx": ">=2.0.0",
     "lucide-react": ">=0.400.0",
-    "react": ">=18.0.0"
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
   },
   "devDependencies": {
+    "@types/react-dom": "^19.2.3",
+    "clsx": "^2.1.1",
     "lucide-react": "^0.575.0",
     "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "typescript": "^5.9.3"
   }
 }
