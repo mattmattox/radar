@@ -5,6 +5,7 @@ import (
 	"log"
 	"maps"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,8 +25,9 @@ type ResourceCache struct {
 	deferredSynced   map[string]bool
 	deferredMu       sync.RWMutex
 	deferredDone     chan struct{}
-	syncComplete     bool
+	syncComplete     atomic.Bool
 	config           CacheConfig
+	stdlog           *log.Logger
 }
 
 type informerSetup struct {
@@ -41,6 +43,9 @@ type informerSetup struct {
 func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 	if cfg.Client == nil {
 		return nil, fmt.Errorf("CacheConfig.Client must not be nil")
+	}
+	if cfg.NamespaceScoped && cfg.Namespace == "" {
+		return nil, fmt.Errorf("CacheConfig.Namespace must be set when NamespaceScoped is true")
 	}
 
 	channelSize := cfg.ChannelSize
@@ -58,6 +63,10 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 		stdlog = log.Default()
 	}
 
+	// Clone caller-owned maps to prevent mutation after construction.
+	cfg.ResourceTypes = maps.Clone(cfg.ResourceTypes)
+	cfg.DeferredTypes = maps.Clone(cfg.DeferredTypes)
+
 	stopCh := make(chan struct{})
 	changes := make(chan ResourceChange, channelSize)
 
@@ -65,7 +74,7 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 	factoryOpts := []informers.SharedInformerOption{
 		informers.WithTransform(DropManagedFields),
 	}
-	if cfg.NamespaceScoped && cfg.Namespace != "" {
+	if cfg.NamespaceScoped {
 		factoryOpts = append(factoryOpts, informers.WithNamespace(cfg.Namespace))
 		stdlog.Printf("Using namespace-scoped informers for namespace %q", cfg.Namespace)
 	}
@@ -96,6 +105,7 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 		stopCh:           stopCh,
 		enabledResources: enabled,
 		config:           cfg,
+		stdlog:           stdlog,
 	}
 
 	for _, s := range setups {
@@ -129,7 +139,7 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 		rc.deferredSynced = make(map[string]bool)
 		rc.deferredDone = make(chan struct{})
 		close(rc.deferredDone)
-		rc.syncComplete = true
+		rc.syncComplete.Store(true)
 		return rc, nil
 	}
 
@@ -199,7 +209,7 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 	logf("    Phase 1 sync (%d critical informers): %v", len(criticalSyncFuncs), time.Since(syncStart))
 	stdlog.Printf("Critical resource caches synced in %v — UI can render", time.Since(syncStart))
 
-	rc.syncComplete = true
+	rc.syncComplete.Store(true)
 
 	// Build deferred tracking state
 	deferredSynced := make(map[string]bool, len(deferredKeys))
@@ -304,6 +314,7 @@ func (rc *ResourceCache) enqueueChange(ch chan<- ResourceChange, kind string, ob
 		if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 			meta, ok = tombstone.Obj.(metav1.Object)
 			if !ok {
+				rc.stdlog.Printf("Warning: tombstone contained non-metav1.Object for %s %s", kind, op)
 				return
 			}
 			obj = tombstone.Obj
@@ -316,6 +327,11 @@ func (rc *ResourceCache) enqueueChange(ch chan<- ResourceChange, kind string, ob
 	name := meta.GetName()
 	uid := string(meta.GetUID())
 
+	// Track event received (before any filtering)
+	if rc.config.OnReceived != nil {
+		rc.safeCallback("OnReceived", func() { rc.config.OnReceived(kind) })
+	}
+
 	// Check if noisy (skip OnChange but still send to channel)
 	skipCallback := false
 	if rc.config.IsNoisyResource != nil && rc.config.IsNoisyResource(kind, name, op) {
@@ -326,7 +342,7 @@ func (rc *ResourceCache) enqueueChange(ch chan<- ResourceChange, kind string, ob
 	}
 
 	// SuppressInitialAdds: during initial sync, skip OnChange for adds
-	if op == "add" && rc.config.SuppressInitialAdds && !rc.syncComplete {
+	if op == "add" && rc.config.SuppressInitialAdds && !rc.syncComplete.Load() {
 		skipCallback = true
 	}
 
@@ -334,19 +350,6 @@ func (rc *ResourceCache) enqueueChange(ch chan<- ResourceChange, kind string, ob
 	var diff *DiffInfo
 	if op == "update" && oldObj != nil && obj != nil && rc.config.ComputeDiff != nil {
 		diff = rc.config.ComputeDiff(kind, oldObj, obj)
-	}
-
-	// Fire OnChange callback (before channel send, matching existing behavior)
-	if !skipCallback && rc.config.OnChange != nil {
-		change := ResourceChange{
-			Kind:      kind,
-			Namespace: ns,
-			Name:      name,
-			UID:       uid,
-			Operation: op,
-			Diff:      diff,
-		}
-		rc.config.OnChange(change, obj, oldObj)
 	}
 
 	change := ResourceChange{
@@ -358,12 +361,19 @@ func (rc *ResourceCache) enqueueChange(ch chan<- ResourceChange, kind string, ob
 		Diff:      diff,
 	}
 
+	// Fire OnChange callback (before channel send, matching existing behavior)
+	if !skipCallback && rc.config.OnChange != nil {
+		rc.safeCallback("OnChange", func() { rc.config.OnChange(change, obj, oldObj) })
+	}
+
 	// Non-blocking send to changes channel
 	select {
 	case ch <- change:
 	default:
 		if rc.config.OnDrop != nil {
 			rc.config.OnDrop(kind, ns, name, "channel_full", op)
+		} else {
+			rc.stdlog.Printf("Warning: change channel full, dropped %s %s/%s op=%s", kind, ns, name, op)
 		}
 	}
 }
@@ -375,6 +385,7 @@ func (rc *ResourceCache) enqueueEvent(ch chan<- ResourceChange, obj any, op stri
 		if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 			meta, ok = tombstone.Obj.(metav1.Object)
 			if !ok {
+				rc.stdlog.Printf("Warning: tombstone contained non-metav1.Object for Event %s", op)
 				return
 			}
 			obj = tombstone.Obj
@@ -389,7 +400,7 @@ func (rc *ResourceCache) enqueueEvent(ch chan<- ResourceChange, obj any, op stri
 
 	// Fire OnEventChange callback
 	if rc.config.OnEventChange != nil {
-		rc.config.OnEventChange(obj, op)
+		rc.safeCallback("OnEventChange", func() { rc.config.OnEventChange(obj, op) })
 	}
 
 	change := ResourceChange{
@@ -405,8 +416,20 @@ func (rc *ResourceCache) enqueueEvent(ch chan<- ResourceChange, obj any, op stri
 	default:
 		if rc.config.OnDrop != nil {
 			rc.config.OnDrop("Event", ns, name, "channel_full", op)
+		} else {
+			rc.stdlog.Printf("Warning: change channel full, dropped Event %s/%s op=%s", ns, name, op)
 		}
 	}
+}
+
+// safeCallback invokes fn with panic recovery to protect informer goroutines.
+func (rc *ResourceCache) safeCallback(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			rc.stdlog.Printf("ERROR: k8score %s callback panicked: %v", name, r)
+		}
+	}()
+	fn()
 }
 
 // Stop initiates a non-blocking shutdown of the cache.
@@ -454,7 +477,7 @@ func (rc *ResourceCache) IsSyncComplete() bool {
 	if rc == nil {
 		return false
 	}
-	return rc.syncComplete
+	return rc.syncComplete.Load()
 }
 
 // IsDeferredSynced returns true when all deferred informers have completed sync.

@@ -129,10 +129,11 @@ func InitResourceCache(ctx context.Context) error {
 			DebugEvents:     DebugEvents,
 			TimingLogger:    logTiming,
 
-			OnChange: func(change k8score.ResourceChange, obj, oldObj any) {
-				// Track event received
-				timeline.IncrementReceived(change.Kind)
+			OnReceived: func(kind string) {
+				timeline.IncrementReceived(kind)
+			},
 
+			OnChange: func(change k8score.ResourceChange, obj, oldObj any) {
 				if DebugEvents && change.Operation == "add" &&
 					(change.Kind == "Pod" || change.Kind == "Deployment" || change.Kind == "Service") {
 					log.Printf("[DEBUG] enqueueChange: %s add %s/%s", change.Kind, change.Namespace, change.Name)
@@ -143,6 +144,11 @@ func InitResourceCache(ctx context.Context) error {
 			},
 
 			OnEventChange: func(obj any, op string) {
+				// Event deletes are not recorded to timeline — events represent
+				// things that happened and should remain in history.
+				if op == "delete" {
+					return
+				}
 				recordK8sEventToTimeline(obj)
 			},
 

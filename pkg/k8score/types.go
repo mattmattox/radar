@@ -41,6 +41,13 @@ const (
 	ServiceAccounts          ResourceType = "serviceaccounts"
 )
 
+// Operation constants for resource change events.
+const (
+	OpAdd    = "add"
+	OpUpdate = "update"
+	OpDelete = "delete"
+)
+
 // ResourceChange represents a resource change event from an informer callback.
 type ResourceChange struct {
 	Kind      string    // "Service", "Deployment", "Pod", etc.
@@ -84,6 +91,11 @@ type CacheConfig struct {
 	// background after critical informers complete. Their listers return
 	// nil until sync finishes. If nil, no resources are deferred.
 	DeferredTypes map[string]bool
+
+	// OnReceived is called for every non-Event resource change before any
+	// filtering (noisy checks, suppress-initial-adds). Used for metrics
+	// tracking (e.g., timeline.IncrementReceived). May be nil.
+	OnReceived func(kind string)
 
 	// OnChange is called for each non-Event resource change after the
 	// change is sent to the changes channel. It receives the change plus

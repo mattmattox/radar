@@ -183,6 +183,128 @@ func TestNewResourceCache_SuppressInitialAdds(t *testing.T) {
 	}
 }
 
+func TestNewResourceCache_OnReceived(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+	}
+	client := fake.NewSimpleClientset(pod)
+
+	var mu sync.Mutex
+	receivedKinds := map[string]int{}
+
+	rc, err := NewResourceCache(CacheConfig{
+		Client: client,
+		ResourceTypes: map[string]bool{
+			Pods: true,
+		},
+		OnReceived: func(kind string) {
+			mu.Lock()
+			receivedKinds[kind]++
+			mu.Unlock()
+		},
+		// Even with noisy filter that always returns true, OnReceived should fire
+		IsNoisyResource: func(kind, name, op string) bool {
+			return true // everything is noisy
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	podCount := receivedKinds["Pod"]
+	mu.Unlock()
+
+	if podCount == 0 {
+		t.Error("expected OnReceived to fire even when IsNoisyResource returns true")
+	}
+}
+
+func TestNewResourceCache_NamespaceScopedValidation(t *testing.T) {
+	client := fake.NewSimpleClientset()
+
+	_, err := NewResourceCache(CacheConfig{
+		Client:          client,
+		NamespaceScoped: true,
+		Namespace:       "", // empty namespace with NamespaceScoped=true
+		ResourceTypes:   map[string]bool{Pods: true},
+	})
+	if err == nil {
+		t.Fatal("expected error when NamespaceScoped=true with empty Namespace")
+	}
+}
+
+func TestNewResourceCache_CallbackPanicRecovery(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "panic-pod",
+			Namespace: "default",
+			UID:       "panic-uid",
+		},
+	}
+	client := fake.NewSimpleClientset(pod)
+
+	rc, err := NewResourceCache(CacheConfig{
+		Client: client,
+		ResourceTypes: map[string]bool{
+			Pods: true,
+		},
+		OnChange: func(change ResourceChange, obj, oldObj any) {
+			panic("test panic in OnChange")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	// Wait for event to fire — the panic should be recovered, not crash
+	time.Sleep(200 * time.Millisecond)
+
+	// If we get here without crashing, the test passes
+	if rc.Pods() == nil {
+		t.Error("expected Pods() lister to still work after callback panic")
+	}
+}
+
+func TestNewResourceCache_MapCloning(t *testing.T) {
+	client := fake.NewSimpleClientset()
+
+	resourceTypes := map[string]bool{
+		Pods:     true,
+		Services: true,
+	}
+
+	rc, err := NewResourceCache(CacheConfig{
+		Client:        client,
+		ResourceTypes: resourceTypes,
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	// Mutate the original map after construction
+	resourceTypes[Pods] = false
+	resourceTypes["bogus"] = true
+
+	// The cache should not be affected
+	if rc.Pods() == nil {
+		t.Error("expected Pods() lister to still work after caller mutates resourceTypes map")
+	}
+	enabled := rc.GetEnabledResources()
+	if !enabled[Pods] {
+		t.Error("expected Pods to still be enabled after caller mutates resourceTypes map")
+	}
+}
+
 func TestNewResourceCache_NilClient(t *testing.T) {
 	_, err := NewResourceCache(CacheConfig{
 		Client: nil,
