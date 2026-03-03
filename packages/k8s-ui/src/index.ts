@@ -21,3 +21,6 @@ export * from './components/logs'
 
 // Timeline
 export * from './components/timeline'
+
+// Shared components (ResourceRendererDispatch, EditableYamlView)
+export * from './components/shared'
