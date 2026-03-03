@@ -1,4 +1,5 @@
 export { Tooltip } from './Tooltip'
 export { ConfirmDialog } from './ConfirmDialog'
 export { HealthRing } from './HealthRing'
+export { MetricsChart, MetricsSparkline } from './MetricsChart'
 export * from './drawer-components'

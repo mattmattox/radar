@@ -627,6 +627,16 @@ export interface ArtifactHubVersionSummary {
 export type ChartSource = 'local' | 'artifacthub'
 
 // ============================================================================
+// Metrics Types
+// ============================================================================
+
+export interface MetricsDataPoint {
+  timestamp: string
+  cpu: number      // CPU in nanocores
+  memory: number   // Memory in bytes
+}
+
+// ============================================================================
 // Traffic Types
 // ============================================================================
 
