@@ -17,9 +17,11 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@skyhook/k8s-ui": ["../packages/k8s-ui/src/index.ts"],
+      "@skyhook/k8s-ui/*": ["../packages/k8s-ui/src/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "../packages/k8s-ui/src"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

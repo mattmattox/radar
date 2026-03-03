@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@skyhook/k8s-ui': path.resolve(__dirname, '../packages/k8s-ui/src'),
     },
   },
   server: {
