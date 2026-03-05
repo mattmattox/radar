@@ -36,7 +36,7 @@ export function JsonLogLine({ content, level, wordWrap }: JsonLogLineProps) {
     <span className={levelColor}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="inline-flex items-center gap-0.5 hover:bg-theme-surface/50 rounded px-0.5 -ml-0.5 align-top"
+        className="inline-flex items-center gap-0.5 hover:bg-theme-surface/50 rounded px-0.5 -ml-0.5 align-middle"
       >
         {expanded
           ? <ChevronDown className="w-3 h-3 shrink-0 text-theme-text-tertiary" />

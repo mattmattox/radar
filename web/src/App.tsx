@@ -5,8 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import { HomeView } from './components/home/HomeView'
 import { DebugOverlay } from './components/DebugOverlay'
-import { TopologyGraph } from './components/topology/TopologyGraph'
-import { TopologyFilterSidebar } from './components/topology/TopologyFilterSidebar'
+import { TopologyGraph, TopologyFilterSidebar, TopologyControls } from '@skyhook/k8s-ui'
 import { TimelineView } from './components/timeline/TimelineView'
 import { ResourcesView } from './components/resources/ResourcesView'
 import { serializeColumnFilters } from './components/resources/resource-utils'
@@ -34,7 +33,7 @@ import { useNamespaces, useSwitchContext } from './api/client'
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import { Loader2 } from 'lucide-react'
-import { RefreshCw, FolderTree, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug } from 'lucide-react'
+import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import type { TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, Topology } from './types'
@@ -769,47 +768,13 @@ function AppInner() {
               />
 
               {/* Topology controls overlay - top right */}
-              <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
-                {/* Grouping selector */}
-                <div className="flex items-center gap-1.5 px-2 py-1.5 bg-theme-surface/90 backdrop-blur border border-theme-border rounded-lg">
-                  <FolderTree className="w-3.5 h-3.5 text-theme-text-secondary" />
-                  <select
-                    value={groupingMode}
-                    onChange={(e) => setGroupingMode(e.target.value as GroupingMode)}
-                    className="appearance-none bg-transparent text-theme-text-primary text-xs focus:outline-none"
-                  >
-                    {hasNamespaceFilter && (
-                      <option value="none" className="bg-theme-surface">No Grouping</option>
-                    )}
-                    <option value="namespace" className="bg-theme-surface">By Namespace</option>
-                    <option value="app" className="bg-theme-surface">By App Label</option>
-                  </select>
-                </div>
-
-                {/* View mode toggle */}
-                <div className="flex items-center gap-0.5 p-1 bg-theme-surface/90 backdrop-blur border border-theme-border rounded-lg">
-                  <button
-                    onClick={() => setTopologyMode('resources')}
-                    className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
-                      topologyMode === 'resources'
-                        ? 'bg-blue-500 text-theme-text-primary'
-                        : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated'
-                    }`}
-                  >
-                    Resources
-                  </button>
-                  <button
-                    onClick={() => setTopologyMode('traffic')}
-                    className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
-                      topologyMode === 'traffic'
-                        ? 'bg-blue-500 text-theme-text-primary'
-                        : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated'
-                    }`}
-                  >
-                    Traffic
-                  </button>
-                </div>
-              </div>
+              <TopologyControls
+                viewMode={topologyMode}
+                onViewModeChange={setTopologyMode}
+                groupingMode={groupingMode}
+                onGroupingModeChange={setGroupingMode}
+                showNoGrouping={hasNamespaceFilter}
+              />
             </div>
           </>
         )}

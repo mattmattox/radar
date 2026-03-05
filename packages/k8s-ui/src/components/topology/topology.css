@@ -1,0 +1,129 @@
+/*
+ * Topology visualization CSS for @skyhook/k8s-ui
+ * Provides node styling, icon colors, group borders, and layout utilities.
+ * Consumers must define the CSS variables below in their theme (light/dark).
+ *
+ * Required CSS variables:
+ *   --topology-node-border, --topology-node-shadow
+ *   --group-border-namespace, --group-border-app, --group-border-label
+ *   --group-header-namespace, --group-header-app, --group-header-label
+ *   --group-label-namespace, --group-label-app, --group-label-label
+ *   --group-icon-namespace, --group-icon-app, --group-icon-label
+ *   --topology-bg-dots
+ */
+
+/* Topology node card styling */
+.topology-node-card {
+  border: 1px solid var(--topology-node-border);
+  box-shadow: var(--topology-node-shadow);
+}
+
+/* Status bar via pseudo-element (saves one DOM element per node) */
+.topology-node-status-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 4px 0 0 4px;
+}
+.topology-node-status-healthy::before {
+  background-color: rgb(34 197 94); /* green-500 */
+}
+.topology-node-status-unknown::before {
+  background-color: rgb(100 116 139); /* slate-500 */
+}
+
+/* CSS-based topology icons (replaces Lucide SVGs - saves ~4000 DOM elements) */
+.topology-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+  background: #6b7280; /* gray-500 - default for unknown CRD kinds */
+}
+.topology-icon-internet { background: #3b82f6; border-radius: 50%; }
+.topology-icon-ingress { background: #8b5cf6; }
+.topology-icon-gateway { background: #8b5cf6; }
+.topology-icon-httproute { background: #a78bfa; }
+.topology-icon-grpcroute { background: #a78bfa; }
+.topology-icon-tcproute { background: #a78bfa; }
+.topology-icon-tlsroute { background: #a78bfa; }
+.topology-icon-service { background: #3b82f6; border-radius: 50%; }
+.topology-icon-deployment { background: #10b981; }
+.topology-icon-rollout { background: #10b981; }
+.topology-icon-daemonset { background: #14b8a6; }
+.topology-icon-statefulset { background: #06b6d4; }
+.topology-icon-replicaset { background: #22c55e; }
+.topology-icon-pod { background: #84cc16; border-radius: 50%; }
+.topology-icon-podgroup { background: #84cc16; border-radius: 50%; }
+.topology-icon-configmap { background: #f59e0b; }
+.topology-icon-secret { background: #ef4444; }
+.topology-icon-horizontalpodautoscaler { background: #ec4899; }
+.topology-icon-job { background: #a855f7; }
+.topology-icon-cronjob { background: #a855f7; }
+.topology-icon-persistentvolumeclaim { background: #06b6d4; }
+.topology-icon-namespace { background: #6366f1; }
+.topology-icon-application { background: #f97316; }
+.topology-icon-kustomization { background: #0ea5e9; }
+.topology-icon-helmrelease { background: #0ea5e9; }
+.topology-icon-gitrepository { background: #14b8a6; }
+.topology-icon-knativeservice { background: #d946ef; }
+.topology-icon-knativeconfiguration { background: #c026d3; }
+.topology-icon-knativerevision { background: #a855f7; }
+.topology-icon-knativeroute { background: #d946ef; }
+.topology-icon-broker { background: #c026d3; }
+.topology-icon-trigger { background: #a855f7; }
+.topology-icon-pingsource { background: #d946ef; }
+.topology-icon-apiserversource { background: #c026d3; }
+.topology-icon-containersource { background: #a855f7; }
+.topology-icon-sinkbinding { background: #d946ef; }
+.topology-icon-channel { background: #c026d3; }
+.topology-icon-inmemorychannel { background: #c026d3; }
+.topology-icon-subscription { background: #a855f7; }
+.topology-icon-sequence { background: #d946ef; }
+.topology-icon-parallel { background: #d946ef; }
+.topology-icon-domainmapping { background: #d946ef; }
+.topology-icon-serverlessservice { background: #a855f7; }
+.topology-icon-node { background: #6366f1; }
+.topology-icon-nodepool { background: #6366f1; }
+.topology-icon-nodeclaim { background: #6366f1; }
+.topology-icon-nodeclass { background: #6366f1; }
+
+/* Background dots - uses CSS variable for theme awareness */
+.react-flow__background pattern circle {
+  fill: var(--topology-bg-dots) !important;
+}
+
+/* Override default group node styling - we handle it in GroupNode component */
+.react-flow__node-group {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Group header scaling using CSS variable set by ViewportController */
+.group-header-scaled {
+  transform: scale(var(--group-header-scale, 1));
+  transform-origin: top left;
+}
+
+/* Group container top adjustment based on header scale */
+.group-container-adjusted {
+  top: var(--group-header-offset, 0px);
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+.react-flow__attribution {
+  display: none;
+}

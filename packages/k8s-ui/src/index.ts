@@ -30,3 +30,6 @@ export * from './components/workload'
 
 // Dock (DockProvider, BottomDock, useDock, useOpenLogs, useOpenWorkloadLogs, useOpenTerminal)
 export * from './components/dock'
+
+// Topology (TopologyGraph, TopologySearch, TopologyFilterSidebar, layout utilities)
+export * from './components/topology'

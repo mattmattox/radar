@@ -14,6 +14,7 @@
     "./resources": "./src/components/resources/index.ts",
     "./logs": "./src/components/logs/index.ts",
     "./timeline": "./src/components/timeline/index.ts",
+    "./topology": "./src/components/topology/index.ts",
     "./theme": "./src/theme/index.css"
   },
   "scripts": {
@@ -26,8 +27,10 @@
     "shiki": "^4.0.0"
   },
   "peerDependencies": {
+    "@xyflow/react": ">=12.0.0",
     "clsx": ">=2.0.0",
     "diff": ">=5.0.0",
+    "elkjs": ">=0.9.0",
     "lucide-react": ">=0.400.0",
     "react": ">=18.0.0",
     "react-dom": ">=18.0.0",
@@ -37,8 +40,10 @@
     "@types/diff": "^7.0.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@xyflow/react": "^12.10.1",
     "clsx": "^2.1.1",
     "diff": "^8.0.3",
+    "elkjs": "^0.11.1",
     "lucide-react": "^0.575.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
