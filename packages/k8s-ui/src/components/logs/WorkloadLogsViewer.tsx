@@ -53,6 +53,7 @@ export function WorkloadLogsViewer({ name, fetchAll, createStream }: WorkloadLog
   const [pods, setPods] = useState<WorkloadPodInfo[]>([])
   const [selectedPods, setSelectedPods] = useState<Set<string>>(new Set())
   const [isLoading, setIsLoading] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
   const [showPodFilter, setShowPodFilter] = useState(false)
   const [logRange, setLogRange] = useState('100')
 
@@ -70,6 +71,7 @@ export function WorkloadLogsViewer({ name, fetchAll, createStream }: WorkloadLog
 
   const loadLogs = useCallback(async () => {
     setIsLoading(true)
+    setFetchError(null)
     try {
       const result = await fetchAll({ container: selectedContainer || undefined, tailLines, sinceSeconds })
 
@@ -92,6 +94,7 @@ export function WorkloadLogsViewer({ name, fetchAll, createStream }: WorkloadLog
       })))
     } catch (err) {
       console.error('Failed to fetch workload logs:', err)
+      setFetchError(err instanceof Error ? err.message : 'Failed to fetch logs')
     } finally {
       setIsLoading(false)
     }
@@ -246,6 +249,7 @@ export function WorkloadLogsViewer({ name, fetchAll, createStream }: WorkloadLog
       toolbarExtra={toolbarExtra}
       showPodName
       emptyMessage={pods.length === 0 ? 'No pods found' : 'No logs available'}
+      errorMessage={fetchError}
     />
   )
 }

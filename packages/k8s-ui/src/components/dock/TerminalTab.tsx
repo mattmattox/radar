@@ -127,20 +127,22 @@ export function TerminalTab({
         }
 
         ws.onmessage = (event) => {
+          let msg: Record<string, string> | null = null
           try {
-            const msg = JSON.parse(event.data as string) as Record<string, string>
-            if (msg.type === 'output' && msg.data) {
-              xterm.write(msg.data)
-            } else if (msg.type === 'exit') {
-              xterm.write('\r\n\x1b[2m[Process exited]\x1b[0m\r\n')
-            } else if (msg.type === 'error' && msg.data) {
-              setError(msg.data)
-              // Support both camelCase (radar) and snake_case (conduit) error type field
-              setErrorType(msg.errorType ?? msg.error_type ?? 'exec_error')
-              setIsConnected(false)
-            }
+            msg = JSON.parse(event.data as string) as Record<string, string>
           } catch {
             xterm.write(event.data as string)
+            return
+          }
+          if (msg.type === 'output' && msg.data) {
+            xterm.write(msg.data)
+          } else if (msg.type === 'exit') {
+            xterm.write('\r\n\x1b[2m[Process exited]\x1b[0m\r\n')
+          } else if (msg.type === 'error' && msg.data) {
+            setError(msg.data)
+            // Support both camelCase (radar) and snake_case (conduit) error type field
+            setErrorType(msg.errorType ?? msg.error_type ?? 'exec_error')
+            setIsConnected(false)
           }
         }
 

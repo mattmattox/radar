@@ -36,6 +36,7 @@ export function LogsViewer({
 }: LogsViewerProps) {
   const [selectedContainer, setSelectedContainer] = useState(initialContainer || containers[0] || '')
   const [isLoading, setIsLoading] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
   const [logRange, setLogRange] = useState('500')
   const [showPrevious, setShowPrevious] = useState(false)
 
@@ -46,6 +47,7 @@ export function LogsViewer({
   const loadLogs = useCallback(async () => {
     if (!selectedContainer) return
     setIsLoading(true)
+    setFetchError(null)
     try {
       const data = await fetchLogs({ container: selectedContainer, tailLines, sinceSeconds, previous: showPrevious })
       const logText = data[selectedContainer] ?? Object.values(data)[0] ?? ''
@@ -55,6 +57,7 @@ export function LogsViewer({
       }))
     } catch (err) {
       console.error('Failed to fetch logs:', err)
+      setFetchError(err instanceof Error ? err.message : 'Failed to fetch logs')
     } finally {
       setIsLoading(false)
     }
@@ -122,6 +125,7 @@ export function LogsViewer({
     <LogCore
       entries={entries}
       isLoading={isLoading}
+      errorMessage={fetchError}
       isStreaming={isStreaming}
       onStartStream={createStream ? handleStartStreaming : undefined}
       onStopStream={stopStreaming}

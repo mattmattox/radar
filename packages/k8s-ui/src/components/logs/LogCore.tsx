@@ -27,6 +27,7 @@ interface LogCoreProps {
   toolbarExtra?: ReactNode
   showPodName?: boolean
   emptyMessage?: string
+  errorMessage?: string | null
 }
 
 const LEVEL_OPTIONS: { level: LogLevel; label: string; color: string; activeColor: string }[] = [
@@ -50,6 +51,7 @@ export function LogCore({
   toolbarExtra,
   showPodName = false,
   emptyMessage = 'No logs available',
+  errorMessage,
 }: LogCoreProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -405,6 +407,11 @@ export function LogCore({
             <RotateCcw className="w-4 h-4 animate-spin" />
             <span>Loading logs...</span>
           </div>
+        </div>
+      ) : errorMessage ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-red-400 gap-2">
+          <Terminal className="w-8 h-8" />
+          <span>{errorMessage}</span>
         </div>
       ) : displayEntries.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-theme-text-tertiary gap-2">

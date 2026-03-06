@@ -593,7 +593,12 @@ func (b *SSEBroadcaster) GetCachedTopology() *topology.Topology {
 		b.cachedTopologyDirty = false
 		b.cachedTopologyMu.Unlock()
 
-		b.rebuildCachedTopology()
+		if !b.rebuildCachedTopology() {
+			// Rebuild failed — mark dirty again so next call retries
+			b.cachedTopologyMu.Lock()
+			b.cachedTopologyDirty = true
+			b.cachedTopologyMu.Unlock()
+		}
 		b.cachedTopologyMu.RLock()
 		topo = b.cachedTopology
 		b.cachedTopologyMu.RUnlock()
@@ -603,15 +608,18 @@ func (b *SSEBroadcaster) GetCachedTopology() *topology.Topology {
 }
 
 // rebuildCachedTopology rebuilds the full topology for relationship lookups.
-func (b *SSEBroadcaster) rebuildCachedTopology() {
+// Returns true if the rebuild succeeded, false otherwise.
+func (b *SSEBroadcaster) rebuildCachedTopology() bool {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
-		return
+		return false
 	}
 	if fullTopo, err := buildFullTopology(); err == nil {
 		b.updateCachedTopology(fullTopo)
+		return true
 	} else {
 		log.Printf("Error rebuilding topology cache on demand: %v", err)
+		return false
 	}
 }
 
