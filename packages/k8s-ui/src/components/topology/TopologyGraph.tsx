@@ -154,7 +154,7 @@ interface TopologyGraphProps {
   hideGroupHeader?: boolean
   onNodeClick: (node: TopologyNode) => void
   selectedNodeId?: string
-  /** Show PNG export button in controls. Default: true */
+  /** Show image export button in controls. Default: true */
   showExportButton?: boolean
 }
 
@@ -636,7 +636,7 @@ export function TopologyGraph({
           className="bg-theme-surface border border-theme-border rounded-lg"
           showInteractive={false}
         >
-          {showExportButton && <ExportPngButton onExportingChange={setIsExporting} />}
+          {showExportButton && <ExportImageButton onExportingChange={setIsExporting} />}
         </Controls>
         <ViewportController structureKey={structureKey} />
       </ReactFlow>
@@ -669,9 +669,9 @@ function useExportDimensions(captureMode: 'viewport' | 'full', scale: number) {
     const nodes = getNodes()
     if (nodes.length === 0) return null
     const bounds = getNodesBounds(nodes)
-    const padding = 16
-    const w = Math.ceil(bounds.width + padding * 2)
-    const h = Math.ceil(bounds.height + padding * 2)
+    const w = Math.ceil(bounds.width + EXPORT_PADDING * 2)
+    const h = Math.ceil(bounds.height + EXPORT_PADDING * 2)
+    // Full capture uses pixelRatio=1, so dimensions are 1:1 with graph bounds
     return { pw: w, ph: h }
   }, [captureMode, scale, getNodes, getNodesBounds])
 }
@@ -680,8 +680,10 @@ type ImageFormat = 'image/png' | 'image/webp'
 const FORMAT_LABELS: Record<ImageFormat, string> = { 'image/png': 'PNG', 'image/webp': 'WebP' }
 const FORMAT_EXT: Record<ImageFormat, string> = { 'image/png': 'png', 'image/webp': 'webp' }
 
+const EXPORT_PADDING = 16
+
 // Export topology as image button + dialog (must be inside ReactFlowProvider)
-function ExportPngButton({ onExportingChange }: { onExportingChange: (v: boolean) => void }) {
+function ExportImageButton({ onExportingChange }: { onExportingChange: (v: boolean) => void }) {
   const [showDialog, setShowDialog] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [filename, setFilename] = useState('')
@@ -729,11 +731,10 @@ function ExportPngButton({ onExportingChange }: { onExportingChange: (v: boolean
       let canvas: HTMLCanvasElement
       if (isFullCapture) {
         const bounds = getNodesBounds(nodes)
-        const padding = 16
-        const w = Math.ceil(bounds.width + padding * 2)
-        const h = Math.ceil(bounds.height + padding * 2)
-        const tx = -bounds.x + padding
-        const ty = -bounds.y + padding
+        const w = Math.ceil(bounds.width + EXPORT_PADDING * 2)
+        const h = Math.ceil(bounds.height + EXPORT_PADDING * 2)
+        const tx = -bounds.x + EXPORT_PADDING
+        const ty = -bounds.y + EXPORT_PADDING
         canvas = await toCanvas(flowEl, {
           backgroundColor: bgColor,
           width: w,
@@ -748,7 +749,7 @@ function ExportPngButton({ onExportingChange }: { onExportingChange: (v: boolean
         })
       } else {
         const flowContainer = document.querySelector('.react-flow') as HTMLElement
-        if (!flowContainer) return
+        if (!flowContainer) throw new Error('Topology container not found')
         const { width: vw, height: vh } = flowContainer.getBoundingClientRect()
 
         canvas = await toCanvas(flowEl, {
@@ -761,20 +762,22 @@ function ExportPngButton({ onExportingChange }: { onExportingChange: (v: boolean
       }
 
       const ext = FORMAT_EXT[format]
-      canvas.toBlob((blob) => {
-        if (!blob) return
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `${filename || 'topology'}.${ext}`
-        a.click()
-        setTimeout(() => URL.revokeObjectURL(url), 1000)
-        const sizeMB = (blob.size / 1024 / 1024).toFixed(1)
-        showSuccess(`Exported ${ext.toUpperCase()} (${sizeMB} MB)`)
-      }, format, format === 'image/webp' ? (transparent ? 1.0 : 0.92) : undefined)
+      // WebP: quality 1.0 (lossless) when transparent to avoid alpha artifacts, 0.92 for opaque. PNG ignores quality.
+      const quality = format === 'image/webp' ? (transparent ? 1.0 : 0.92) : undefined
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, format, quality))
+      if (!blob) throw new Error('Failed to create image — canvas may be too large or format unsupported')
+
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${filename || 'topology'}.${ext}`
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      const sizeMB = (blob.size / 1024 / 1024).toFixed(1)
+      showSuccess(`Exported ${ext.toUpperCase()} (${sizeMB} MB)`)
     } catch (err) {
       console.error('Failed to export topology:', err)
-      showError('Failed to export topology')
+      showError(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setExporting(false)
       onExportingChange(false)
