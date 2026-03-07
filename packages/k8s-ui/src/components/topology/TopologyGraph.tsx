@@ -9,7 +9,6 @@ import {
   useReactFlow,
   useOnViewportChange,
   useNodes,
-  getViewportForBounds,
   type Node,
   type Edge,
   type NodeTypes,
@@ -21,6 +20,7 @@ import '@xyflow/react/dist/style.css'
 import { toCanvas } from 'html-to-image'
 
 import { AlertTriangle, Download, Loader2, RotateCw, Scissors, Shield } from 'lucide-react'
+import { useToast } from '../ui/Toast'
 import { useRegisterShortcuts } from '../../hooks/useKeyboardShortcuts'
 
 import { K8sResourceNode } from './K8sResourceNode'
@@ -154,6 +154,8 @@ interface TopologyGraphProps {
   hideGroupHeader?: boolean
   onNodeClick: (node: TopologyNode) => void
   selectedNodeId?: string
+  /** Show PNG export button in controls. Default: true */
+  showExportButton?: boolean
 }
 
 export function TopologyGraph({
@@ -163,6 +165,7 @@ export function TopologyGraph({
   hideGroupHeader = false,
   onNodeClick,
   selectedNodeId,
+  showExportButton = true,
 }: TopologyGraphProps) {
   const isTrafficView = viewMode === 'traffic'
   const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[])
@@ -171,6 +174,7 @@ export function TopologyGraph({
   const [expandedPodGroups, setExpandedPodGroups] = useState<Set<string>>(new Set())
   const [layoutError, setLayoutError] = useState<string | null>(null)
   const [layoutRetryCount, setLayoutRetryCount] = useState(0)
+  const [isExporting, setIsExporting] = useState(false)
   const prevStructureRef = useRef<string>('')
   const layoutVersionRef = useRef(0) // Used to invalidate stale layout results
 
@@ -625,14 +629,14 @@ export function TopologyGraph({
         minZoom={0.1}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
-        onlyRenderVisibleElements
+        onlyRenderVisibleElements={!isExporting}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#334155" />
         <Controls
           className="bg-theme-surface border border-theme-border rounded-lg"
           showInteractive={false}
         >
-          <ExportPngButton />
+          {showExportButton && <ExportPngButton onExportingChange={setIsExporting} />}
         </Controls>
         <ViewportController structureKey={structureKey} />
       </ReactFlow>
@@ -640,15 +644,67 @@ export function TopologyGraph({
   )
 }
 
-// Export topology as PNG button (must be inside ReactFlowProvider)
-function ExportPngButton() {
-  const [exporting, setExporting] = useState(false)
-  const { getNodes, getNodesBounds } = useReactFlow()
+// Read the effective background color from the topology container
+function getTopologyBgColor(): string {
+  const el = document.querySelector('.react-flow')
+  if (el) {
+    const bg = getComputedStyle(el).backgroundColor
+    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return bg
+  }
+  return '#0f172a'
+}
 
-  const handleExport = useCallback(async (e: React.MouseEvent) => {
+// Compute export dimensions for the dialog preview
+function useExportDimensions(captureMode: 'viewport' | 'full', scale: number) {
+  const { getNodes, getNodesBounds } = useReactFlow()
+  return useMemo(() => {
+    if (captureMode === 'viewport') {
+      const el = document.querySelector('.react-flow') as HTMLElement
+      if (!el) return null
+      const { width, height } = el.getBoundingClientRect()
+      const w = Math.ceil(width)
+      const h = Math.ceil(height)
+      return { pw: w * scale, ph: h * scale }
+    }
+    const nodes = getNodes()
+    if (nodes.length === 0) return null
+    const bounds = getNodesBounds(nodes)
+    const padding = 16
+    const w = Math.ceil(bounds.width + padding * 2)
+    const h = Math.ceil(bounds.height + padding * 2)
+    return { pw: w, ph: h }
+  }, [captureMode, scale, getNodes, getNodesBounds])
+}
+
+type ImageFormat = 'image/png' | 'image/webp'
+const FORMAT_LABELS: Record<ImageFormat, string> = { 'image/png': 'PNG', 'image/webp': 'WebP' }
+const FORMAT_EXT: Record<ImageFormat, string> = { 'image/png': 'png', 'image/webp': 'webp' }
+
+// Export topology as image button + dialog (must be inside ReactFlowProvider)
+function ExportPngButton({ onExportingChange }: { onExportingChange: (v: boolean) => void }) {
+  const [showDialog, setShowDialog] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [filename, setFilename] = useState('')
+  const [transparent, setTransparent] = useState(false)
+  const [scale, setScale] = useState(2)
+  const [captureMode, setCaptureMode] = useState<'viewport' | 'full'>('full')
+  const [format, setFormat] = useState<ImageFormat>('image/webp')
+  const { getNodes, getNodesBounds } = useReactFlow()
+  const { showError, showSuccess } = useToast()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const dims = useExportDimensions(captureMode, scale)
+
+  const openDialog = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     e.preventDefault()
+    const nodes = getNodes()
+    if (nodes.length === 0) return
+    setFilename(`topology-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`)
+    setShowDialog(true)
+    setTimeout(() => inputRef.current?.select(), 50)
+  }, [getNodes])
 
+  const doExport = useCallback(async () => {
     const flowEl = document.querySelector('.react-flow__viewport') as HTMLElement
     if (!flowEl) return
 
@@ -656,52 +712,194 @@ function ExportPngButton() {
     if (nodes.length === 0) return
 
     setExporting(true)
+
+    const isFullCapture = captureMode === 'full'
+    if (isFullCapture) {
+      onExportingChange(true)
+      // Wait for React to render all off-screen nodes
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    }
+
+    // Yield to let the UI paint the exporting state before heavy DOM work
+    await new Promise(resolve => setTimeout(resolve, 50))
+
     try {
-      const bounds = getNodesBounds(nodes)
-      const padding = 100
-      const w = Math.ceil(bounds.width + padding * 2)
-      const h = Math.ceil(bounds.height + padding * 2)
-      const vp = getViewportForBounds(bounds, w, h, 0.5, 2, padding)
+      const bgColor = transparent ? 'transparent' : getTopologyBgColor()
 
-      const canvas = await toCanvas(flowEl, {
-        backgroundColor: '#0f172a',
-        width: w,
-        height: h,
-        pixelRatio: 2,
-        skipFonts: true,
-        style: {
-          width: `${w}px`,
-          height: `${h}px`,
-          transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})`,
-        },
-      })
+      let canvas: HTMLCanvasElement
+      if (isFullCapture) {
+        const bounds = getNodesBounds(nodes)
+        const padding = 16
+        const w = Math.ceil(bounds.width + padding * 2)
+        const h = Math.ceil(bounds.height + padding * 2)
+        const tx = -bounds.x + padding
+        const ty = -bounds.y + padding
+        canvas = await toCanvas(flowEl, {
+          backgroundColor: bgColor,
+          width: w,
+          height: h,
+          pixelRatio: 1,
+          skipFonts: true,
+          style: {
+            width: `${w}px`,
+            height: `${h}px`,
+            transform: `translate(${tx}px, ${ty}px) scale(1)`,
+          },
+        })
+      } else {
+        const flowContainer = document.querySelector('.react-flow') as HTMLElement
+        if (!flowContainer) return
+        const { width: vw, height: vh } = flowContainer.getBoundingClientRect()
 
+        canvas = await toCanvas(flowEl, {
+          backgroundColor: bgColor,
+          width: Math.ceil(vw),
+          height: Math.ceil(vh),
+          pixelRatio: scale,
+          skipFonts: true,
+        })
+      }
+
+      const ext = FORMAT_EXT[format]
       canvas.toBlob((blob) => {
         if (!blob) return
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = `topology-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.png`
+        a.download = `${filename || 'topology'}.${ext}`
         a.click()
         setTimeout(() => URL.revokeObjectURL(url), 1000)
-      }, 'image/png')
+        const sizeMB = (blob.size / 1024 / 1024).toFixed(1)
+        showSuccess(`Exported ${ext.toUpperCase()} (${sizeMB} MB)`)
+      }, format, format === 'image/webp' ? (transparent ? 1.0 : 0.92) : undefined)
     } catch (err) {
       console.error('Failed to export topology:', err)
-      alert('Failed to export: ' + (err instanceof Error ? err.message : String(err)))
+      showError('Failed to export topology')
     } finally {
       setExporting(false)
+      onExportingChange(false)
+      setShowDialog(false)
     }
-  }, [getNodes, getNodesBounds])
+  }, [getNodes, getNodesBounds, transparent, scale, captureMode, format, filename, showError, showSuccess, onExportingChange])
+
+  useEffect(() => {
+    if (!showDialog) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); setShowDialog(false) }
+      if (e.key === 'Enter' && !exporting) { e.stopPropagation(); doExport() }
+    }
+    document.addEventListener('keydown', handleKey, true)
+    return () => document.removeEventListener('keydown', handleKey, true)
+  }, [showDialog, exporting, doExport])
 
   return (
-    <button
-      className="react-flow__controls-button"
-      onClick={handleExport}
-      disabled={exporting}
-      title="Export as PNG"
-    >
-      {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-    </button>
+    <>
+      <button
+        className="react-flow__controls-button"
+        onClick={openDialog}
+        disabled={exporting}
+        title="Export as image"
+      >
+        {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+      </button>
+      {showDialog && (
+        <div
+          className="absolute bottom-12 left-0 z-50 bg-theme-surface border border-theme-border rounded-lg shadow-2xl p-3 w-72"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="text-sm font-medium text-theme-text-primary mb-3">Export topology</div>
+          <label className="block text-xs text-theme-text-secondary mb-1">Filename</label>
+          <input
+            ref={inputRef}
+            type="text"
+            value={filename}
+            onChange={(e) => setFilename(e.target.value)}
+            className="w-full px-2 py-1.5 text-sm bg-theme-base border border-theme-border rounded text-theme-text-primary outline-none focus:border-blue-500 mb-3"
+          />
+          <label className="block text-xs text-theme-text-secondary mb-1">Capture</label>
+          <div className="flex gap-1 mb-3">
+            {(['full', 'viewport'] as const).map(mode => (
+              <button
+                key={mode}
+                onClick={() => setCaptureMode(mode)}
+                className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${captureMode === mode ? 'bg-blue-600 text-white' : 'bg-theme-base text-theme-text-secondary hover:text-theme-text-primary border border-theme-border'}`}
+              >
+                {mode === 'full' ? 'Entire graph' : 'Visible area'}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-3 mb-2">
+            <div className="flex-1">
+              <label className="block text-xs text-theme-text-secondary mb-1">Format</label>
+              <div className="flex gap-1">
+                {(['image/webp', 'image/png'] as ImageFormat[]).map(f => (
+                  <button
+                    key={f}
+                    onClick={() => setFormat(f)}
+                    className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${format === f ? 'bg-blue-600 text-white' : 'bg-theme-base text-theme-text-secondary hover:text-theme-text-primary border border-theme-border'}`}
+                  >
+                    {FORMAT_LABELS[f]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {captureMode === 'viewport' && (
+              <div className="flex-1">
+                <label className="block text-xs text-theme-text-secondary mb-1">Quality</label>
+                <select
+                  value={scale}
+                  onChange={(e) => setScale(Number(e.target.value))}
+                  className="w-full px-2 py-1.5 text-sm bg-theme-base border border-theme-border rounded text-theme-text-primary outline-none focus:border-blue-500"
+                >
+                  <option value={1}>Standard</option>
+                  <option value={2}>High (2x)</option>
+                  <option value={3}>Ultra (3x)</option>
+                </select>
+              </div>
+            )}
+          </div>
+          {dims && (
+            <div className="text-[10px] text-theme-text-tertiary mb-2">
+              Output: {dims.pw} × {dims.ph} px
+            </div>
+          )}
+          <div className="flex items-center mb-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={transparent}
+                onChange={(e) => setTransparent(e.target.checked)}
+                className="rounded"
+              />
+              <span className="text-xs text-theme-text-secondary">Transparent background</span>
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowDialog(false)}
+              className="flex-1 px-3 py-1.5 text-sm text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={doExport}
+              disabled={exporting}
+              className="flex-1 px-3 py-1.5 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+            >
+              {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+              Export
+            </button>
+          </div>
+        </div>
+      )}
+      {exporting && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
+          <div className="bg-theme-surface border border-theme-border rounded-lg px-5 py-4 shadow-2xl">
+            <div className="text-sm text-theme-text-primary animate-pulse">Exporting topology…</div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
