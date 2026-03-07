@@ -681,6 +681,14 @@ const FORMAT_LABELS: Record<ImageFormat, string> = { 'image/png': 'PNG', 'image/
 const FORMAT_EXT: Record<ImageFormat, string> = { 'image/png': 'png', 'image/webp': 'webp' }
 
 const EXPORT_PADDING = 16
+const EXPORT_TIMEOUT_MS = 30_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(msg)), ms)),
+  ])
+}
 
 // Export topology as image button + dialog (must be inside ReactFlowProvider)
 function ExportImageButton({ onExportingChange }: { onExportingChange: (v: boolean) => void }) {
@@ -735,7 +743,7 @@ function ExportImageButton({ onExportingChange }: { onExportingChange: (v: boole
         const h = Math.ceil(bounds.height + EXPORT_PADDING * 2)
         const tx = -bounds.x + EXPORT_PADDING
         const ty = -bounds.y + EXPORT_PADDING
-        canvas = await toCanvas(flowEl, {
+        canvas = await withTimeout(toCanvas(flowEl, {
           backgroundColor: bgColor,
           width: w,
           height: h,
@@ -746,19 +754,19 @@ function ExportImageButton({ onExportingChange }: { onExportingChange: (v: boole
             height: `${h}px`,
             transform: `translate(${tx}px, ${ty}px) scale(1)`,
           },
-        })
+        }), EXPORT_TIMEOUT_MS, 'Export timed out — topology may be too large')
       } else {
         const flowContainer = document.querySelector('.react-flow') as HTMLElement
         if (!flowContainer) throw new Error('Topology container not found')
         const { width: vw, height: vh } = flowContainer.getBoundingClientRect()
 
-        canvas = await toCanvas(flowEl, {
+        canvas = await withTimeout(toCanvas(flowEl, {
           backgroundColor: bgColor,
           width: Math.ceil(vw),
           height: Math.ceil(vh),
           pixelRatio: scale,
           skipFonts: true,
-        })
+        }), EXPORT_TIMEOUT_MS, 'Export timed out — topology may be too large')
       }
 
       const ext = FORMAT_EXT[format]
