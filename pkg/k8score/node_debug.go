@@ -1,0 +1,147 @@
+package k8score
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+)
+
+// NodeDebugPodResult contains the coordinates of a created debug pod.
+type NodeDebugPodResult struct {
+	PodName       string `json:"podName"`
+	Namespace     string `json:"namespace"`
+	ContainerName string `json:"containerName"`
+	NodeName      string `json:"nodeName"`
+}
+
+// sanitizeNodeName replaces characters not allowed in pod names with dashes.
+var nodeNameSanitizer = regexp.MustCompile(`[^a-z0-9-]`)
+
+func sanitizeNodeName(name string) string {
+	s := nodeNameSanitizer.ReplaceAllString(name, "-")
+	// Trim leading/trailing dashes and collapse consecutive dashes
+	s = regexp.MustCompile(`-{2,}`).ReplaceAllString(s, "-")
+	if len(s) > 40 {
+		s = s[:40]
+	}
+	return s
+}
+
+// CreateNodeDebugPod creates a privileged debug pod scheduled on the given node.
+// The pod runs with host PID/network/IPC and mounts the host root at /host.
+func CreateNodeDebugPod(ctx context.Context, client kubernetes.Interface, nodeName, image string) (*NodeDebugPodResult, error) {
+	if client == nil {
+		return nil, fmt.Errorf("kubernetes client not initialized")
+	}
+
+	if image == "" {
+		image = "busybox:latest"
+	}
+
+	containerName := "debug"
+	sanitized := sanitizeNodeName(nodeName)
+	podName := fmt.Sprintf("radar-node-debug-%s-%d", sanitized, time.Now().Unix())
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: "default",
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "radar",
+				"radar.skyhook.io/debug-node":  nodeName,
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:      nodeName,
+			HostPID:       true,
+			HostNetwork:   true,
+			HostIPC:       true,
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{{
+				Name:    containerName,
+				Image:   image,
+				Command: []string{"sleep", "infinity"},
+				Stdin:   true,
+				TTY:     true,
+				SecurityContext: &corev1.SecurityContext{
+					Privileged: func() *bool { b := true; return &b }(),
+				},
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      "host-root",
+					MountPath: "/host",
+				}},
+			}},
+			Volumes: []corev1.Volume{{
+				Name: "host-root",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/",
+					},
+				},
+			}},
+			Tolerations: []corev1.Toleration{{
+				Operator: corev1.TolerationOpExists,
+			}},
+		},
+	}
+
+	created, err := client.CoreV1().Pods("default").Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create debug pod on node %s: %w", nodeName, err)
+	}
+
+	return &NodeDebugPodResult{
+		PodName:       created.Name,
+		Namespace:     created.Namespace,
+		ContainerName: containerName,
+		NodeName:      nodeName,
+	}, nil
+}
+
+// WaitForPodRunning polls until the named pod reaches Running phase or the timeout expires.
+func WaitForPodRunning(ctx context.Context, client kubernetes.Interface, namespace, podName string, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("timed out waiting for pod %s/%s to reach Running state", namespace, podName)
+		case <-ticker.C:
+			pod, err := client.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to get pod %s/%s: %w", namespace, podName, err)
+			}
+			if pod.Status.Phase == corev1.PodRunning {
+				return nil
+			}
+			if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+				return fmt.Errorf("pod %s/%s entered %s phase", namespace, podName, pod.Status.Phase)
+			}
+		}
+	}
+}
+
+// DeleteNodeDebugPods deletes all debug pods for the given node.
+func DeleteNodeDebugPods(ctx context.Context, client kubernetes.Interface, nodeName string) error {
+	if client == nil {
+		return fmt.Errorf("kubernetes client not initialized")
+	}
+
+	gracePeriod := int64(0)
+	return client.CoreV1().Pods("default").DeleteCollection(ctx,
+		metav1.DeleteOptions{GracePeriodSeconds: &gracePeriod},
+		metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("radar.skyhook.io/debug-node=%s", nodeName),
+		},
+	)
+}
+

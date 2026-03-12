@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, ReactNode } from 'react'
 
-export type DockTabType = 'terminal' | 'logs' | 'workload-logs'
+export type DockTabType = 'terminal' | 'logs' | 'workload-logs' | 'node-terminal'
 
 export interface DockTab {
   id: string
@@ -18,6 +18,8 @@ export interface DockTab {
   // Workload logs props
   workloadKind?: string
   workloadName?: string
+  // Node terminal props
+  nodeName?: string
 }
 
 export interface DockContextValue {
@@ -53,6 +55,9 @@ export function DockProvider({ children }: { children: ReactNode }) {
         return t.namespace === tabData.namespace &&
                t.workloadKind === tabData.workloadKind &&
                t.workloadName === tabData.workloadName
+      }
+      if (t.type === 'node-terminal') {
+        return t.nodeName === tabData.nodeName
       }
       return t.namespace === tabData.namespace &&
              t.podName === tabData.podName &&
@@ -204,6 +209,26 @@ export function useOpenWorkloadLogs() {
       namespace: opts.namespace,
       workloadKind: opts.workloadKind,
       workloadName: opts.workloadName,
+      orgId: opts.orgId,
+      clusterId: opts.clusterId,
+      clusterName: opts.clusterName,
+    })
+  }
+}
+
+export function useOpenNodeTerminal() {
+  const { addTab } = useDock()
+
+  return (opts: {
+    nodeName: string
+    orgId?: string
+    clusterId?: string
+    clusterName?: string
+  }) => {
+    addTab({
+      type: 'node-terminal',
+      title: `node: ${opts.nodeName}`,
+      nodeName: opts.nodeName,
       orgId: opts.orgId,
       clusterId: opts.clusterId,
       clusterName: opts.clusterName,

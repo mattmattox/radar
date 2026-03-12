@@ -159,6 +159,10 @@ func (s *Server) setupRoutes() {
 			// Pod debug (ephemeral container)
 			r.Post("/pods/{namespace}/{name}/debug", s.handleCreateDebugContainer)
 
+			// Node debug (privileged debug pod)
+			r.Post("/nodes/{name}/debug", s.handleNodeDebug)
+			r.Delete("/nodes/{name}/debug", s.handleNodeDebugCleanup)
+
 			// Pod file browser
 			r.Get("/pods/{namespace}/{name}/files", s.handlePodFileList)
 

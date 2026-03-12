@@ -2,6 +2,7 @@ import { BottomDock as K8sBottomDock, DockTab } from '@skyhook-io/k8s-ui'
 import { TerminalTab } from './TerminalTab'
 import { LogsTab } from './LogsTab'
 import { WorkloadLogsTab } from './WorkloadLogsTab'
+import { NodeTerminalTab } from './NodeTerminalTab'
 
 function renderTabContent(tab: DockTab, isActive: boolean) {
   if (tab.type === 'terminal') {
@@ -33,6 +34,15 @@ function renderTabContent(tab: DockTab, isActive: boolean) {
         namespace={tab.namespace!}
         workloadKind={tab.workloadKind!}
         workloadName={tab.workloadName!}
+      />
+    )
+  }
+
+  if (tab.type === 'node-terminal') {
+    return (
+      <NodeTerminalTab
+        nodeName={tab.nodeName!}
+        isActive={isActive}
       />
     )
   }

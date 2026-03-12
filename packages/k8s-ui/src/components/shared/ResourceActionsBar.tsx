@@ -89,6 +89,9 @@ interface ResourceActionsBarProps {
   isArgoSuspending?: boolean
   onArgoResume?: (params: { namespace: string; name: string }) => void
   isArgoResuming?: boolean
+
+  // Node debug shell
+  onOpenNodeTerminal?: (params: { nodeName: string }) => void
 }
 
 export function ResourceActionsBar({
@@ -110,6 +113,7 @@ export function ResourceActionsBar({
   onArgoRefresh, isArgoRefreshing,
   onArgoSuspend, isArgoSuspending,
   onArgoResume, isArgoResuming,
+  onOpenNodeTerminal,
 }: ResourceActionsBarProps) {
   const kind = resource.kind.toLowerCase()
 
@@ -225,6 +229,17 @@ export function ResourceActionsBar({
             })
           )}
         </>
+      )}
+
+      {/* Node actions */}
+      {kind === 'nodes' && canExec && onOpenNodeTerminal && (
+        <button
+          onClick={() => onOpenNodeTerminal({ nodeName: resource.name })}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+        >
+          <Terminal className="w-3.5 h-3.5" />
+          Debug Shell
+        </button>
       )}
 
       {/* Service actions */}
