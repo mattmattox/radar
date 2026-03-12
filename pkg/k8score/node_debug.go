@@ -20,16 +20,30 @@ type NodeDebugPodResult struct {
 }
 
 var nodeNameSanitizer = regexp.MustCompile(`[^a-z0-9-]`)
+var collapseDashes = regexp.MustCompile(`-{2,}`)
+var trimDashes = regexp.MustCompile(`^-+|-+$`)
 
 // sanitizeNodeName replaces characters not allowed in pod names with dashes.
-
 func sanitizeNodeName(name string) string {
 	s := nodeNameSanitizer.ReplaceAllString(name, "-")
-	// Trim leading/trailing dashes and collapse consecutive dashes
-	s = regexp.MustCompile(`-{2,}`).ReplaceAllString(s, "-")
+	s = collapseDashes.ReplaceAllString(s, "-")
+	s = trimDashes.ReplaceAllString(s, "")
 	if len(s) > 40 {
 		s = s[:40]
 	}
+	return s
+}
+
+// sanitizeLabelValue ensures a string is valid as a Kubernetes label value
+// (max 63 chars, alphanumeric start/end, interior allows [a-zA-Z0-9._-]).
+func sanitizeLabelValue(v string) string {
+	s := nodeNameSanitizer.ReplaceAllString(v, "-")
+	s = collapseDashes.ReplaceAllString(s, "-")
+	s = trimDashes.ReplaceAllString(s, "")
+	if len(s) > 63 {
+		s = s[:63]
+	}
+	s = trimDashes.ReplaceAllString(s, "")
 	return s
 }
 
@@ -46,6 +60,7 @@ func CreateNodeDebugPod(ctx context.Context, client kubernetes.Interface, nodeNa
 
 	containerName := "debug"
 	sanitized := sanitizeNodeName(nodeName)
+	labelValue := sanitizeLabelValue(nodeName)
 	podName := fmt.Sprintf("radar-node-debug-%s-%d", sanitized, time.Now().Unix())
 
 	pod := &corev1.Pod{
@@ -54,7 +69,7 @@ func CreateNodeDebugPod(ctx context.Context, client kubernetes.Interface, nodeNa
 			Namespace: "default",
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "radar",
-				"radar.skyhook.io/debug-node":  nodeName,
+				"radar.skyhook.io/debug-node":  labelValue,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -142,7 +157,7 @@ func DeleteNodeDebugPods(ctx context.Context, client kubernetes.Interface, nodeN
 	return client.CoreV1().Pods("default").DeleteCollection(ctx,
 		metav1.DeleteOptions{GracePeriodSeconds: &gracePeriod},
 		metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("radar.skyhook.io/debug-node=%s", nodeName),
+			LabelSelector: fmt.Sprintf("radar.skyhook.io/debug-node=%s", sanitizeLabelValue(nodeName)),
 		},
 	)
 }

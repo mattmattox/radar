@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/skyhook-io/radar/internal/k8s"
@@ -366,13 +367,16 @@ func (s *Server) handleNodeDebug(w http.ResponseWriter, r *http.Request) {
 	// Create the debug pod
 	result, err := k8score.CreateNodeDebugPod(r.Context(), client, nodeName, req.Image)
 	if err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden") {
-			s.writeError(w, http.StatusForbidden, errMsg)
+		if apierrors.IsForbidden(err) {
+			s.writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if apierrors.IsNotFound(err) {
+			s.writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
 		log.Printf("[exec] Failed to create node debug pod for %s: %v", nodeName, err)
-		s.writeError(w, http.StatusInternalServerError, errMsg)
+		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 

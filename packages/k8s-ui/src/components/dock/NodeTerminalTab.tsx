@@ -41,6 +41,7 @@ export function NodeTerminalTab({
   useEffect(() => { createSessionRef.current = createSession }, [createSession])
 
   const createPod = useCallback(async () => {
+    cleanupDoneRef.current = false
     setIsCreating(true)
     setError(null)
     try {

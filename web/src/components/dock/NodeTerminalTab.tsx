@@ -33,7 +33,7 @@ export function NodeTerminalTab({ nodeName, isActive }: NodeTerminalTabProps) {
   }
 
   const createSession = async (namespace: string, podName: string, containerName: string) => ({
-    wsUrl: `${protocol}//${window.location.host}/api/pods/${namespace}/${podName}/exec?container=${containerName}`,
+    wsUrl: `${protocol}//${window.location.host}/api/pods/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}/exec?container=${encodeURIComponent(containerName)}`,
   })
 
   return (
