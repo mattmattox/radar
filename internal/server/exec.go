@@ -333,8 +333,18 @@ type NodeDebugRequest struct {
 	Image string `json:"image,omitempty"`
 }
 
+// NodeDebugResponse extends the pod result with a status field.
+type NodeDebugResponse struct {
+	k8score.NodeDebugPodResult
+	Status string `json:"status"`
+}
+
 // handleNodeDebug creates a privileged debug pod on a node
 func (s *Server) handleNodeDebug(w http.ResponseWriter, r *http.Request) {
+	if !s.requireConnected(w) {
+		return
+	}
+
 	nodeName := chi.URLParam(r, "name")
 	if nodeName == "" {
 		s.writeError(w, http.StatusBadRequest, "node name is required")
@@ -367,17 +377,25 @@ func (s *Server) handleNodeDebug(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Wait for the pod to be running
+	status := "running"
 	err = k8score.WaitForPodRunning(r.Context(), client, result.Namespace, result.PodName, 60*time.Second)
 	if err != nil {
+		status = "pending"
 		log.Printf("[exec] Node debug pod %s created but not running: %v", result.PodName, err)
-		// Still return the pod info — frontend can retry exec
 	}
 
-	s.writeJSON(w, result)
+	s.writeJSON(w, NodeDebugResponse{
+		NodeDebugPodResult: *result,
+		Status:             status,
+	})
 }
 
 // handleNodeDebugCleanup deletes debug pods for a node
 func (s *Server) handleNodeDebugCleanup(w http.ResponseWriter, r *http.Request) {
+	if !s.requireConnected(w) {
+		return
+	}
+
 	nodeName := chi.URLParam(r, "name")
 	if nodeName == "" {
 		s.writeError(w, http.StatusBadRequest, "node name is required")

@@ -22,9 +22,14 @@ export function NodeTerminalTab({ nodeName, isActive }: NodeTerminalTabProps) {
   }
 
   const cleanupNodeDebugPod = async (name: string) => {
-    await fetch(`/api/nodes/${encodeURIComponent(name)}/debug`, {
-      method: 'DELETE',
-    }).catch(() => {})
+    try {
+      await fetch(`/api/nodes/${encodeURIComponent(name)}/debug`, {
+        method: 'DELETE',
+        keepalive: true,
+      })
+    } catch (err) {
+      console.warn(`[NodeTerminal] Failed to cleanup debug pod for node ${name}:`, err)
+    }
   }
 
   const createSession = async (namespace: string, podName: string, containerName: string) => ({

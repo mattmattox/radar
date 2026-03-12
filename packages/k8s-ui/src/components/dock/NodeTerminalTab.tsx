@@ -58,17 +58,19 @@ export function NodeTerminalTab({
     return () => {
       if (!cleanupDoneRef.current) {
         cleanupDoneRef.current = true
-        cleanupNodeDebugPodRef.current(nodeName).catch(() => {})
+        cleanupNodeDebugPodRef.current(nodeName).catch((err) => {
+          console.warn('[NodeTerminal] Cleanup on unmount failed:', err)
+        })
       }
     }
   }, [nodeName, createPod])
 
-  // Best-effort cleanup on page unload
+  // Best-effort cleanup on page unload — uses keepalive so the browser
+  // does not cancel the request when the page navigates away.
   useEffect(() => {
     const handleUnload = () => {
       if (!cleanupDoneRef.current) {
         cleanupDoneRef.current = true
-        // navigator.sendBeacon isn't suitable for DELETE, but we try anyway
         cleanupNodeDebugPodRef.current(nodeName).catch(() => {})
       }
     }

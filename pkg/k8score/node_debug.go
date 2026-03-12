@@ -19,8 +19,9 @@ type NodeDebugPodResult struct {
 	NodeName      string `json:"nodeName"`
 }
 
-// sanitizeNodeName replaces characters not allowed in pod names with dashes.
 var nodeNameSanitizer = regexp.MustCompile(`[^a-z0-9-]`)
+
+// sanitizeNodeName replaces characters not allowed in pod names with dashes.
 
 func sanitizeNodeName(name string) string {
 	s := nodeNameSanitizer.ReplaceAllString(name, "-")
@@ -61,7 +62,8 @@ func CreateNodeDebugPod(ctx context.Context, client kubernetes.Interface, nodeNa
 			HostPID:       true,
 			HostNetwork:   true,
 			HostIPC:       true,
-			RestartPolicy: corev1.RestartPolicyNever,
+			RestartPolicy:       corev1.RestartPolicyNever,
+			ActiveDeadlineSeconds: func() *int64 { d := int64(3600); return &d }(),
 			Containers: []corev1.Container{{
 				Name:    containerName,
 				Image:   image,
