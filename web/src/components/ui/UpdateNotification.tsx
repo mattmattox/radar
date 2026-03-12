@@ -97,8 +97,9 @@ export function UpdateNotification() {
   }
 
   const handleStartDesktopUpdate = () => {
-    setDesktopUpdating(true)
-    startUpdate.mutate()
+    startUpdate.mutate(undefined, {
+      onSuccess: () => setDesktopUpdating(true),
+    })
   }
 
   // Don't show if no update available, dismissed, or error
@@ -130,6 +131,7 @@ export function UpdateNotification() {
               state={effectiveState}
               progress={updateStatus?.progress}
               error={updateStatus?.error}
+              starting={startUpdate.isPending}
               onStart={handleStartDesktopUpdate}
               onApply={() => applyUpdate.mutate()}
               onRetry={handleStartDesktopUpdate}
@@ -208,6 +210,7 @@ function DesktopUpdateControls({
   state,
   progress,
   error,
+  starting,
   onStart,
   onApply,
   onRetry,
@@ -215,6 +218,7 @@ function DesktopUpdateControls({
   state: DesktopUpdateState
   progress?: number
   error?: string
+  starting?: boolean
   onStart: () => void
   onApply: () => void
   onRetry: () => void
@@ -224,9 +228,17 @@ function DesktopUpdateControls({
       return (
         <button
           onClick={onStart}
-          className="mt-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded transition-colors"
+          disabled={starting}
+          className="mt-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded transition-colors disabled:opacity-50"
         >
-          Update Now
+          {starting ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Starting...
+            </span>
+          ) : (
+            'Update Now'
+          )}
         </button>
       )
 
@@ -268,13 +280,18 @@ function DesktopUpdateControls({
     case 'error':
       return (
         <div className="mt-2 space-y-1.5">
-          <p className="text-xs text-red-400">{error || 'Update failed'}</p>
+          {!starting && <p className="text-xs text-red-400">{error || 'Update failed'}</p>}
           <button
             onClick={onRetry}
-            className="inline-flex items-center gap-1 px-3 py-1.5 bg-theme-elevated hover:bg-theme-surface-hover text-xs font-medium text-theme-text-primary rounded transition-colors"
+            disabled={starting}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-theme-elevated hover:bg-theme-surface-hover text-xs font-medium text-theme-text-primary rounded transition-colors disabled:opacity-50"
           >
-            <RotateCw className="w-3 h-3" />
-            Retry
+            {starting ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <RotateCw className="w-3 h-3" />
+            )}
+            {starting ? 'Starting...' : 'Retry'}
           </button>
         </div>
       )
