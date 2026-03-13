@@ -78,9 +78,21 @@ func createMenu(desktopApp *DesktopApp) *menu.Menu {
 		runtime.WindowReloadApp(desktopApp.ctx)
 	})
 	viewMenu.AddSeparator()
-	viewMenu.AddText("Zoom In", keys.CmdOrCtrl("="), nil)
-	viewMenu.AddText("Zoom Out", keys.CmdOrCtrl("-"), nil)
-	viewMenu.AddText("Reset Zoom", keys.CmdOrCtrl("0"), nil)
+	viewMenu.AddText("Zoom In", keys.CmdOrCtrl("="), func(_ *menu.CallbackData) {
+		runtime.WindowExecJS(desktopApp.ctx, `
+			var z = parseFloat(document.body.style.zoom || '1');
+			document.body.style.zoom = String(Math.min(2.0, z + 0.1));
+		`)
+	})
+	viewMenu.AddText("Zoom Out", keys.CmdOrCtrl("-"), func(_ *menu.CallbackData) {
+		runtime.WindowExecJS(desktopApp.ctx, `
+			var z = parseFloat(document.body.style.zoom || '1');
+			document.body.style.zoom = String(Math.max(0.5, z - 0.1));
+		`)
+	})
+	viewMenu.AddText("Reset Zoom", keys.CmdOrCtrl("0"), func(_ *menu.CallbackData) {
+		runtime.WindowExecJS(desktopApp.ctx, "document.body.style.zoom = '1';")
+	})
 
 	// Help menu
 	helpMenu := appMenu.AddSubmenu("Help")
