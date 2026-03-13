@@ -35,6 +35,7 @@ type AppConfig struct {
 	DebugEvents      bool
 	FakeInCluster    bool
 	DisableHelmWrite bool
+	DisableExec      bool
 	TimelineStorage  string
 	TimelineDBPath   string
 	PrometheusURL    string
@@ -48,6 +49,7 @@ func SetGlobals(cfg AppConfig) {
 	k8s.TimingLogs = cfg.DevMode
 	k8s.ForceInCluster = cfg.FakeInCluster
 	k8s.ForceDisableHelmWrite = cfg.DisableHelmWrite
+	k8s.ForceDisableExec = cfg.DisableExec
 	versionpkg.SetCurrent(cfg.Version)
 }
 

@@ -72,6 +72,8 @@ var (
 
 	// ForceDisableHelmWrite overrides the helmWrite capability to false (for dev testing)
 	ForceDisableHelmWrite bool
+	// ForceDisableExec overrides the exec capability to false (for dev testing)
+	ForceDisableExec bool
 )
 
 // CheckCapabilities checks RBAC permissions using SelfSubjectAccessReview.
@@ -165,6 +167,9 @@ func CheckCapabilities(ctx context.Context) (*Capabilities, error) {
 
 	if ForceDisableHelmWrite {
 		caps.HelmWrite = false
+	}
+	if ForceDisableExec {
+		caps.Exec = false
 	}
 
 	// Cache the result. Use a short TTL if API errors caused fail-closed results,

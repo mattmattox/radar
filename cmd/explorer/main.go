@@ -41,6 +41,7 @@ func main() {
 	debugEvents := flag.Bool("debug-events", false, "Enable verbose event debugging (logs all event drops)")
 	fakeInCluster := flag.Bool("fake-in-cluster", false, "Simulate in-cluster mode for testing (shows kubectl copy buttons instead of port-forward)")
 	disableHelmWrite := flag.Bool("disable-helm-write", false, "Simulate restricted Helm permissions (disables install/upgrade/rollback/uninstall)")
+	disableExec := flag.Bool("disable-exec", false, "Simulate restricted exec permissions (disables terminal, debug shell)")
 	// Timeline storage options
 	timelineStorage := flag.String("timeline-storage", fileCfg.TimelineStorageOr("memory"), "Timeline storage backend: memory or sqlite")
 	timelineDBPath := flag.String("timeline-db", fileCfg.TimelineDBPath, "Path to timeline database file (default: ~/.radar/timeline.db)")
@@ -80,6 +81,7 @@ func main() {
 		DebugEvents:      *debugEvents,
 		FakeInCluster:    *fakeInCluster,
 		DisableHelmWrite: *disableHelmWrite,
+		DisableExec:      *disableExec,
 		TimelineStorage:  *timelineStorage,
 		TimelineDBPath:   *timelineDBPath,
 		PrometheusURL:    *prometheusURL,
