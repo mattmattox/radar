@@ -10,7 +10,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useOpenTerminal, useOpenLogs } from '../dock'
 import { useStartPortForward } from '../portforward/PortForwardManager'
 import { useAvailablePorts } from '../../api/client'
-import { useCanExec, useCanViewLogs, useCanPortForward } from '../../contexts/CapabilitiesContext'
+import { useNamespacedCapabilities } from '../../contexts/CapabilitiesContext'
 
 interface OwnedResourcesProps {
   resources: HelmOwnedResource[]
@@ -306,10 +306,8 @@ function PodQuickActions({ namespace, podName, isRunning }: PodQuickActionsProps
   const startPortForward = useStartPortForward()
   const { data: portsData, isLoading: portsLoading } = useAvailablePorts('pod', namespace, podName)
 
-  // Check capabilities
-  const canExec = useCanExec()
-  const canViewLogs = useCanViewLogs()
-  const canPortForward = useCanPortForward()
+  // Capabilities (namespace-scoped: re-checks RBAC if cluster-wide denied)
+  const { canExec, canViewLogs, canPortForward } = useNamespacedCapabilities(namespace)
 
   const [isLoadingAction, setIsLoadingAction] = useState(false)
 
@@ -430,7 +428,7 @@ interface ServiceQuickActionsProps {
 function ServiceQuickActions({ namespace, serviceName }: ServiceQuickActionsProps) {
   const startPortForward = useStartPortForward()
   const { data: portsData, isLoading: portsLoading } = useAvailablePorts('service', namespace, serviceName)
-  const canPortForward = useCanPortForward()
+  const { canPortForward } = useNamespacedCapabilities(namespace)
 
   const handlePortForward = useCallback((port: number) => {
     startPortForward.mutate({

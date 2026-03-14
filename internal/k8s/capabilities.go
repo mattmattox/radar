@@ -65,12 +65,26 @@ type Capabilities struct {
 	Resources     *ResourcePermissions `json:"resources,omitempty"` // Per-resource-type permissions
 }
 
+// NamespaceCapabilities holds namespace-scoped overrides for capabilities that
+// were denied cluster-wide but may be allowed in a specific namespace.
+type NamespaceCapabilities struct {
+	Exec        bool `json:"exec"`
+	Logs        bool `json:"logs"`
+	PortForward bool `json:"portForward"`
+}
+
 var (
 	cachedCapabilities   *Capabilities
 	capabilitiesMu       sync.RWMutex
 	capabilitiesExpiry   time.Time
 	capabilitiesTTL      = 60 * time.Second
 	capabilitiesErrorTTL = 5 * time.Second // Short TTL when API errors caused fail-closed results
+
+	// Per-namespace capability cache for lazy RBAC re-checks.
+	// When cluster-wide checks deny exec/logs/portForward, we re-check scoped
+	// to the specific namespace the user is viewing.
+	nsCapCache   map[string]*nsCapEntry
+	nsCapMu      sync.RWMutex
 
 	// ForceDisableHelmWrite overrides the helmWrite capability to false (for dev testing)
 	ForceDisableHelmWrite bool
@@ -79,6 +93,11 @@ var (
 	// ForceDisableLocalTerminal overrides the localTerminal capability to false (for dev testing)
 	ForceDisableLocalTerminal bool
 )
+
+type nsCapEntry struct {
+	caps   NamespaceCapabilities
+	expiry time.Time
+}
 
 // CheckCapabilities checks RBAC permissions using SelfSubjectAccessReview.
 // Results are cached for 60 seconds normally, or 5 seconds when API errors
@@ -220,8 +239,102 @@ func GetCachedCapabilities() *Capabilities {
 // InvalidateCapabilitiesCache forces the next CheckCapabilities call to refresh
 func InvalidateCapabilitiesCache() {
 	capabilitiesMu.Lock()
-	defer capabilitiesMu.Unlock()
 	cachedCapabilities = nil
+	capabilitiesMu.Unlock()
+
+	// Also clear namespace-scoped cache
+	nsCapMu.Lock()
+	nsCapCache = nil
+	nsCapMu.Unlock()
+}
+
+// CheckNamespaceCapabilities performs namespace-scoped RBAC checks for capabilities
+// that were denied cluster-wide. This enables lazy re-checking when a user views
+// a pod in a specific namespace — they may have namespace-scoped RoleBindings that
+// grant exec/logs/portForward even though cluster-wide checks returned false.
+//
+// Returns nil if no namespace-scoped re-check is needed (all capabilities already allowed).
+func CheckNamespaceCapabilities(ctx context.Context, namespace string, globalCaps *Capabilities) (*NamespaceCapabilities, error) {
+	if namespace == "" {
+		return nil, nil
+	}
+
+	// If all three are already allowed globally, no need for namespace check
+	if globalCaps.Exec && globalCaps.Logs && globalCaps.PortForward {
+		return nil, nil
+	}
+
+	// Check namespace cache
+	nsCapMu.RLock()
+	if nsCapCache != nil {
+		if entry, ok := nsCapCache[namespace]; ok && time.Now().Before(entry.expiry) {
+			result := entry.caps
+			nsCapMu.RUnlock()
+			return &result, nil
+		}
+	}
+	nsCapMu.RUnlock()
+
+	if GetClient() == nil {
+		return &NamespaceCapabilities{}, nil
+	}
+
+	checkCtx, cancel := NewOperationContext(10 * time.Second)
+	defer cancel()
+
+	result := &NamespaceCapabilities{
+		Exec:        globalCaps.Exec,
+		Logs:        globalCaps.Logs,
+		PortForward: globalCaps.PortForward,
+	}
+
+	// Only re-check capabilities that were denied globally
+	type capCheck struct {
+		resource string
+		verb     string
+		result   *bool
+	}
+
+	var checks []capCheck
+	if !globalCaps.Exec && !ForceDisableExec {
+		checks = append(checks, capCheck{"pods/exec", "create", &result.Exec})
+	}
+	if !globalCaps.Logs {
+		checks = append(checks, capCheck{"pods/log", "get", &result.Logs})
+	}
+	if !globalCaps.PortForward {
+		checks = append(checks, capCheck{"pods/portforward", "create", &result.PortForward})
+	}
+
+	if len(checks) == 0 {
+		return result, nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(checks))
+	for _, check := range checks {
+		go func(c capCheck) {
+			defer wg.Done()
+			allowed, _ := canI(checkCtx, namespace, "", c.resource, c.verb)
+			if allowed {
+				*c.result = true
+			}
+		}(check)
+	}
+	wg.Wait()
+
+	// Cache the result
+	nsCapMu.Lock()
+	if nsCapCache == nil {
+		nsCapCache = make(map[string]*nsCapEntry)
+	}
+	nsCapCache[namespace] = &nsCapEntry{
+		caps:   *result,
+		expiry: time.Now().Add(capabilitiesTTL),
+	}
+	nsCapMu.Unlock()
+
+	return result, nil
 }
 
 var (

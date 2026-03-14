@@ -2,7 +2,7 @@ import { PodRenderer as BasePodRenderer } from '@skyhook-io/k8s-ui/components/re
 import type { CopyHandler } from '@skyhook-io/k8s-ui/components/ui/drawer-components'
 import type { ResolvedEnvFrom } from '@skyhook-io/k8s-ui'
 import { useOpenTerminal, useOpenLogs } from '../../dock'
-import { useCanExec, useCanViewLogs, useCanPortForward } from '../../../contexts/CapabilitiesContext'
+import { useNamespacedCapabilities } from '../../../contexts/CapabilitiesContext'
 import { usePodMetrics, usePodMetricsHistory, usePrometheusResourceMetrics, usePrometheusStatus } from '../../../api/client'
 import { PortForwardInlineButton } from '../../portforward/PortForwardButton'
 import { ImageFilesystemModal } from '../ImageFilesystemModal'
@@ -24,10 +24,8 @@ export function PodRenderer({ data, onCopy, copied, onNavigate, onOpenLogs, reso
   const openTerminal = useOpenTerminal()
   const openLogsPanel = useOpenLogs()
 
-  // Capabilities
-  const canExec = useCanExec()
-  const canViewLogs = useCanViewLogs()
-  const canPortForward = useCanPortForward()
+  // Capabilities (namespace-scoped: re-checks RBAC if cluster-wide denied)
+  const { canExec, canViewLogs, canPortForward } = useNamespacedCapabilities(namespace)
 
   // Metrics
   const { data: metrics } = usePodMetrics(namespace, podName)

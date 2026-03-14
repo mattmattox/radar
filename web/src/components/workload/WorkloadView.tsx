@@ -21,7 +21,7 @@ import {
 import { PrometheusCharts, isPrometheusSupported } from '../resource/PrometheusCharts'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
 import { LogsViewer } from '../logs/LogsViewer'
-import { useCanUpdateSecrets, useCanExec, useCanViewLogs, useCanPortForward, useCanNodeWrite } from '../../contexts/CapabilitiesContext'
+import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities } from '../../contexts/CapabilitiesContext'
 import { useOpenTerminal, useOpenLogs, useOpenWorkloadLogs, useOpenNodeTerminal } from '../dock'
 import { PortForwardButton } from '../portforward/PortForwardButton'
 import { useToast } from '../ui/Toast'
@@ -112,9 +112,7 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
   const openLogs = useOpenLogs()
   const openWorkloadLogs = useOpenWorkloadLogs()
   const openNodeTerminal = useOpenNodeTerminal()
-  const canExec = useCanExec()
-  const canViewLogs = useCanViewLogs()
-  const canPortForward = useCanPortForward()
+  const { canExec, canViewLogs, canPortForward } = useNamespacedCapabilities(namespace)
 
   const deleteMutation = useDeleteResource()
   const restartWorkloadMutation = useRestartWorkload()

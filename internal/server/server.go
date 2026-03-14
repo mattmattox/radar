@@ -461,6 +461,19 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 
 	caps.MCPEnabled = s.mcpHandler != nil
 
+	// Namespace-scoped re-check: when exec/logs/portForward are denied cluster-wide,
+	// re-check scoped to the requested namespace. Users with namespace-scoped
+	// RoleBindings (common in shared clusters) may have these permissions even
+	// though the cluster-wide SelfSubjectAccessReview returned false.
+	if ns := r.URL.Query().Get("namespace"); ns != "" {
+		nsCaps, err := k8s.CheckNamespaceCapabilities(r.Context(), ns, caps)
+		if err == nil && nsCaps != nil {
+			caps.Exec = nsCaps.Exec
+			caps.Logs = nsCaps.Logs
+			caps.PortForward = nsCaps.PortForward
+		}
+	}
+
 	// Include resource permissions if cache is available
 	if cache := k8s.GetResourceCache(); cache != nil {
 		enabled := cache.GetEnabledResources()

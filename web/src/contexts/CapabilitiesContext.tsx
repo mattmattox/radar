@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, ReactNode } from 'react'
-import { useCapabilities } from '../api/client'
+import { useCapabilities, useNamespaceCapabilities } from '../api/client'
 import type { Capabilities, ResourcePermissions } from '../types'
 
 // Default capabilities for local development (when running locally, all features work)
@@ -108,4 +108,18 @@ export function useHasLimitedAccess(): boolean {
   const resources = useContext(CapabilitiesContext).resources
   if (!resources) return false
   return Object.values(resources).some(allowed => !allowed)
+}
+
+// Namespace-scoped capability hooks: lazily re-check exec/logs/portForward
+// scoped to a specific namespace when cluster-wide RBAC denied them.
+// Returns the same boolean as the global hooks when no namespace override is needed.
+export function useNamespacedCapabilities(namespace: string | undefined) {
+  const globalCaps = useContext(CapabilitiesContext)
+  const { data: nsCaps } = useNamespaceCapabilities(namespace, globalCaps)
+
+  return useMemo(() => ({
+    canExec: nsCaps?.exec ?? globalCaps.exec,
+    canViewLogs: nsCaps?.logs ?? globalCaps.logs,
+    canPortForward: nsCaps?.portForward ?? globalCaps.portForward,
+  }), [globalCaps.exec, globalCaps.logs, globalCaps.portForward, nsCaps])
 }

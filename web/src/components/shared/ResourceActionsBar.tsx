@@ -21,7 +21,7 @@ import {
 import type { SelectedResource } from '../../types'
 import { useOpenTerminal, useOpenLogs, useOpenWorkloadLogs } from '../dock'
 import { PortForwardButton } from '../portforward/PortForwardButton'
-import { useCanExec, useCanViewLogs, useCanPortForward } from '../../contexts/CapabilitiesContext'
+import { useNamespacedCapabilities } from '../../contexts/CapabilitiesContext'
 import { useToast } from '../ui/Toast'
 
 interface ResourceActionsBarProps {
@@ -39,9 +39,7 @@ export function ResourceActionsBar({ resource, data, onClose, hideLogs, showYaml
   const openLogs = useOpenLogs()
   const openWorkloadLogs = useOpenWorkloadLogs()
 
-  const canExec = useCanExec()
-  const canViewLogs = useCanViewLogs()
-  const canPortForward = useCanPortForward()
+  const { canExec, canViewLogs, canPortForward } = useNamespacedCapabilities(resource.namespace)
 
   const deleteMutation = useDeleteResource()
   const triggerCronJobMutation = useTriggerCronJob()
