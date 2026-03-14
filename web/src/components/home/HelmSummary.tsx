@@ -57,7 +57,7 @@ export function HelmSummary({ data, onNavigate }: HelmSummaryProps) {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 overflow-hidden">
         {!data ? (
           <div className="divide-y divide-theme-border">
             {[...Array(3)].map((_, i) => (
@@ -89,12 +89,12 @@ export function HelmSummary({ data, onNavigate }: HelmSummaryProps) {
             {data.releases.map((release) => (
               <div
                 key={`${release.namespace}/${release.name}`}
-                className="flex items-center justify-between px-3 py-1.5"
+                className="flex items-center justify-between px-3 py-1.5 overflow-hidden"
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <span className={clsx('w-1.5 h-1.5 rounded-full shrink-0', getHealthDot(release.resourceHealth))} />
                   <span className="text-xs text-theme-text-primary truncate">{release.name}</span>
-                  <span className="text-[10px] text-theme-text-tertiary">{release.namespace}</span>
+                  <span className="text-[10px] text-theme-text-tertiary truncate">{release.namespace}</span>
                 </div>
                 <div className="flex items-center gap-1.5 ml-2 min-w-0">
                   <Tooltip content={`${release.chart} ${release.chartVersion}`} delay={100}>

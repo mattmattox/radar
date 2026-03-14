@@ -72,7 +72,7 @@ export function HomeView({ namespaces, topology, onNavigateToView, onNavigateToR
           hasProblems ? 'grid-cols-1 lg:grid-cols-[1fr_420px]' : 'grid-cols-1'
         )}>
           {/* Left column: teaser cards in 2-col grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 auto-rows-min">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 auto-rows-min">
             <TopologyPreview
               topology={topology}
               summary={data.topologySummary}

@@ -122,7 +122,7 @@ export function ActivitySummary({ namespaces, topology, onNavigate }: ActivitySu
       </div>
 
       {/* Mini swimlanes */}
-      <div className="flex-1 min-h-0 px-4 py-1.5">
+      <div className="flex-1 min-h-0 overflow-hidden px-4 py-1.5">
         {isLoading ? (
           <div className="flex items-center justify-center h-full py-4 text-xs text-theme-text-tertiary">
             Loading...

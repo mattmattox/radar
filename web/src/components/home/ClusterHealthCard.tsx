@@ -359,9 +359,9 @@ export function ClusterHealthCard({
       </div>
 
       {/* Secondary resources row — matches top row's 3-column layout */}
-      <div className="flex items-stretch px-6 gap-8 py-2.5 bg-theme-surface/30">
+      <div className="flex items-stretch px-6 py-2.5 bg-theme-surface/30">
         {/* Left column: Warning indicators (aligned with cluster info) */}
-        <div className="flex flex-col justify-center gap-1 w-[300px] shrink-0 pr-8 border-r border-theme-border/50">
+        <div className="flex flex-col justify-center gap-1 w-1/4 shrink-0 pr-4 border-r border-theme-border/50">
           {health.warningEvents > 0 && (
             <button
               onClick={onWarningEventsClick}
@@ -385,12 +385,12 @@ export function ClusterHealthCard({
         </div>
 
         {/* Center column: Resources (aligned with health rings) */}
-        <div className="flex-1 grid grid-cols-3 items-center justify-items-center">
+        <div className="w-1/2 grid grid-cols-3 items-center justify-items-center px-4">
           {secondaryResources.map((res) => (
             <button
               key={res.kind}
               onClick={() => onNavigateToKind(res.kind, res.group)}
-              className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-theme-hover transition-colors text-sm"
+              className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-theme-hover transition-colors text-sm whitespace-nowrap"
             >
               {isRestricted(res.kind) ? (
                 <>
@@ -402,11 +402,6 @@ export function ClusterHealthCard({
                   <res.icon className={clsx('w-3.5 h-3.5', res.hasIssues ? 'text-yellow-500' : 'text-theme-text-tertiary')} />
                   <span className="text-theme-text-primary font-medium">{res.total}</span>
                   <span className="text-theme-text-secondary">{res.label}</span>
-                  {res.subtitle && (
-                    <span className={clsx('text-xs', res.hasIssues ? 'text-yellow-500' : 'text-theme-text-tertiary')}>
-                      ({res.subtitle})
-                    </span>
-                  )}
                 </>
               )}
             </button>
@@ -414,7 +409,7 @@ export function ClusterHealthCard({
         </div>
 
         {/* Right column: Browse All (aligned with resource utilization) */}
-        <div className="flex items-center justify-center w-[300px] shrink-0 pl-8 border-l border-theme-border/50">
+        <div className="flex items-center justify-center w-1/4 shrink-0 pl-4 border-l border-theme-border/50">
           <button
             onClick={onNavigateToView}
             className="flex items-center gap-2 text-base font-medium text-blue-500 hover:text-blue-400 transition-colors"
