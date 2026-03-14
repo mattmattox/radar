@@ -221,6 +221,11 @@ export function PrometheusCharts({ kind, namespace, name, showEmptyState = false
             <p className="text-xs text-theme-text-quaternary mt-1">
               Try a different time range or check that metrics are being collected
             </p>
+            {metrics?.hint && (
+              <p className="mt-3 px-3 py-2 w-full max-w-lg text-xs text-yellow-700 dark:text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded">
+                {metrics.hint}
+              </p>
+            )}
             {metrics?.query && (
               <details className="mt-3 w-full max-w-lg text-left">
                 <summary className="text-xs text-theme-text-quaternary cursor-pointer hover:text-theme-text-tertiary">

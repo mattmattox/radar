@@ -444,6 +444,7 @@ export function WorkloadView({
               isSavingSecret={isUpdatingResource}
               rendererOverrides={rendererOverrides}
               resolvedEnvFrom={resolvedEnvFrom}
+              renderMetrics={renderMetricsTab}
             />
           )}
         </div>

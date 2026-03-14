@@ -892,6 +892,7 @@ export interface PrometheusResourceMetrics {
   range: string
   result: PrometheusQueryResult
   query?: string // PromQL query (included when result is empty, for diagnostics)
+  hint?: string  // Contextual hint when results are empty (e.g. cri-docker label issues)
 }
 
 export type PrometheusMetricCategory = 'cpu' | 'memory' | 'network_rx' | 'network_tx' | 'filesystem'

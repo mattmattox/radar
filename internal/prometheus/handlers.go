@@ -10,6 +10,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/skyhook-io/radar/internal/errorlog"
+	"github.com/skyhook-io/radar/internal/k8s"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 // RegisterRoutes registers Prometheus metric routes on the given router.
@@ -134,6 +137,7 @@ type ResourceMetricsResponse struct {
 	Range     string         `json:"range"`
 	Result    *QueryResult   `json:"result"`
 	Query     string         `json:"query,omitempty"` // PromQL query used (included when result is empty for diagnostics)
+	Hint      string         `json:"hint,omitempty"`  // Contextual hint when results are empty (e.g. cri-docker label issues)
 }
 
 // handleResourceMetrics returns Prometheus metrics for a specific resource.
@@ -212,6 +216,7 @@ func handleResourceMetrics(w http.ResponseWriter, r *http.Request) {
 	// label mismatches or missing metrics in their Prometheus instance.
 	if len(result.Series) == 0 {
 		resp.Query = query
+		resp.Hint = detectCRIDockerHint(kind, namespace, name)
 		log.Printf("[prometheus] Empty result for %s/%s/%s (%s), query: %s", kind, namespace, name, category, query)
 		errorlog.Record("prometheus", "warning", "empty result for %s/%s/%s (%s), query: %s", kind, namespace, name, category, query)
 	}
@@ -422,4 +427,81 @@ func handleRawQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+const criDockerHint = "This pod's node uses the Docker container runtime (cri-docker), which is known to cause missing pod and namespace labels in cAdvisor metrics. " +
+	"Verify that your Prometheus scrape config produces the standard 'pod' and 'namespace' labels on container_cpu_usage_seconds_total."
+
+// detectCRIDockerHint returns a diagnostic hint when the resource runs on a
+// node using cri-docker, which is known to cause missing cAdvisor labels.
+// For Pods it checks the specific node; for workloads it checks all nodes
+// running pods that match the workload name prefix.
+func detectCRIDockerHint(kind, namespace, name string) string {
+	// Node metrics use node-exporter, not cAdvisor — cri-docker is irrelevant.
+	if strings.EqualFold(kind, "Node") {
+		return ""
+	}
+
+	cache := k8s.GetResourceCache()
+	if cache == nil || cache.Nodes() == nil {
+		return ""
+	}
+
+	// Collect the node names to check.
+	var nodeNames []string
+	if strings.EqualFold(kind, "Pod") {
+		// For a specific pod, check only its assigned node.
+		if cache.Pods() != nil {
+			pod, err := cache.Pods().Pods(namespace).Get(name)
+			if err == nil && pod.Spec.NodeName != "" {
+				nodeNames = append(nodeNames, pod.Spec.NodeName)
+			}
+		}
+	} else {
+		// For workloads, find pods matching the name prefix (e.g. "myapp-" for Deployment "myapp").
+		if cache.Pods() != nil {
+			pods, err := cache.Pods().Pods(namespace).List(labels.Everything())
+			if err == nil {
+				prefix := name + "-"
+				for _, pod := range pods {
+					if strings.HasPrefix(pod.Name, prefix) && pod.Spec.NodeName != "" {
+						nodeNames = append(nodeNames, pod.Spec.NodeName)
+					}
+				}
+			}
+		}
+	}
+
+	// If we couldn't resolve any nodes (pod not scheduled yet, etc.), fall back
+	// to checking all cluster nodes.
+	if len(nodeNames) == 0 {
+		allNodes, err := cache.Nodes().List(labels.Everything())
+		if err != nil {
+			return ""
+		}
+		return anyNodeUsesDocker(allNodes)
+	}
+
+	// Check specific nodes.
+	for _, nodeName := range nodeNames {
+		node, err := cache.Nodes().Get(nodeName)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(node.Status.NodeInfo.ContainerRuntimeVersion, "docker://") {
+			return criDockerHint
+		}
+	}
+	return ""
+}
+
+// anyNodeUsesDocker returns the cri-docker hint if any node in the list uses
+// the Docker container runtime, empty string otherwise.
+func anyNodeUsesDocker(nodes []*corev1.Node) string {
+	for _, node := range nodes {
+		if strings.HasPrefix(node.Status.NodeInfo.ContainerRuntimeVersion, "docker://") {
+			return criDockerHint
+		}
+	}
+	return ""
 }
