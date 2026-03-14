@@ -3,29 +3,37 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
-	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 )
+
+// ptyHandle abstracts platform-specific PTY implementations
+type ptyHandle interface {
+	io.ReadWriteCloser
+	Resize(cols, rows uint16) error
+}
+
+// shellProcess holds the started shell process and its PTY
+type shellProcess struct {
+	pty     ptyHandle
+	process *os.Process
+}
 
 // LocalTermSession tracks an active local terminal session
 type LocalTermSession struct {
 	ID    string `json:"id"`
 	Shell string `json:"shell"`
 	conn  *websocket.Conn
-	cmd   *exec.Cmd
-	ptmx  *os.File
+	proc  *shellProcess
 }
 
 type localTermSessionManager struct {
@@ -52,28 +60,17 @@ func StopAllLocalTermSessions() {
 
 	for id, session := range localTermMgr.sessions {
 		log.Printf("[localterm] Closing session %s", id)
-		if session.cmd != nil && session.cmd.Process != nil {
-			session.cmd.Process.Signal(syscall.SIGHUP)
-		}
-		if session.ptmx != nil {
-			session.ptmx.Close()
+		if session.proc != nil {
+			if session.proc.process != nil {
+				signalProcess(session.proc.process)
+			}
+			session.proc.pty.Close()
 		}
 		if session.conn != nil {
 			session.conn.Close()
 		}
 		delete(localTermMgr.sessions, id)
 	}
-}
-
-// getDefaultShell returns the user's default shell
-func getDefaultShell() string {
-	if shell := os.Getenv("SHELL"); shell != "" {
-		return shell
-	}
-	if runtime.GOOS == "darwin" {
-		return "/bin/zsh"
-	}
-	return "/bin/bash"
 }
 
 // setEnv replaces or appends an environment variable in the env slice
@@ -116,12 +113,11 @@ func (s *Server) handleLocalTerminal(w http.ResponseWriter, r *http.Request) {
 		env = setEnv(env, "KUBECONFIG", kubeconfigPath)
 	}
 
-	// Start shell with PTY
-	cmd := exec.Command(shell, "-l")
-	cmd.Env = env
-	cmd.Dir = os.Getenv("HOME")
+	// Get home directory (cross-platform)
+	homeDir, _ := os.UserHomeDir()
 
-	ptmx, err := pty.Start(cmd)
+	// Start shell with PTY
+	proc, err := startShell(shell, env, homeDir)
 	if err != nil {
 		log.Printf("[localterm] Failed to start PTY: %v", err)
 		sendWSError(conn, fmt.Sprintf("Failed to start shell: %v", err))
@@ -130,14 +126,13 @@ func (s *Server) handleLocalTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set initial terminal size
-	pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80})
+	proc.pty.Resize(80, 24)
 
 	session := &LocalTermSession{
 		ID:    sessionID,
 		Shell: shell,
 		conn:  conn,
-		cmd:   cmd,
-		ptmx:  ptmx,
+		proc:  proc,
 	}
 	localTermMgr.mu.Lock()
 	localTermMgr.sessions[sessionID] = session
@@ -150,11 +145,11 @@ func (s *Server) handleLocalTerminal(w http.ResponseWriter, r *http.Request) {
 		delete(localTermMgr.sessions, sessionID)
 		localTermMgr.mu.Unlock()
 
-		if cmd.Process != nil {
-			cmd.Process.Signal(syscall.SIGHUP)
+		if proc.process != nil {
+			signalProcess(proc.process)
 		}
-		ptmx.Close()
-		cmd.Wait()
+		proc.pty.Close()
+		waitProcess(proc)
 		conn.Close()
 		log.Printf("[localterm] Session %s ended", sessionID)
 	}()
@@ -163,12 +158,10 @@ func (s *Server) handleLocalTerminal(w http.ResponseWriter, r *http.Request) {
 	var wsMu sync.Mutex
 
 	// Read from PTY → write to WebSocket
-	readDone := make(chan struct{})
 	go func() {
-		defer close(readDone)
 		buf := make([]byte, 4096)
 		for {
-			n, err := ptmx.Read(buf)
+			n, err := proc.pty.Read(buf)
 			if n > 0 {
 				msg := TerminalMessage{Type: "output", Data: string(buf[:n])}
 				data, _ := json.Marshal(msg)
@@ -210,12 +203,9 @@ func (s *Server) handleLocalTerminal(w http.ResponseWriter, r *http.Request) {
 
 		switch msg.Type {
 		case "input":
-			ptmx.Write([]byte(msg.Data))
+			proc.pty.Write([]byte(msg.Data))
 		case "resize":
-			pty.Setsize(ptmx, &pty.Winsize{
-				Rows: msg.Rows,
-				Cols: msg.Cols,
-			})
+			proc.pty.Resize(msg.Cols, msg.Rows)
 		}
 	}
 }
