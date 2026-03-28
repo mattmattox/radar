@@ -108,9 +108,16 @@ func (s *Server) handleLocalTerminal(w http.ResponseWriter, r *http.Request) {
 	shell := getDefaultShell()
 
 	// Set up environment: inherit current process env, override KUBECONFIG
+	// with a temp copy that has current-context set to Radar's active context.
 	env := os.Environ()
-	if kubeconfigPath := k8s.GetKubeconfigPath(); kubeconfigPath != "" {
-		env = setEnv(env, "KUBECONFIG", kubeconfigPath)
+	tmpKubeconfig, err := k8s.WriteKubeconfigForCurrentContext()
+	if err != nil {
+		log.Printf("[localterm] Failed to write temp kubeconfig, falling back to default: %v", err)
+		if kubeconfigPath := k8s.GetKubeconfigPath(); kubeconfigPath != "" {
+			env = setEnv(env, "KUBECONFIG", kubeconfigPath)
+		}
+	} else {
+		env = setEnv(env, "KUBECONFIG", tmpKubeconfig)
 	}
 
 	// Get home directory (cross-platform)
@@ -151,6 +158,9 @@ func (s *Server) handleLocalTerminal(w http.ResponseWriter, r *http.Request) {
 		proc.pty.Close()
 		waitProcess(proc)
 		conn.Close()
+		if tmpKubeconfig != "" {
+			os.Remove(tmpKubeconfig)
+		}
 		log.Printf("[localterm] Session %s ended", sessionID)
 	}()
 

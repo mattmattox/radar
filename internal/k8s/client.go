@@ -249,6 +249,51 @@ func GetKubeconfigPath() string {
 	return kubeconfigPath
 }
 
+// WriteKubeconfigForCurrentContext creates a temporary kubeconfig file with
+// current-context set to Radar's active context. The caller must remove the
+// file when done. Returns the temp file path.
+func WriteKubeconfigForCurrentContext() (string, error) {
+	clientMu.RLock()
+	ctx := contextName
+	paths := kubeconfigPaths
+	singlePath := kubeconfigPath
+	clientMu.RUnlock()
+
+	var loadingRules *clientcmd.ClientConfigLoadingRules
+	if len(paths) > 0 {
+		loadingRules = &clientcmd.ClientConfigLoadingRules{Precedence: paths}
+	} else {
+		if singlePath == "" {
+			return "", fmt.Errorf("kubeconfig path not set")
+		}
+		loadingRules = &clientcmd.ClientConfigLoadingRules{ExplicitPath: singlePath}
+	}
+
+	rawConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loadingRules, &clientcmd.ConfigOverrides{},
+	).RawConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to load kubeconfig: %w", err)
+	}
+
+	if ctx != "" {
+		rawConfig.CurrentContext = ctx
+	}
+
+	tmpFile, err := os.CreateTemp("", "radar-kubeconfig-*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp kubeconfig: %w", err)
+	}
+	tmpFile.Close()
+
+	if err := clientcmd.WriteToFile(rawConfig, tmpFile.Name()); err != nil {
+		os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("failed to write temp kubeconfig: %w", err)
+	}
+
+	return tmpFile.Name(), nil
+}
+
 // GetContextName returns the current kubeconfig context name
 func GetContextName() string {
 	clientMu.RLock()
