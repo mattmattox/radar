@@ -53,19 +53,24 @@ jobs:
             user:
               token: dummy' > ~/.kube/config
 
+      - name: Import Apple certificate
+        uses: Apple-Actions/import-codesign-certs@v5
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
       - name: Build macOS .app (universal)
         run: cd cmd/desktop && wails build -platform darwin/universal -ldflags "-X main.version=${GITHUB_REF_NAME#v}"
 
-      - name: Ad-hoc codesign
+      - name: Update bundle identifier
+        run: plutil -replace CFBundleIdentifier -string "io.skyhook.radar" build/bin/radar-desktop.app/Contents/Info.plist
+
+      - name: Codesign with Developer ID
         run: |
           APP="build/bin/radar-desktop.app"
-          # Ad-hoc sign the .app bundle (no Apple Developer identity).
-          # --deep recursively signs nested binaries/frameworks in one pass.
-          # NOTE: --deep is deprecated since macOS 13; acceptable for ad-hoc
-          # but should be replaced with inside-out signing if we adopt a
-          # Developer ID certificate.
-          codesign --force --deep --sign - "$APP"
-          # Fail early if the signature is malformed
+          codesign --timestamp --options=runtime \
+            --sign "Developer ID Application: KoalaOps, Inc. (${{ secrets.APPLE_TEAM_ID }})" \
+            --force "$APP"
           codesign --verify --verbose "$APP"
 
       - name: Create archive
@@ -73,6 +78,28 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           cd build/bin
           mv radar-desktop.app Radar.app
+          zip -r "../../radar-desktop_${VERSION}_darwin_universal.zip" Radar.app
+          cd ../..
+
+      - name: Notarize
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          xcrun notarytool submit "radar-desktop_${VERSION}_darwin_universal.zip" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+            --wait
+
+      - name: Staple notarization ticket
+        run: |
+          cd build/bin
+          xcrun stapler staple Radar.app
+          cd ../..
+
+      - name: Re-create archive with stapled ticket
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          cd build/bin
           zip -r "../../radar-desktop_${VERSION}_darwin_universal.zip" Radar.app
           cd ../..
 
@@ -397,10 +424,7 @@ jobs:
 
             app "Radar.app"
 
-            caveats <<~EOS
-              Radar Desktop is not yet notarized with Apple. On first launch:
-                Right-click Radar.app → Open → click "Open"
-            EOS
+            # No caveats needed — app is signed and notarized
           end
           CASK
 
