@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// Ensure MemoryRevoker implements SessionRevoker.
+var _ SessionRevoker = (*MemoryRevoker)(nil)
+
 // MemoryRevoker is an in-memory session revocation store for OIDC backchannel
 // logout. It tracks revoked session IDs (sid) and deduplicates logout_token
 // JTIs to ensure idempotent handling of IdP retries.
@@ -17,6 +20,7 @@ type MemoryRevoker struct {
 	revoked  map[string]time.Time // sid → expiry (auto-cleaned after expiry)
 	jtis     map[string]time.Time // jti → expiry (dedupe for IdP retries)
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	gcTicker *time.Ticker
 }
 
@@ -36,6 +40,9 @@ func NewMemoryRevoker() *MemoryRevoker {
 // Revoke marks a session ID as revoked until the given expiry time.
 // After expiry, the entry is cleaned up by the GC goroutine.
 func (r *MemoryRevoker) Revoke(sid string, expiry time.Time) {
+	if sid == "" {
+		return // empty sid (legacy cookies) can't be revoked — match IsRevoked guard
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.revoked[sid] = expiry
@@ -72,10 +79,12 @@ func (r *MemoryRevoker) SeenJTI(jti string, expiry time.Time) bool {
 	return false
 }
 
-// Stop halts the GC goroutine. Call on shutdown.
+// Stop halts the GC goroutine. Safe to call multiple times.
 func (r *MemoryRevoker) Stop() {
-	r.gcTicker.Stop()
-	close(r.stopCh)
+	r.stopOnce.Do(func() {
+		r.gcTicker.Stop()
+		close(r.stopCh)
+	})
 }
 
 // gc periodically removes expired revocations and JTIs.

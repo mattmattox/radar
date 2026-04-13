@@ -26,8 +26,7 @@ type OIDCHandler struct {
 	cfg                Config
 	provider           *oidc.Provider
 	oauth              oauth2.Config
-	verifier           *oidc.IDTokenVerifier
-	logoutVerifier     *oidc.IDTokenVerifier // separate verifier for logout_token (no nonce check)
+	verifier           *oidc.IDTokenVerifier // used for both ID tokens and logout_tokens (nonce checked manually, not by verifier)
 	endSessionEndpoint string                // from OIDC discovery; empty if IdP doesn't support RP-Initiated Logout
 	httpClient         *http.Client          // custom TLS client for OIDC provider calls; nil = default
 	revoker            *MemoryRevoker        // session revocation store; nil = backchannel logout disabled
@@ -84,9 +83,6 @@ func NewOIDCHandler(ctx context.Context, cfg Config) (*OIDCHandler, error) {
 
 	verifier := provider.Verifier(&oidc.Config{ClientID: cfg.OIDCClientID})
 
-	// Separate verifier for backchannel logout tokens (no nonce, same audience check)
-	logoutVerifier := provider.Verifier(&oidc.Config{ClientID: cfg.OIDCClientID})
-
 	// Extract endpoints and feature flags from OIDC discovery document
 	var providerClaims struct {
 		EndSessionEndpoint                string `json:"end_session_endpoint"`
@@ -106,7 +102,6 @@ func NewOIDCHandler(ctx context.Context, cfg Config) (*OIDCHandler, error) {
 		provider:                          provider,
 		oauth:                             oauthCfg,
 		verifier:                          verifier,
-		logoutVerifier:                    logoutVerifier,
 		endSessionEndpoint:                providerClaims.EndSessionEndpoint,
 		httpClient:                        httpClient,
 		backchannelLogoutSupported:        providerClaims.BackchannelLogoutSupported,
@@ -381,7 +376,7 @@ func (h *OIDCHandler) HandleBackchannelLogout(w http.ResponseWriter, r *http.Req
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, h.httpClient)
 	}
 
-	idToken, err := h.logoutVerifier.Verify(ctx, rawToken)
+	idToken, err := h.verifier.Verify(ctx, rawToken)
 	if err != nil {
 		log.Printf("[oidc] Backchannel logout: token verification failed: %v", err)
 		http.Error(w, "invalid logout_token", http.StatusBadRequest)
@@ -428,6 +423,9 @@ func (h *OIDCHandler) HandleBackchannelLogout(w http.ResponseWriter, r *http.Req
 
 	// JTI dedupe — spec §2.7 requires idempotent handling of retries
 	jti, _ := claims["jti"].(string)
+	if jti == "" {
+		log.Printf("[oidc] Backchannel logout: logout_token has no 'jti' claim — idempotency protection disabled for this token (sub=%s, sid=%s)", sub, sid)
+	}
 	jtiExpiry := idToken.Expiry
 	if jtiExpiry.IsZero() {
 		jtiExpiry = time.Now().Add(h.cfg.CookieTTL) // fall back to cookie TTL
@@ -446,8 +444,11 @@ func (h *OIDCHandler) HandleBackchannelLogout(w http.ResponseWriter, r *http.Req
 		log.Printf("[oidc] Backchannel logout: revoked sid=%s (sub=%s, jti=%s)", sid, sub, jti)
 	} else {
 		// sub-only: we can't do targeted revocation (our store is sid-keyed).
-		// The session will expire naturally at cookie TTL.
-		log.Printf("[oidc] Backchannel logout: sub-only revocation (sub=%s, jti=%s) — session will expire at cookie TTL. IdP did not provide sid; consider enabling backchannel_logout_session_supported.", sub, jti)
+		// Return 501 so the IdP knows this wasn't processed, rather than
+		// returning 200 and silently doing nothing.
+		log.Printf("[oidc] Backchannel logout: sub-only revocation not supported (sub=%s, jti=%s) — IdP did not provide sid", sub, jti)
+		http.Error(w, "sub-only revocation not supported; sid claim required", http.StatusNotImplemented)
+		return
 	}
 
 	w.WriteHeader(http.StatusOK)

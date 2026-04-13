@@ -480,3 +480,69 @@ func TestOIDCHandler_CallbackUsesCustomClient(t *testing.T) {
 		t.Errorf("status = %d, want 500 (exchange failure, not panic)", w.Code)
 	}
 }
+
+// --- Backchannel logout handler pre-verification tests ---
+
+func TestBackchannelLogout_NoRevoker(t *testing.T) {
+	h := newTestOIDCHandler()
+	// h.revoker is nil — backchannel logout not configured
+	r := httptest.NewRequest("POST", "/auth/backchannel-logout", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleBackchannelLogout(w, r)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", w.Code)
+	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Error("Cache-Control: no-store header missing (spec requirement)")
+	}
+}
+
+func TestBackchannelLogout_MethodNotAllowed(t *testing.T) {
+	h := newTestOIDCHandler()
+	h.revoker = NewMemoryRevoker()
+	defer h.revoker.Stop()
+
+	r := httptest.NewRequest("GET", "/auth/backchannel-logout", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleBackchannelLogout(w, r)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestBackchannelLogout_MissingToken(t *testing.T) {
+	h := newTestOIDCHandler()
+	h.revoker = NewMemoryRevoker()
+	defer h.revoker.Stop()
+
+	r := httptest.NewRequest("POST", "/auth/backchannel-logout",
+		strings.NewReader(""))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.HandleBackchannelLogout(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestBackchannelLogout_CacheControlAlwaysSet(t *testing.T) {
+	// Cache-Control: no-store must be set even on error responses (spec §2.5)
+	h := newTestOIDCHandler()
+	r := httptest.NewRequest("POST", "/auth/backchannel-logout", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleBackchannelLogout(w, r)
+
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Error("Cache-Control: no-store must be set on all responses")
+	}
+}
+
+// Note: testing invalid/valid JWT verification requires a real OIDC provider
+// with JWKS. The pre-verification tests above cover all paths before Verify().
