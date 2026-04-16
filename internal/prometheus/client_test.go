@@ -6,14 +6,17 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/skyhook-io/radar/internal/errorlog"
 )
 
 func TestProbe(t *testing.T) {
 	tests := []struct {
-		name       string
-		statusCode int
-		body       string
-		want       bool
+		name           string
+		statusCode     int
+		body           string
+		want           bool
+		wantEmptyEntry bool // expect the empty-instance warning to be recorded
 	}{
 		{
 			name:       "healthy prometheus with targets",
@@ -22,10 +25,11 @@ func TestProbe(t *testing.T) {
 			want:       true,
 		},
 		{
-			name:       "empty instance returns success with zero results",
-			statusCode: http.StatusOK,
-			body:       `{"status":"success","data":{"resultType":"vector","result":[]}}`,
-			want:       false,
+			name:           "empty instance returns success with zero results",
+			statusCode:     http.StatusOK,
+			body:           `{"status":"success","data":{"resultType":"vector","result":[]}}`,
+			want:           false,
+			wantEmptyEntry: true,
 		},
 		{
 			name:       "non-prometheus 200 response (html)",
@@ -55,6 +59,8 @@ func TestProbe(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			errorlog.Reset()
+
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.statusCode)
 				_, _ = w.Write([]byte(tc.body))
@@ -65,6 +71,16 @@ func TestProbe(t *testing.T) {
 			got := c.probe(context.Background(), srv.URL)
 			if got != tc.want {
 				t.Fatalf("probe() = %v, want %v", got, tc.want)
+			}
+
+			gotEmptyEntry := false
+			for _, e := range errorlog.GetEntries() {
+				if e.Source == "prometheus" && e.Level == "warning" {
+					gotEmptyEntry = true
+				}
+			}
+			if gotEmptyEntry != tc.wantEmptyEntry {
+				t.Fatalf("empty-instance warning recorded = %v, want %v", gotEmptyEntry, tc.wantEmptyEntry)
 			}
 		})
 	}
