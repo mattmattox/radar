@@ -59,6 +59,11 @@ func main() {
 
 	log.Printf("Radar Desktop %s starting...", version)
 
+	// Log Linux desktop environment (session type, render overrides) so bug
+	// reports for startup failures include the diagnostic context by default.
+	// No-op on macOS/Windows.
+	logBootEnv()
+
 	// GUI apps (macOS .app, Linux .desktop) get a minimal PATH that
 	// doesn't include user-installed tools like gke-gcloud-auth-plugin,
 	// gcloud, aws CLI, etc. Enrich PATH from the user's login shell.
