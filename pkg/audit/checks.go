@@ -129,19 +129,40 @@ func checkPodSpecSecurity(kind, namespace, name string, spec corev1.PodSpec) []F
 	// Container-level checks (iterate init and regular separately to avoid
 	// mutating the InitContainers backing array via append)
 	for i := range spec.InitContainers {
-		checkContainerSecurity(f, &spec.InitContainers[i])
+		checkContainerSecurity(f, &spec.InitContainers[i], spec.SecurityContext)
 	}
 	for i := range spec.Containers {
-		checkContainerSecurity(f, &spec.Containers[i])
+		checkContainerSecurity(f, &spec.Containers[i], spec.SecurityContext)
 	}
 
 	return findings
 }
 
-func checkContainerSecurity(f func(string, string, string), c *corev1.Container) {
+// runsAsNonRoot reports whether effective pod+container security context
+// guarantees the container won't run as UID 0. Container-level values
+// override pod-level. Either RunAsNonRoot=true or RunAsUser!=0 is sufficient.
+func runsAsNonRoot(sc *corev1.SecurityContext, psc *corev1.PodSecurityContext) bool {
+	if sc != nil && sc.RunAsNonRoot != nil {
+		if *sc.RunAsNonRoot {
+			return true
+		}
+	} else if psc != nil && psc.RunAsNonRoot != nil && *psc.RunAsNonRoot {
+		return true
+	}
+
+	if sc != nil && sc.RunAsUser != nil {
+		return *sc.RunAsUser != 0
+	}
+	if psc != nil && psc.RunAsUser != nil {
+		return *psc.RunAsUser != 0
+	}
+	return false
+}
+
+func checkContainerSecurity(f func(string, string, string), c *corev1.Container, psc *corev1.PodSecurityContext) {
 	sc := c.SecurityContext
 
-	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+	if !runsAsNonRoot(sc, psc) {
 		f("runAsRoot", SeverityWarning, fmt.Sprintf("Container %q may run as root (runAsNonRoot not set)", c.Name))
 	}
 

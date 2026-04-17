@@ -133,6 +133,113 @@ func TestSecurityChecks_Secure(t *testing.T) {
 	}
 }
 
+// TestRunAsRoot_HonorsPodSecurityContext ensures the runAsRoot check honors
+// runAsNonRoot / runAsUser set at the pod level, not just the container level.
+// Regression test for issue #484.
+func TestRunAsRoot_HonorsPodSecurityContext(t *testing.T) {
+	tests := []struct {
+		name      string
+		podSC     *corev1.PodSecurityContext
+		container corev1.Container
+		wantFind  bool
+	}{
+		{
+			name:  "pod-level runAsNonRoot=true, no container SC",
+			podSC: &corev1.PodSecurityContext{RunAsNonRoot: ptr(true)},
+			container: corev1.Container{
+				Name:  "app",
+				Image: "nginx:1.25",
+				SecurityContext: &corev1.SecurityContext{
+					ReadOnlyRootFilesystem:   ptr(true),
+					AllowPrivilegeEscalation: ptr(false),
+				},
+			},
+			wantFind: false,
+		},
+		{
+			name:  "pod-level runAsUser=1000, no container SC",
+			podSC: &corev1.PodSecurityContext{RunAsUser: ptr(int64(1000))},
+			container: corev1.Container{
+				Name:  "app",
+				Image: "nginx:1.25",
+				SecurityContext: &corev1.SecurityContext{
+					ReadOnlyRootFilesystem:   ptr(true),
+					AllowPrivilegeEscalation: ptr(false),
+				},
+			},
+			wantFind: false,
+		},
+		{
+			name:  "pod-level runAsNonRoot=true, container overrides to false",
+			podSC: &corev1.PodSecurityContext{RunAsNonRoot: ptr(true)},
+			container: corev1.Container{
+				Name:  "app",
+				Image: "nginx:1.25",
+				SecurityContext: &corev1.SecurityContext{
+					RunAsNonRoot:             ptr(false),
+					ReadOnlyRootFilesystem:   ptr(true),
+					AllowPrivilegeEscalation: ptr(false),
+				},
+			},
+			wantFind: true,
+		},
+		{
+			name:  "pod-level runAsUser=0 (root), container has nothing",
+			podSC: &corev1.PodSecurityContext{RunAsUser: ptr(int64(0))},
+			container: corev1.Container{
+				Name:  "app",
+				Image: "nginx:1.25",
+				SecurityContext: &corev1.SecurityContext{
+					ReadOnlyRootFilesystem:   ptr(true),
+					AllowPrivilegeEscalation: ptr(false),
+				},
+			},
+			wantFind: true,
+		},
+		{
+			name:  "no security context anywhere",
+			podSC: nil,
+			container: corev1.Container{
+				Name:  "app",
+				Image: "nginx:1.25",
+			},
+			wantFind: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := &CheckInput{
+				Deployments: []*appsv1.Deployment{{
+					ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+					Spec: appsv1.DeploymentSpec{
+						Replicas: ptr(int32(1)),
+						Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "app"}},
+						Template: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								SecurityContext: tc.podSC,
+								Containers:      []corev1.Container{tc.container},
+							},
+						},
+					},
+				}},
+			}
+
+			results := RunChecks(input)
+			found := false
+			for _, f := range results.Findings {
+				if f.CheckID == "runAsRoot" {
+					found = true
+					break
+				}
+			}
+			if found != tc.wantFind {
+				t.Errorf("runAsRoot finding: got %v, want %v", found, tc.wantFind)
+			}
+		})
+	}
+}
+
 func TestReliabilityChecks(t *testing.T) {
 	input := &CheckInput{
 		Deployments: []*appsv1.Deployment{{
