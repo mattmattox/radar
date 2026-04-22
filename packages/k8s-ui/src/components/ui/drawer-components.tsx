@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronRight, Copy, Check, Tag, AlertTriangle, CheckCircle, ExternalLink, Layers } from 'lucide-react'
+import { ChevronRight, Copy, Check, Tag, AlertTriangle, CheckCircle, ExternalLink, Layers, X, Minus } from 'lucide-react'
 import { clsx } from 'clsx'
 import { formatAge, formatDuration } from '../resources/resource-utils'
 import { Tooltip } from './Tooltip'
@@ -182,6 +182,45 @@ export function Property({ label, value, copyable, onCopy, copied }: PropertyPro
 // COMMON SECTIONS
 // ============================================================================
 
+// Condition types where status=True means a problem and status=False means healthy.
+// Covers kubelet-native Node conditions, Pod DisruptionTarget, and common Node Problem
+// Detector (NPD) conditions. Name-based patterns catch additional NPD-style types.
+const NEGATIVE_POLARITY_TYPES = new Set([
+  'MemoryPressure',
+  'DiskPressure',
+  'PIDPressure',
+  'NetworkUnavailable',
+  'DisruptionTarget',
+  'KernelDeadlock',
+  'ReadonlyFilesystem',
+  'CorruptDockerOverlay2',
+  'Swap',
+])
+
+const NEGATIVE_POLARITY_PATTERNS: RegExp[] = [
+  /Pressure$/,
+  /Unavailable$/,
+  /^Deprecated/,
+  /^Frequent/,
+  /^Corrupt/,
+  /Deadlock$/,
+  /Exhausted$/,
+  /Shutdown$/,
+  /^ReadOnly/,
+  /Error/,
+]
+
+function isInvertedPolarityCondition(type: string | undefined): boolean {
+  if (!type) return false
+  if (NEGATIVE_POLARITY_TYPES.has(type)) return true
+  return NEGATIVE_POLARITY_PATTERNS.some((re) => re.test(type))
+}
+
+function isConditionHealthy(cond: { type?: string; status?: string }): boolean {
+  const inverted = isInvertedPolarityCondition(cond.type)
+  return inverted ? cond.status === 'False' : cond.status === 'True'
+}
+
 export function ConditionsSection({ conditions }: { conditions?: any[] }) {
   if (!conditions || conditions.length === 0) return null
 
@@ -193,7 +232,7 @@ export function ConditionsSection({ conditions }: { conditions?: any[] }) {
     return (a.type || '').localeCompare(b.type || '')
   })
 
-  const failCount = sorted.filter((c: any) => c.status === 'False').length
+  const failCount = sorted.filter((c: any) => c.status !== 'Unknown' && !isConditionHealthy(c)).length
 
   return (
     <Section
@@ -206,8 +245,8 @@ export function ConditionsSection({ conditions }: { conditions?: any[] }) {
 
         <div className="space-y-0.5">
           {sorted.map((cond: any) => {
-            const isOk = cond.status === 'True'
             const isUnknown = cond.status === 'Unknown'
+            const isOk = !isUnknown && isConditionHealthy(cond)
             const isFail = !isOk && !isUnknown
             return (
               <div key={cond.type} className={clsx(
@@ -220,12 +259,14 @@ export function ConditionsSection({ conditions }: { conditions?: any[] }) {
                 </div>
                 {/* Timeline dot */}
                 <span className={clsx(
-                  'w-[13px] h-[13px] rounded-full flex items-center justify-center text-[8px] shrink-0 mt-[3px] z-10 ring-2 ring-theme-surface',
+                  'w-3 h-3 rounded-full flex items-center justify-center shrink-0 mt-1 z-10 ring-2 ring-theme-surface',
                   isOk ? 'bg-emerald-500/20 text-emerald-500 dark:bg-emerald-500/30'
                     : isUnknown ? 'bg-gray-400/20 text-gray-400 dark:bg-gray-400/30'
                     : 'bg-red-500/25 text-red-500 dark:bg-red-500/35'
                 )}>
-                  {isOk ? '✓' : isUnknown ? '?' : '✗'}
+                  {isOk ? <Check className="w-2 h-2" strokeWidth={4} />
+                    : isUnknown ? <Minus className="w-2 h-2" strokeWidth={4} />
+                    : <X className="w-2 h-2" strokeWidth={4} />}
                 </span>
                 {/* Content */}
                 <div className="min-w-0 flex-1 pl-2">

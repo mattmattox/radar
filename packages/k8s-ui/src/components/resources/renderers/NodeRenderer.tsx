@@ -106,37 +106,51 @@ export function NodeRenderer({ data, relationships, onViewPods, metrics, metrics
 
       {/* Capacity */}
       <Section title="Capacity" icon={HardDrive}>
-        <div className="space-y-1">
-          <div className="grid grid-cols-4 gap-2 text-xs text-theme-text-tertiary font-medium mb-2">
-            <span>Resource</span>
-            <span>Capacity</span>
-            <span>Allocatable</span>
-            <span>In Use</span>
-          </div>
-          <div className="grid grid-cols-4 gap-2 text-sm">
-            <span className="text-theme-text-secondary">CPU</span>
-            <span className="text-theme-text-primary">{capacity.cpu || '-'}</span>
-            <span className="text-theme-text-primary">{allocatable.cpu || '-'}</span>
-            <span className="text-theme-text-primary font-medium">{metrics?.usage?.cpu || '-'}</span>
-          </div>
-          <div className="grid grid-cols-4 gap-2 text-sm">
-            <span className="text-theme-text-secondary">Memory</span>
-            <span className="text-theme-text-primary">{formatMemory(capacity.memory)}</span>
-            <span className="text-theme-text-primary">{formatMemory(allocatable.memory)}</span>
-            <span className="text-theme-text-primary font-medium">{metrics?.usage?.memory ? formatMemory(metrics.usage.memory) : '-'}</span>
-          </div>
-          <div className="grid grid-cols-4 gap-2 text-sm">
-            <span className="text-theme-text-secondary">Pods</span>
-            <span className="text-theme-text-primary">{capacity.pods || '-'}</span>
-            <span className="text-theme-text-primary">{allocatable.pods || '-'}</span>
-            <span className="text-theme-text-primary font-medium">{relationships?.pods?.length ?? '-'}</span>
-          </div>
-          <div className="grid grid-cols-4 gap-2 text-sm">
-            <span className="text-theme-text-secondary">Ephemeral Storage</span>
-            <span className="text-theme-text-primary">{formatStorage(capacity['ephemeral-storage'])}</span>
-            <span className="text-theme-text-primary">{formatStorage(allocatable['ephemeral-storage'])}</span>
-            <span className="text-theme-text-primary">-</span>
-          </div>
+        <div className="space-y-2">
+          {[
+            {
+              label: 'CPU',
+              capacity: capacity.cpu,
+              allocatable: allocatable.cpu,
+              inUse: metrics?.usage?.cpu,
+            },
+            {
+              label: 'Memory',
+              capacity: formatMemory(capacity.memory),
+              allocatable: formatMemory(allocatable.memory),
+              inUse: metrics?.usage?.memory ? formatMemory(metrics.usage.memory) : undefined,
+            },
+            {
+              label: 'Pods',
+              capacity: capacity.pods,
+              allocatable: allocatable.pods,
+              inUse: relationships?.pods?.length,
+            },
+            {
+              label: 'Ephemeral Storage',
+              capacity: formatStorage(capacity['ephemeral-storage']),
+              allocatable: formatStorage(allocatable['ephemeral-storage']),
+              inUse: undefined,
+            },
+          ].map((row) => (
+            <div key={row.label} className="card-inner">
+              <div className="text-xs font-medium text-theme-text-secondary mb-1">{row.label}</div>
+              <div className="space-y-0.5 text-xs">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-theme-text-tertiary">Capacity</span>
+                  <span className="text-theme-text-primary tabular-nums">{row.capacity ?? '-'}</span>
+                </div>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-theme-text-tertiary">Allocatable</span>
+                  <span className="text-theme-text-primary tabular-nums">{row.allocatable ?? '-'}</span>
+                </div>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-theme-text-tertiary">In Use</span>
+                  <span className="text-theme-text-primary font-medium tabular-nums">{row.inUse ?? '-'}</span>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
         {onViewPods && (
           <div className="mt-3 pt-3 border-t border-theme-border">
