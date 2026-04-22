@@ -1,13 +1,15 @@
 import { useState, useMemo } from 'react'
-import { ChevronRight, ChevronDown } from 'lucide-react'
+import { ChevronRight, ChevronDown, Filter } from 'lucide-react'
 import type { LogLevel } from './useLogBuffer'
 import {
   getLevelColor,
-  highlightJson,
   unescapeJsonStrings,
   parseLogfmt,
   SYNTAX_COLOR_KEY,
   SYNTAX_COLOR_STRING,
+  SYNTAX_COLOR_NUMBER,
+  SYNTAX_COLOR_BOOLEAN,
+  SYNTAX_COLOR_NULL,
 } from '../../utils/log-format'
 import { SEVERITY_BADGE_BORDERED } from '../../utils/badge-colors'
 
@@ -17,9 +19,15 @@ interface StructuredLogLineProps {
   wordWrap: boolean
   isLogfmt?: boolean
   defaultExpanded?: boolean
+  /**
+   * When provided, field values in the expanded view become filterable — hovering
+   * shows a chip that, on click, calls onFilterValue(value) so the parent can
+   * add the value to the log search/filter.
+   */
+  onFilterValue?: (value: string) => void
 }
 
-export function StructuredLogLine({ content, level, wordWrap, isLogfmt, defaultExpanded }: StructuredLogLineProps) {
+export function StructuredLogLine({ content, level, wordWrap, isLogfmt, defaultExpanded, onFilterValue }: StructuredLogLineProps) {
   // null = user hasn't toggled this line; defers to defaultExpanded (global toggle)
   const [localExpanded, setLocalExpanded] = useState<boolean | null>(null)
   const expanded = localExpanded ?? defaultExpanded ?? false
@@ -75,17 +83,89 @@ export function StructuredLogLine({ content, level, wordWrap, isLogfmt, defaultE
         </span>
         <span className={`block ml-4 ${wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}`}>
           {isLogfmt ? (
-            <ExpandedLogfmt obj={parsed} />
+            <ExpandedLogfmt obj={parsed} onFilterValue={onFilterValue} />
           ) : (
-            <span dangerouslySetInnerHTML={{
-              __html: highlightJson(unescapeJsonStrings(JSON.stringify(parsed, null, 2)))
-            }} />
+            <JsonExpanded
+              text={unescapeJsonStrings(JSON.stringify(parsed, null, 2))}
+              onFilterValue={onFilterValue}
+            />
           )}
         </span>
         </>
       )}
     </span>
   )
+}
+
+/**
+ * Render a primitive log-field value with an optional filter chip that appears on hover.
+ * Clicking the chip calls onFilter(value) so the caller can push it into log search.
+ */
+function FilterableValue({
+  value, onFilter, color,
+}: { value: string; onFilter?: (v: string) => void; color?: string }) {
+  if (!onFilter) {
+    return <span style={color ? { color } : undefined}>{value}</span>
+  }
+  return (
+    <span className="group/flt inline-flex items-baseline align-baseline gap-0.5 rounded hover:bg-theme-surface/60">
+      <span style={color ? { color } : undefined}>{value}</span>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onFilter(value) }}
+        className="opacity-0 group-hover/flt:opacity-100 transition-opacity text-theme-text-tertiary hover:text-theme-text-primary px-0.5"
+        title={`Filter to lines containing "${value}"`}
+        aria-label={`Filter to lines containing ${value}`}
+      >
+        <Filter className="w-3 h-3 inline" />
+      </button>
+    </span>
+  )
+}
+
+/**
+ * Render pretty-printed JSON with filterable primitive values while preserving
+ * the layout that JSON.stringify(..., null, 2) produces. Tokenizes the string
+ * and emits React nodes so the hover chip can be wired per value.
+ */
+function JsonExpanded({ text, onFilterValue }: { text: string; onFilterValue?: (v: string) => void }) {
+  const tokenRe = /("(?:\\.|[^"\\])*")\s*:|("(?:\\.|[^"\\])*")|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|\b(true|false)\b|\b(null)\b/g
+  const nodes: React.ReactNode[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  let idx = 0
+  while ((match = tokenRe.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(<span key={`t${idx++}`}>{text.slice(lastIndex, match.index)}</span>)
+    }
+    const [, key, str, num, bool, nil] = match
+    if (key !== undefined) {
+      nodes.push(<span key={`k${idx++}`} style={{ color: SYNTAX_COLOR_KEY }}>{key}</span>)
+      nodes.push(<span key={`c${idx++}`}>:</span>)
+    } else if (str !== undefined) {
+      // Unescape the quoted string for the filter value (users expect to filter on
+      // the displayed string, not JSON-escaped bytes).
+      const inner = str.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      nodes.push(
+        <FilterableValue key={`s${idx++}`} value={inner} onFilter={onFilterValue} color={SYNTAX_COLOR_STRING} />
+      )
+    } else if (num !== undefined) {
+      nodes.push(
+        <FilterableValue key={`n${idx++}`} value={num} onFilter={onFilterValue} color={SYNTAX_COLOR_NUMBER} />
+      )
+    } else if (bool !== undefined) {
+      nodes.push(
+        <FilterableValue key={`b${idx++}`} value={bool} onFilter={onFilterValue} color={SYNTAX_COLOR_BOOLEAN} />
+      )
+    } else if (nil !== undefined) {
+      nodes.push(<span key={`z${idx++}`} style={{ color: SYNTAX_COLOR_NULL }}>{nil}</span>)
+    }
+    lastIndex = tokenRe.lastIndex
+  }
+  if (lastIndex < text.length) {
+    nodes.push(<span key={`t${idx++}`}>{text.slice(lastIndex)}</span>)
+  }
+  return <>{nodes}</>
 }
 
 function SummaryLine({ obj }: { obj: Record<string, unknown> }) {
@@ -117,16 +197,19 @@ function SummaryLine({ obj }: { obj: Record<string, unknown> }) {
   )
 }
 
-function ExpandedLogfmt({ obj }: { obj: Record<string, unknown> }) {
+function ExpandedLogfmt({ obj, onFilterValue }: { obj: Record<string, unknown>; onFilterValue?: (v: string) => void }) {
   return (
     <>
-      {Object.entries(obj).map(([key, val]) => (
-        <div key={key}>
-          <span style={{ color: SYNTAX_COLOR_KEY }}>{key}</span>
-          <span className="text-theme-text-tertiary">=</span>
-          <span style={{ color: SYNTAX_COLOR_STRING }}>{String(val)}</span>
-        </div>
-      ))}
+      {Object.entries(obj).map(([key, val]) => {
+        const str = String(val)
+        return (
+          <div key={key}>
+            <span style={{ color: SYNTAX_COLOR_KEY }}>{key}</span>
+            <span className="text-theme-text-tertiary">=</span>
+            <FilterableValue value={str} onFilter={onFilterValue} color={SYNTAX_COLOR_STRING} />
+          </div>
+        )
+      })}
     </>
   )
 }

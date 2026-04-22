@@ -5,22 +5,87 @@
 
 import type { LogLevel } from '../components/logs/useLogBuffer'
 
+export type TimestampFormat =
+  | 'time-local'
+  | 'time-utc'
+  | 'iso-local'
+  | 'iso-utc'
+  | 'relative'
+  | 'epoch'
+
+export const TIMESTAMP_FORMAT_LABELS: Record<TimestampFormat, string> = {
+  'time-local': 'Time (local)',
+  'time-utc': 'Time (UTC)',
+  'iso-local': 'ISO (local)',
+  'iso-utc': 'ISO (UTC)',
+  'relative': 'Relative',
+  'epoch': 'Epoch',
+}
+
+function pad2(n: number): string {
+  return n < 10 ? '0' + n : String(n)
+}
+
+function formatIsoLocal(date: Date): string {
+  const offset = -date.getTimezoneOffset()
+  const sign = offset >= 0 ? '+' : '-'
+  const abs = Math.abs(offset)
+  return (
+    date.getFullYear() +
+    '-' + pad2(date.getMonth() + 1) +
+    '-' + pad2(date.getDate()) +
+    'T' + pad2(date.getHours()) +
+    ':' + pad2(date.getMinutes()) +
+    ':' + pad2(date.getSeconds()) +
+    sign + pad2(Math.floor(abs / 60)) + ':' + pad2(abs % 60)
+  )
+}
+
+function formatRelative(date: Date, now: number): string {
+  const diffSec = Math.round((now - date.getTime()) / 1000)
+  const abs = Math.abs(diffSec)
+  const suffix = diffSec >= 0 ? ' ago' : ' from now'
+  if (abs < 2) return 'just now'
+  if (abs < 60) return `${abs}s${suffix}`
+  if (abs < 3600) return `${Math.floor(abs / 60)}m${suffix}`
+  if (abs < 86400) return `${Math.floor(abs / 3600)}h${suffix}`
+  return `${Math.floor(abs / 86400)}d${suffix}`
+}
+
 /**
  * Format a K8s log timestamp for display.
- * Extracts and formats the time portion (HH:MM:SS).
+ * Supports multiple display formats and UTC/local time zones.
+ * `now` is accepted for testability; defaults to Date.now().
  */
-export function formatLogTimestamp(ts: string): string {
+export function formatLogTimestamp(
+  ts: string,
+  format: TimestampFormat = 'time-local',
+  now?: number,
+): string {
   const date = new Date(ts)
   if (isNaN(date.getTime())) {
-    // Fallback: extract HH:MM:SS from ISO timestamp
     return ts.slice(11, 19) || ts
   }
-  return date.toLocaleTimeString('en-US', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+  switch (format) {
+    case 'time-utc':
+      return date.toISOString().slice(11, 19)
+    case 'iso-local':
+      return formatIsoLocal(date)
+    case 'iso-utc':
+      return date.toISOString()
+    case 'relative':
+      return formatRelative(date, now ?? Date.now())
+    case 'epoch':
+      return String(Math.floor(date.getTime() / 1000))
+    case 'time-local':
+    default:
+      return date.toLocaleTimeString('en-US', {
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+  }
 }
 
 /** Map a detected LogLevel to a Tailwind color class. */
@@ -294,9 +359,9 @@ export function parseLogRange(logRange: string): { tailLines?: number; sinceSeco
 // Syntax highlight colors shared between JSON and logfmt rendering
 export const SYNTAX_COLOR_KEY = '#7cacf8'
 export const SYNTAX_COLOR_STRING = '#73c991'
-const SYNTAX_COLOR_NUMBER = '#e5c07b'
-const SYNTAX_COLOR_BOOLEAN = '#c678dd'
-const SYNTAX_COLOR_NULL = '#808080'
+export const SYNTAX_COLOR_NUMBER = '#e5c07b'
+export const SYNTAX_COLOR_BOOLEAN = '#c678dd'
+export const SYNTAX_COLOR_NULL = '#808080'
 
 /**
  * Syntax-highlight a pretty-printed JSON string for HTML display.

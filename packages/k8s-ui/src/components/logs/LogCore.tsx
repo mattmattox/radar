@@ -1,6 +1,6 @@
 import { useRef, useCallback, useState, useMemo, useEffect, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
-import { Play, Square, Download, Search, X, Terminal, RotateCcw, ChevronUp, ChevronDown, CaseSensitive, Regex, WrapText, Clock, Copy, Trash2, Filter, Braces, Sun, Moon } from 'lucide-react'
+import { Play, Square, Download, Search, X, Terminal, RotateCcw, ChevronUp, ChevronDown, ChevronRight, CaseSensitive, Regex, WrapText, Clock, Copy, Trash2, Filter, Braces, Sun, Moon, Palette, ListCollapse } from 'lucide-react'
 import type { LogEntry, LogLevel } from './useLogBuffer'
 import { useLogSearch } from './useLogSearch'
 import { StructuredLogLine } from './StructuredLogLine'
@@ -11,6 +11,8 @@ import {
   highlightSearchMatches,
   stripAnsi,
   ansiToHtml,
+  type TimestampFormat,
+  TIMESTAMP_FORMAT_LABELS,
 } from '../../utils/log-format'
 
 export type DownloadFormat = 'txt' | 'json' | 'csv'
@@ -38,6 +40,23 @@ const LEVEL_OPTIONS: { level: LogLevel; label: string; color: string; activeColo
   { level: 'info', label: 'INFO', color: 'text-blue-400', activeColor: 'bg-blue-500/25 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 border-blue-500/60 dark:border-blue-500/40' },
   { level: 'debug', label: 'DBG', color: 'text-theme-text-secondary', activeColor: 'bg-theme-surface text-theme-text-secondary border-theme-border-light' },
 ]
+
+const TIMESTAMP_FORMAT_ORDER: TimestampFormat[] = [
+  'time-local', 'time-utc', 'iso-local', 'iso-utc', 'relative', 'epoch',
+]
+
+function isContinuationLine(content: string): boolean {
+  // Lines starting with whitespace are the dominant stack-trace continuation pattern:
+  // Java `\tat com.foo.Bar`, Go `\tpackage.func`, Node `    at func`, Python `  File "..."`.
+  if (/^\s/.test(content)) return true
+  // Java's secondary chain markers that don't start with whitespace.
+  return /^(Caused by:|Suppressed:|\.\.\. \d+ more)/.test(content)
+}
+
+interface LogGroup {
+  head: LogEntry
+  continuations: LogEntry[]
+}
 
 const TIP_DELAY = 150
 
@@ -67,11 +86,33 @@ export function LogCore({
   const [showTimestamps, setShowTimestamps] = useState(() => {
     try { return localStorage.getItem('radar-logs-timestamps') !== 'false' } catch { return true }
   })
+  const [tsFormat, setTsFormat] = useState<TimestampFormat>(() => {
+    try {
+      const v = localStorage.getItem('radar-logs-ts-format') as TimestampFormat | null
+      return v && TIMESTAMP_FORMAT_ORDER.includes(v) ? v : 'time-local'
+    } catch { return 'time-local' }
+  })
+  const [ansiEnabled, setAnsiEnabled] = useState(() => {
+    try { return localStorage.getItem('radar-logs-ansi') !== 'false' } catch { return true }
+  })
+  const [collapseStacks, setCollapseStacks] = useState(() => {
+    try { return localStorage.getItem('radar-logs-collapse-stacks') !== 'false' } catch { return true }
+  })
   const [enabledLevels, setEnabledLevels] = useState<Set<LogLevel>>(
     new Set(['error', 'warn', 'info', 'debug'])
   )
   const [showDownloadMenu, setShowDownloadMenu] = useState(false)
+  const [showTsMenu, setShowTsMenu] = useState(false)
   const [expandAllStructured, setExpandAllStructured] = useState(false)
+  const [expandedStacks, setExpandedStacks] = useState<Set<number>>(() => new Set())
+
+  // Re-render every 15s so "relative" timestamps tick forward during idle viewing.
+  const [, setNowTick] = useState(0)
+  useEffect(() => {
+    if (tsFormat !== 'relative' || !showTimestamps) return
+    const id = setInterval(() => setNowTick(n => n + 1), 15_000)
+    return () => clearInterval(id)
+  }, [tsFormat, showTimestamps])
 
   // Level-filtered entries
   // 'unknown' logs are shown when all 4 known levels are enabled (no active filtering)
@@ -112,6 +153,18 @@ export function LogCore({
     return () => window.removeEventListener('click', handleClick)
   }, [showDownloadMenu])
 
+  // Same close-on-outside-click for the timestamp format menu.
+  const tsMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!showTsMenu) return
+    const handleClick = (e: MouseEvent) => {
+      if (tsMenuRef.current?.contains(e.target as Node)) return
+      setShowTsMenu(false)
+    }
+    window.addEventListener('click', handleClick)
+    return () => window.removeEventListener('click', handleClick)
+  }, [showTsMenu])
+
   // Keyboard shortcut: Ctrl+F to open search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -133,14 +186,6 @@ export function LogCore({
     setAtBottom(bottom)
   }, [])
 
-  const scrollToBottom = useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({
-      index: displayEntries.length - 1,
-      align: 'end',
-      behavior: 'smooth',
-    })
-  }, [displayEntries.length])
-
   const toggleWrap = useCallback(() => {
     setWordWrap(prev => {
       const next = !prev
@@ -156,6 +201,50 @@ export function LogCore({
       return next
     })
   }, [])
+
+  const pickTsFormat = useCallback((fmt: TimestampFormat) => {
+    setTsFormat(fmt)
+    try { localStorage.setItem('radar-logs-ts-format', fmt) } catch {}
+    // Auto-show timestamps when user picks a format — otherwise the change isn't visible.
+    setShowTimestamps(true)
+    try { localStorage.setItem('radar-logs-timestamps', 'true') } catch {}
+    setShowTsMenu(false)
+  }, [])
+
+  const toggleAnsi = useCallback(() => {
+    setAnsiEnabled(prev => {
+      const next = !prev
+      try { localStorage.setItem('radar-logs-ansi', String(next)) } catch {}
+      return next
+    })
+  }, [])
+
+  const toggleCollapseStacks = useCallback(() => {
+    setCollapseStacks(prev => {
+      const next = !prev
+      try { localStorage.setItem('radar-logs-collapse-stacks', String(next)) } catch {}
+      return next
+    })
+  }, [])
+
+  const toggleStackExpanded = useCallback((id: number) => {
+    setExpandedStacks(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  // Clicking a filter chip in a structured log value pushes the value into the
+  // log search and enables filter mode so only matching lines are shown.
+  const handleFilterValue = useCallback((value: string) => {
+    search.setQuery(value)
+    // Values often contain regex metacharacters — force literal-substring matching.
+    search.setIsRegex(false)
+    search.setFilterMode(true)
+    if (!search.isOpen) search.open()
+  }, [search])
 
   const toggleLevel = useCallback((level: LogLevel) => {
     setEnabledLevels(prev => {
@@ -175,6 +264,31 @@ export function LogCore({
         ? search.filteredEntries[search.currentMatch]?.id
         : levelFilteredEntries[search.matchIndices[search.currentMatch]]?.id)
     : -1
+
+  // Group stack-trace continuation lines under their preceding head line.
+  // Disabled while search is active so matches inside continuations remain visible.
+  const groupedEntries = useMemo<LogGroup[]>(() => {
+    if (!collapseStacks || search.query) {
+      return displayEntries.map(e => ({ head: e, continuations: [] }))
+    }
+    const groups: LogGroup[] = []
+    for (const entry of displayEntries) {
+      if (groups.length > 0 && isContinuationLine(entry.content)) {
+        groups[groups.length - 1].continuations.push(entry)
+      } else {
+        groups.push({ head: entry, continuations: [] })
+      }
+    }
+    return groups
+  }, [displayEntries, collapseStacks, search.query])
+
+  const scrollToBottom = useCallback(() => {
+    virtuosoRef.current?.scrollToIndex({
+      index: groupedEntries.length - 1,
+      align: 'end',
+      behavior: 'smooth',
+    })
+  }, [groupedEntries.length])
 
   return (
     <div className={`flex flex-col h-full bg-theme-base${isDark ? ' dark' : ''}`} style={{ colorScheme: isDark ? 'dark' : 'light', fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, 'DejaVu Sans Mono', monospace" }}>
@@ -248,15 +362,73 @@ export function LogCore({
           </Tooltip>
         )}
 
-        {/* Timestamp toggle */}
-        <Tooltip content={showTimestamps ? 'Hide timestamps' : 'Show timestamps'} delay={TIP_DELAY} position="bottom">
+        {/* Timestamp toggle + format picker */}
+        <div className="flex items-center">
+          <Tooltip content={showTimestamps ? 'Hide timestamps' : 'Show timestamps'} delay={TIP_DELAY} position="bottom">
+            <button
+              onClick={toggleTimestamps}
+              className={`p-1.5 rounded-l transition-colors ${
+                showTimestamps ? 'btn-brand-toggle' : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated'
+              }`}
+            >
+              <Clock className="w-4 h-4" />
+            </button>
+          </Tooltip>
+          <div className="relative" ref={tsMenuRef}>
+            <Tooltip content={`Timestamp format: ${TIMESTAMP_FORMAT_LABELS[tsFormat]}`} delay={TIP_DELAY} position="bottom">
+              <button
+                onClick={() => setShowTsMenu(prev => !prev)}
+                className={`py-1.5 pr-1 pl-0.5 rounded-r transition-colors ${
+                  showTimestamps ? 'btn-brand-toggle' : 'text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-elevated'
+                }`}
+                aria-label="Pick timestamp format"
+              >
+                <ChevronDown className="w-3 h-3" />
+              </button>
+            </Tooltip>
+            {showTsMenu && (
+              <div className="absolute top-full right-0 mt-1 w-44 bg-theme-elevated border border-theme-border rounded-lg shadow-lg z-50">
+                <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-theme-text-tertiary border-b border-theme-border">
+                  Timestamp format
+                </div>
+                {TIMESTAMP_FORMAT_ORDER.map(fmt => (
+                  <button
+                    key={fmt}
+                    onClick={() => pickTsFormat(fmt)}
+                    className={`w-full text-left px-3 py-1.5 text-xs hover:bg-theme-hover flex items-center justify-between ${
+                      tsFormat === fmt ? 'text-theme-text-primary' : 'text-theme-text-secondary'
+                    }`}
+                  >
+                    <span>{TIMESTAMP_FORMAT_LABELS[fmt]}</span>
+                    {tsFormat === fmt && <span className="text-[10px] text-blue-400">✓</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Collapse stack-trace continuations toggle */}
+        <Tooltip content={collapseStacks ? 'Stop grouping stack traces' : 'Group stack-trace lines'} delay={TIP_DELAY} position="bottom">
           <button
-            onClick={toggleTimestamps}
+            onClick={toggleCollapseStacks}
             className={`p-1.5 rounded transition-colors ${
-              showTimestamps ? 'btn-brand-toggle' : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated'
+              collapseStacks ? 'btn-brand-toggle' : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated'
             }`}
           >
-            <Clock className="w-4 h-4" />
+            <ListCollapse className="w-4 h-4" />
+          </button>
+        </Tooltip>
+
+        {/* ANSI color rendering toggle */}
+        <Tooltip content={ansiEnabled ? 'Hide ANSI colors' : 'Render ANSI colors'} delay={TIP_DELAY} position="bottom">
+          <button
+            onClick={toggleAnsi}
+            className={`p-1.5 rounded transition-colors ${
+              ansiEnabled ? 'btn-brand-toggle' : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated'
+            }`}
+          >
+            <Palette className="w-4 h-4" />
           </button>
         </Tooltip>
 
@@ -450,7 +622,7 @@ export function LogCore({
           <Terminal className="w-8 h-8" />
           <span>{errorMessage}</span>
         </div>
-      ) : displayEntries.length === 0 ? (
+      ) : groupedEntries.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-theme-text-tertiary gap-2">
           <Terminal className="w-8 h-8" />
           <span>{emptyMessage}</span>
@@ -459,23 +631,28 @@ export function LogCore({
         <div className="flex-1 relative">
           <Virtuoso
             ref={virtuosoRef}
-            data={displayEntries}
+            data={groupedEntries}
             followOutput={handleFollowOutput}
-            initialTopMostItemIndex={displayEntries.length - 1}
+            initialTopMostItemIndex={groupedEntries.length - 1}
             atBottomStateChange={handleAtBottomStateChange}
             atBottomThreshold={50}
             increaseViewportBy={200}
-            itemContent={(_index, entry) => (
-              <LogLine
-                entry={entry}
+            itemContent={(_index, group) => (
+              <LogGroupItem
+                group={group}
                 searchQuery={search.query}
                 searchIsRegex={search.isRegex}
                 searchIsCaseSensitive={search.isCaseSensitive}
                 showPodName={showPodName}
                 showTimestamp={showTimestamps}
-                isCurrentMatch={entry.id === currentHighlightId}
+                tsFormat={tsFormat}
+                ansiEnabled={ansiEnabled}
+                isCurrentMatch={group.head.id === currentHighlightId}
                 wordWrap={wordWrap}
                 defaultExpanded={expandAllStructured}
+                onFilterValue={handleFilterValue}
+                isStackExpanded={expandedStacks.has(group.head.id)}
+                onToggleStack={toggleStackExpanded}
               />
             )}
             className="h-full font-mono text-xs"
@@ -512,6 +689,23 @@ function Shortcut({ keys, label }: { keys: string; label: string }) {
   )
 }
 
+interface LogLineProps {
+  entry: LogEntry
+  searchQuery: string
+  searchIsRegex: boolean
+  searchIsCaseSensitive: boolean
+  showPodName: boolean
+  showTimestamp: boolean
+  tsFormat: TimestampFormat
+  ansiEnabled: boolean
+  isCurrentMatch: boolean
+  wordWrap: boolean
+  defaultExpanded: boolean
+  onFilterValue?: (value: string) => void
+  /** Optional lead element rendered at the start of the row (e.g. stack-trace toggle). */
+  leadSlot?: ReactNode
+}
+
 function LogLine({
   entry,
   searchQuery,
@@ -519,23 +713,17 @@ function LogLine({
   searchIsCaseSensitive,
   showPodName,
   showTimestamp,
+  tsFormat,
+  ansiEnabled,
   isCurrentMatch,
   wordWrap,
   defaultExpanded,
-}: {
-  entry: LogEntry
-  searchQuery: string
-  searchIsRegex: boolean
-  searchIsCaseSensitive: boolean
-  showPodName: boolean
-  showTimestamp: boolean
-  isCurrentMatch: boolean
-  wordWrap: boolean
-  defaultExpanded: boolean
-}) {
+  onFilterValue,
+  leadSlot,
+}: LogLineProps) {
   const levelColor = getLevelColor(entry.level)
 
-  // Determine content rendering
+  // Determine content rendering. Priority: search highlight > structured > ANSI/plain.
   let contentElement: React.ReactNode
   if (searchQuery) {
     const plain = stripAnsi(entry.content)
@@ -554,15 +742,22 @@ function LogLine({
         wordWrap={wordWrap}
         isLogfmt={entry.isLogfmt}
         defaultExpanded={defaultExpanded}
+        onFilterValue={onFilterValue}
       />
     )
-  } else {
+  } else if (ansiEnabled) {
     const html = ansiToHtml(entry.content)
     contentElement = (
       <span
         className={`${wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} ${levelColor}`}
         dangerouslySetInnerHTML={{ __html: html }}
       />
+    )
+  } else {
+    contentElement = (
+      <span className={`${wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} ${levelColor}`}>
+        {stripAnsi(entry.content)}
+      </span>
     )
   }
 
@@ -573,9 +768,13 @@ function LogLine({
 
   return (
     <div className={`flex hover:bg-theme-surface/50 group leading-5 px-2 ${isCurrentMatch ? 'bg-yellow-500/10' : ''}`}>
+      {leadSlot}
       {showTimestamp && entry.timestamp && (
-        <span className="text-theme-text-tertiary select-none pr-2 whitespace-nowrap">
-          {formatLogTimestamp(entry.timestamp)}
+        <span
+          className="text-theme-text-tertiary select-none pr-2 whitespace-nowrap"
+          title={entry.timestamp}
+        >
+          {formatLogTimestamp(entry.timestamp, tsFormat)}
         </span>
       )}
       {showPodName && entry.pod && (
@@ -594,6 +793,63 @@ function LogLine({
       >
         <Copy className="w-3 h-3" />
       </button>
+    </div>
+  )
+}
+
+interface LogGroupItemProps {
+  group: LogGroup
+  searchQuery: string
+  searchIsRegex: boolean
+  searchIsCaseSensitive: boolean
+  showPodName: boolean
+  showTimestamp: boolean
+  tsFormat: TimestampFormat
+  ansiEnabled: boolean
+  isCurrentMatch: boolean
+  wordWrap: boolean
+  defaultExpanded: boolean
+  onFilterValue: (value: string) => void
+  isStackExpanded: boolean
+  onToggleStack: (id: number) => void
+}
+
+function LogGroupItem(props: LogGroupItemProps) {
+  const { group, isStackExpanded, onToggleStack, ...rest } = props
+  const hasStack = group.continuations.length > 0
+
+  const stackToggle = hasStack ? (
+    <button
+      onClick={() => onToggleStack(group.head.id)}
+      className="mr-1 self-start p-0.5 rounded text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-surface/50 shrink-0"
+      title={isStackExpanded ? 'Collapse stack trace' : `Expand ${group.continuations.length} stack frames`}
+    >
+      {isStackExpanded
+        ? <ChevronDown className="w-3 h-3" />
+        : <ChevronRight className="w-3 h-3" />}
+    </button>
+  ) : null
+
+  return (
+    <div>
+      <LogLine
+        entry={group.head}
+        {...rest}
+        leadSlot={stackToggle}
+      />
+      {hasStack && !isStackExpanded && (
+        <button
+          onClick={() => onToggleStack(group.head.id)}
+          className="block w-full text-left pl-6 pr-2 py-0 text-[10px] text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-surface/40"
+        >
+          [+{group.continuations.length} stack {group.continuations.length === 1 ? 'line' : 'lines'}]
+        </button>
+      )}
+      {hasStack && isStackExpanded && group.continuations.map(cont => (
+        <div key={cont.id} className="pl-4">
+          <LogLine entry={cont} {...rest} isCurrentMatch={false} />
+        </div>
+      ))}
     </div>
   )
 }

@@ -8,10 +8,12 @@ interface UseLogSearchReturn {
   setQuery: (q: string) => void
   isRegex: boolean
   toggleRegex: () => void
+  setIsRegex: (v: boolean) => void
   isCaseSensitive: boolean
   toggleCaseSensitive: () => void
   isFilterMode: boolean
   toggleFilterMode: () => void
+  setFilterMode: (v: boolean) => void
   matchCount: number
   currentMatch: number
   /** Indices into the entries array that match */
@@ -121,6 +123,7 @@ export function useLogSearch(
   const toggleRegex = useCallback(() => setIsRegex(p => !p), [])
   const toggleCaseSensitive = useCallback(() => setIsCaseSensitive(p => !p), [])
   const toggleFilterMode = useCallback(() => setIsFilterMode(p => !p), [])
+  const setFilterMode = useCallback((v: boolean) => setIsFilterMode(v), [])
 
   const open = useCallback(() => setIsOpen(true), [])
   const close = useCallback(() => {
@@ -133,10 +136,12 @@ export function useLogSearch(
     setQuery,
     isRegex,
     toggleRegex,
+    setIsRegex,
     isCaseSensitive,
     toggleCaseSensitive,
     isFilterMode,
     toggleFilterMode,
+    setFilterMode,
     matchCount: matchIndices.length,
     currentMatch,
     matchIndices,
