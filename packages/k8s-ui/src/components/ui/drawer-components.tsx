@@ -183,40 +183,64 @@ export function Property({ label, value, copyable, onCopy, copied }: PropertyPro
 // ============================================================================
 
 // Condition types where status=True means a problem and status=False means healthy.
-// Covers kubelet-native Node conditions, Pod DisruptionTarget, common Node Problem
-// Detector (NPD) conditions, and the `Degraded`/`Stalled`/`OutOfSync`/`ReplicaFailure`
-// patterns used by Operator-style CRDs (ArgoCD, FluxCD, cert-manager, etc.).
-// Name-based patterns catch additional same-family types.
+//
+// K8s has no canonical API metadata for polarity — SIG-API Machinery explicitly
+// declined to add it (https://gateway-api.sigs.k8s.io/geps/gep-1364/), so every
+// consumer has to maintain a list. This one is assembled from:
+//   - Core K8s (kubelet node conditions, Pod, workload controllers)
+//   - Node Problem Detector default configs (kubernetes/node-problem-detector)
+//   - GKE's NPD plugin set (observed in-cluster)
+//   - ArgoCD Application conditions (argoproj/argo-cd)
+//   - FluxCD meta conditions (fluxcd/pkg/apis/meta)
+//   - Conventional Operator-pattern conditions (Degraded, OutOfSync)
+// Patterns only cover two NPD naming families whose convention is
+// strict ("Deprecated*" for deprecation checks, "Frequent*" for restart
+// counters) — everything else is explicit to avoid guessing wrong.
 const NEGATIVE_POLARITY_TYPES = new Set([
+  // Core K8s — Node (kubelet)
   'MemoryPressure',
   'DiskPressure',
   'PIDPressure',
   'NetworkUnavailable',
+  // Core K8s — Pod
   'DisruptionTarget',
-  'KernelDeadlock',
-  'ReadonlyFilesystem',
-  'CorruptDockerOverlay2',
-  'Swap',
-  'Degraded',
-  'Stalled',
-  'OutOfSync',
+  // Core K8s — workloads
   'ReplicaFailure',
+  // NPD — upstream default configs
+  'KernelDeadlock',
+  'CperHardwareErrorFatal',
+  'XfsShutdown',
+  'CorruptDockerOverlay2',
+  'ReadonlyFilesystem',
+  'ContainerRuntimeUnhealthy',
+  'KubeletUnhealthy',
+  // NPD — GKE extensions (observed)
+  'ReadOnlyRootFileSystem',
+  'ResourceExhausted',
+  'Swap',
+  // ArgoCD Application
+  'DeletionError',
+  'InvalidSpecError',
+  'ComparisonError',
+  'SyncError',
+  'UnknownError',
+  'SharedResourceWarning',
+  'RepeatedResourceWarning',
+  'OrphanedResourceWarning',
+  'ExcludedResourceWarning',
+  'OutOfSync',
+  // FluxCD (meta)
+  'Stalled',
+  // Operator-pattern CRDs (widespread)
+  'Degraded',
+  'Failed',
 ])
 
 const NEGATIVE_POLARITY_PATTERNS: RegExp[] = [
-  /Pressure$/,
-  /Unavailable$/,
+  // NPD deprecation-check family (e.g. DeprecatedAuthsFieldInContainerdConfiguration)
   /^Deprecated/,
+  // NPD restart-counter family (e.g. FrequentKubeletRestart, FrequentUnregisterNetDevice)
   /^Frequent/,
-  /^Corrupt/,
-  /Deadlock$/,
-  /Exhausted$/,
-  /Shutdown$/,
-  /^ReadOnly/,
-  /Error/,
-  /Failure$/,
-  /^Failed/,
-  /^Failing/,
 ]
 
 function isInvertedPolarityCondition(type: string | undefined): boolean {
