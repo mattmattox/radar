@@ -218,6 +218,17 @@ const NEGATIVE_POLARITY_TYPES = new Set([
   'ReadOnlyRootFileSystem',
   'ResourceExhausted',
   'Swap',
+  // NPD — AKS extensions (learn.microsoft.com/azure/aks/node-problem-detector)
+  'FilesystemCorruptionProblem',
+  'KubeletProblem',
+  'ContainerRuntimeProblem',
+  'VMEventScheduled',
+  'GPUMissing',
+  'NVLinkStatusInactive',
+  'XIDErrors',
+  'IBLinkFlapping',
+  'GPUClockThrottling',
+  'UnhealthyNvidiaDevicePlugin',
   // ArgoCD Application
   'DeletionError',
   'InvalidSpecError',
@@ -229,8 +240,25 @@ const NEGATIVE_POLARITY_TYPES = new Set([
   'OrphanedResourceWarning',
   'ExcludedResourceWarning',
   'OutOfSync',
+  // ArgoCD ApplicationSet
+  'ErrorOccurred',
   // FluxCD (meta)
   'Stalled',
+  // Gateway API (sigs.k8s.io/gateway-api v1)
+  'Conflicted',
+  'OverlappingTLSConfig',
+  'PartiallyInvalid',
+  'InsecureFrontendValidationMode',
+  // cert-manager (CertificateRequest)
+  'Denied',
+  'InvalidRequest',
+  // Karpenter NodeClaim
+  'Drifted',
+  // VPA
+  'ConfigUnsupported',
+  'LowConfidence',
+  // KEDA ScaledObject
+  'Fallback',
   // Operator-pattern CRDs (widespread)
   'Degraded',
   'Failed',
