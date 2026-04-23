@@ -35,10 +35,15 @@ type workloadLogEntry struct {
 	Content   string `json:"content"`
 }
 
-// validWorkloadKinds defines which resource types support workload logs
+// validWorkloadKinds defines which resource types support workload logs.
+// Accepts both singular and plural forms so the frontend can send K8s canonical
+// Kind names ("Deployment") without additional pluralization.
 var validWorkloadKinds = map[string]bool{
+	"deployment":   true,
 	"deployments":  true,
+	"statefulset":  true,
 	"statefulsets": true,
+	"daemonset":    true,
 	"daemonsets":   true,
 }
 

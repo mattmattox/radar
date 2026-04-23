@@ -8,10 +8,11 @@ import (
 )
 
 // GetWorkloadSelector returns the label selector for a workload from cache.
-// kind must be "deployments", "statefulsets", or "daemonsets".
+// kind is case-insensitive and accepts either singular ("deployment") or plural
+// ("deployments") — matches K8s canonical Kind or REST-style plural.
 func GetWorkloadSelector(cache *ResourceCache, kind, namespace, name string) (*metav1.LabelSelector, error) {
 	switch kind {
-	case "deployments":
+	case "deployment", "deployments":
 		lister := cache.Deployments()
 		if lister == nil {
 			return nil, fmt.Errorf("insufficient permissions to list deployments")
@@ -22,7 +23,7 @@ func GetWorkloadSelector(cache *ResourceCache, kind, namespace, name string) (*m
 		}
 		return dep.Spec.Selector, nil
 
-	case "statefulsets":
+	case "statefulset", "statefulsets":
 		lister := cache.StatefulSets()
 		if lister == nil {
 			return nil, fmt.Errorf("insufficient permissions to list statefulsets")
@@ -33,7 +34,7 @@ func GetWorkloadSelector(cache *ResourceCache, kind, namespace, name string) (*m
 		}
 		return sts.Spec.Selector, nil
 
-	case "daemonsets":
+	case "daemonset", "daemonsets":
 		lister := cache.DaemonSets()
 		if lister == nil {
 			return nil, fmt.Errorf("insufficient permissions to list daemonsets")
