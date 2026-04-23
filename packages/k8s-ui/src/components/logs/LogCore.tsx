@@ -1,6 +1,6 @@
 import { useRef, useCallback, useState, useMemo, useEffect, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
-import { Play, Square, Download, Search, X, Terminal, RotateCcw, ChevronUp, ChevronDown, ChevronRight, CaseSensitive, Regex, WrapText, Clock, Copy, Trash2, Filter, Braces, Sun, Moon, Palette, ListCollapse } from 'lucide-react'
+import { Play, Square, Download, Search, X, Terminal, RotateCcw, ChevronUp, ChevronDown, ChevronRight, CaseSensitive, Regex, WrapText, Clock, Copy, Trash2, Filter, Braces, Palette, ListCollapse } from 'lucide-react'
 import type { LogEntry, LogLevel } from './useLogBuffer'
 import { useLogSearch } from './useLogSearch'
 import { StructuredLogLine } from './StructuredLogLine'
@@ -30,7 +30,7 @@ interface LogCoreProps {
   showPodName?: boolean
   emptyMessage?: string
   errorMessage?: string | null
-  /** Force dark mode on the logs container (default: true). Logs are typically dark-themed. */
+  /** Optionally force dark styling for embedded consumers. */
   forceDark?: boolean
 }
 
@@ -44,6 +44,15 @@ const LEVEL_OPTIONS: { level: LogLevel; label: string; color: string; activeColo
 const TIMESTAMP_FORMAT_ORDER: TimestampFormat[] = [
   'time-local', 'time-utc', 'iso-local', 'iso-utc', 'relative', 'epoch',
 ]
+
+const TIMESTAMP_FORMAT_SHORT_LABELS: Record<TimestampFormat, string> = {
+  'time-local': 'Local time',
+  'time-utc': 'UTC time',
+  'iso-local': 'Full date',
+  'iso-utc': 'UTC date',
+  'relative': 'Relative',
+  'epoch': 'Unix time',
+}
 
 function isContinuationLine(content: string): boolean {
   // Lines starting with whitespace are the dominant stack-trace continuation pattern:
@@ -73,13 +82,10 @@ export function LogCore({
   showPodName = false,
   emptyMessage = 'No logs available',
   errorMessage,
-  forceDark = true,
+  forceDark = false,
 }: LogCoreProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const [atBottom, setAtBottom] = useState(true)
-  const [isDark, setIsDark] = useState(() => {
-    try { const v = localStorage.getItem('radar-logs-dark'); return v !== null ? v !== 'false' : forceDark } catch { return forceDark }
-  })
   const [wordWrap, setWordWrap] = useState(() => {
     try { return localStorage.getItem('radar-logs-wrap') !== 'false' } catch { return true }
   })
@@ -291,7 +297,10 @@ export function LogCore({
   }, [groupedEntries.length])
 
   return (
-    <div className={`flex flex-col h-full bg-theme-base${isDark ? ' dark' : ''}`} style={{ colorScheme: isDark ? 'dark' : 'light', fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, 'DejaVu Sans Mono', monospace" }}>
+    <div
+      className={`flex flex-col h-full bg-theme-base${forceDark ? ' dark' : ''}`}
+      style={{ colorScheme: forceDark ? 'dark' : undefined, fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, 'DejaVu Sans Mono', monospace" }}
+    >
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-theme-border bg-theme-surface">
         {toolbarExtra}
@@ -378,12 +387,15 @@ export function LogCore({
             <Tooltip content={`Timestamp format: ${TIMESTAMP_FORMAT_LABELS[tsFormat]}`} delay={TIP_DELAY} position="bottom">
               <button
                 onClick={() => setShowTsMenu(prev => !prev)}
-                className={`py-1.5 pr-1 pl-0.5 rounded-r transition-colors ${
+                className={`px-2 py-1.5 rounded-r text-[10px] font-medium transition-colors whitespace-nowrap ${
                   showTimestamps ? 'btn-brand-toggle' : 'text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-elevated'
                 }`}
                 aria-label="Pick timestamp format"
               >
-                <ChevronDown className="w-3 h-3" />
+                <span className="inline-flex items-center gap-1">
+                  <span>{TIMESTAMP_FORMAT_SHORT_LABELS[tsFormat]}</span>
+                  <ChevronDown className="w-3 h-3" />
+                </span>
               </button>
             </Tooltip>
             {showTsMenu && (
@@ -480,20 +492,6 @@ export function LogCore({
             </div>
           )}
         </div>
-
-        {/* Dark/Light toggle */}
-        <Tooltip content={isDark ? 'Light mode' : 'Dark mode'} delay={TIP_DELAY} position="bottom">
-          <button
-            onClick={() => {
-              const next = !isDark
-              setIsDark(next)
-              try { localStorage.setItem('radar-logs-dark', String(next)) } catch {}
-            }}
-            className="p-1.5 rounded text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated"
-          >
-            {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </button>
-        </Tooltip>
 
         {/* Clear */}
         {onClear && (
