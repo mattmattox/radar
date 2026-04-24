@@ -1,4 +1,4 @@
-.PHONY: build install clean dev frontend backend test test-e2e lint help restart restart-fe kill watch-backend watch-frontend
+.PHONY: build install clean dev frontend backend test test-e2e test-chart lint help restart restart-fe kill watch-backend watch-frontend
 .PHONY: release release-binaries-dry docker docker-test docker-multiarch docker-push
 .PHONY: desktop desktop-binary desktop-dev desktop-package-darwin desktop-package-windows desktop-package-linux
 
@@ -136,6 +136,10 @@ test:
 # Run e2e tests against the current kubeconfig cluster (on-demand, not in CI)
 test-e2e:
 	go test -tags e2e -v -timeout 5m ./internal/k8s/
+
+# Smoke-test the Helm chart's template rendering (requires `helm` on PATH)
+test-chart:
+	./scripts/test-chart.sh
 
 # Run linter
 lint:
