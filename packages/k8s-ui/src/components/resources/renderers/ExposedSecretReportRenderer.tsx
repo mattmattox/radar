@@ -4,6 +4,7 @@ import { clsx } from 'clsx'
 import { Section, PropertyList, Property } from '../../ui/drawer-components'
 import { formatAge } from '../resource-utils'
 import { SEVERITY_BADGE_COLORS, TrivyAlertBanner, formatTrivyImage } from './trivy-shared'
+import { pluralize } from '../../../utils/pluralize'
 
 interface ExposedSecretReportRendererProps {
   data: any
@@ -72,7 +73,7 @@ export function ExposedSecretReportRenderer({ data }: ExposedSecretReportRendere
             className="flex items-center gap-1 text-xs text-theme-text-secondary hover:text-theme-text-primary mb-2"
           >
             {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-            {secrets.length} secret{secrets.length !== 1 ? 's' : ''}
+            {pluralize(secrets.length, 'secret')}
           </button>
           {expanded && (
             <div className="overflow-x-auto -mx-1">

@@ -27,6 +27,7 @@ import { useHasLimitedAccess } from '../../contexts/CapabilitiesContext'
 import type { TimelineEvent, Topology } from '../../types'
 import type { NavigateToResource } from '../../utils/navigation'
 import { kindToPlural } from '../../utils/navigation'
+import { pluralize } from '@skyhook-io/k8s-ui'
 import { isChangeEvent, isHistoricalEvent, isOperation, displayKind } from '../../types'
 import { DiffViewer } from './DiffViewer'
 import { getOperationColor, getHealthBadgeColor, getEventTypeColor } from '../../utils/badge-colors'
@@ -513,8 +514,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
           </div>
           <div className="flex items-center gap-4">
             <span className="text-xs text-theme-text-tertiary">
-              {visibleLanes.length} resource{visibleLanes.length !== 1 ? 's' : ''} · {filteredEvents.length} event
-              {filteredEvents.length !== 1 ? 's' : ''}
+              {pluralize(visibleLanes.length, 'resource')} · {pluralize(filteredEvents.length, 'event')}
               {searchTerm && ` (filtered)`}
             </span>
             {/* Group by app toggle */}
@@ -707,7 +707,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
                               const issueCount = allEvents.filter(e => isCriticalIssue(e)).length
                               if (issueCount === 0) return null
                               return (
-                                <Tooltip content={`${issueCount} critical issue${issueCount > 1 ? 's' : ''} (OOMKilled, CrashLoopBackOff, etc.)`} position="top">
+                                <Tooltip content={`${pluralize(issueCount, 'critical issue')} (OOMKilled, CrashLoopBackOff, etc.)`} position="top">
                                   <span className="flex items-center gap-0.5 text-xs px-1 py-0.5 rounded bg-red-500/15 text-red-600 dark:text-red-300">
                                     <AlertTriangle className="w-3 h-3" />
                                     {issueCount}

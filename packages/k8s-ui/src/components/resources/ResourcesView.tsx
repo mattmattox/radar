@@ -122,6 +122,7 @@ import {
   SEVERITY_DOT_COLOR,
 } from './resource-utils'
 import { SEVERITY_BADGE, EVENT_TYPE_COLORS } from '../../utils/badge-colors'
+import { pluralize } from '../../utils/pluralize'
 import { Tooltip } from '../ui/Tooltip'
 // CRD-specific cell components (extracted)
 import { GitRepositoryCell, OCIRepositoryCell, HelmRepositoryCell, KustomizationCell, FluxHelmReleaseCell, FluxAlertCell } from './renderers/flux-cells'
@@ -4291,7 +4292,7 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
                 {sq.restarts > 0 && (
                   <div className={clsx('border-t border-theme-border/50 pt-1 space-y-0.5', restartColor)}>
                     <div className="flex items-center gap-1.5">
-                      <span>{sq.restarts} restart{sq.restarts !== 1 ? 's' : ''}</span>
+                      <span>{pluralize(sq.restarts, 'restart')}</span>
                       {lt?.finishedAt && <span className="text-theme-text-tertiary">· last {timeAgo(lt.finishedAt)}</span>}
                     </div>
                     {lt?.reason && (

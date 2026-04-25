@@ -22,6 +22,7 @@ import { getOperationColor, getHealthBadgeColor, SEVERITY_BADGE } from '../../ut
 import { ResourceRefBadge } from '../ui/drawer-components'
 import type { NavigateToResource } from '../../utils/navigation'
 import { kindToPlural, refToSelectedResource } from '../../utils/navigation'
+import { pluralize } from '../../utils/pluralize'
 import { useRegisterShortcut } from '../../hooks/useKeyboardShortcuts'
 
 /** Format resource age (e.g., "3d", "5h", "10m") */
@@ -436,7 +437,7 @@ export function TimelineList({ events, isLoading, onRefresh, onQueryChange, hasL
                   <Clock className="w-4 h-4 text-theme-text-tertiary" />
                   <span className="text-sm font-medium text-theme-text-secondary">{group.label}</span>
                   <span className="text-xs text-theme-text-disabled">
-                    ({group.items.length} item{group.items.length !== 1 ? 's' : ''})
+                    ({pluralize(group.items.length, 'item')})
                   </span>
                 </div>
 

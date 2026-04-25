@@ -5,6 +5,7 @@ import { healthToSeverity, SEVERITY_DOT } from '../../utils/badge-colors'
 import type { HealthStatus } from '../../types'
 import { Tooltip } from '../ui/Tooltip'
 import type { WorkloadCard, GroupDisplayLevel } from './layout'
+import { pluralize } from '../../utils/pluralize'
 
 interface GroupNodeData {
   type: 'namespace' | 'app' | 'label'
@@ -195,7 +196,7 @@ export const GroupNode = memo(function GroupNode({
               {kindPills.map(([kind, count]) => (
                 <div key={kind} className="flex items-center gap-1 bg-theme-surface/50 rounded px-1.5 py-0.5">
                   <span className={`topology-icon topology-icon-${kind.toLowerCase()}`} style={{ width: 10, height: 10, fontSize: 6, borderRadius: 2 }} />
-                  <span className="text-[10px] text-theme-text-secondary">{count} {kind}{count > 1 ? 's' : ''}</span>
+                  <span className="text-[10px] text-theme-text-secondary">{pluralize(count, kind)}</span>
                 </div>
               ))}
               {kindCounts && Object.keys(kindCounts).length > maxPills && (

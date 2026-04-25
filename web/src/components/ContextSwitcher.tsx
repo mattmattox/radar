@@ -6,6 +6,7 @@ import { useToast } from '../components/ui/Toast'
 import { useDock } from '../components/dock'
 import type { ContextInfo } from '../types'
 import { parseContextName, type ParsedContextName } from '../utils/context-name'
+import { pluralize } from '@skyhook-io/k8s-ui'
 
 interface ContextSwitcherProps {
   className?: string
@@ -444,13 +445,13 @@ export function ContextSwitcher({ className = '' }: ContextSwitcherProps) {
                 {sessionCounts.portForwards > 0 && (
                   <li className="flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                    {sessionCounts.portForwards} port forward{sessionCounts.portForwards !== 1 ? 's' : ''}
+                    {pluralize(sessionCounts.portForwards, 'port forward')}
                   </li>
                 )}
                 {sessionCounts.execSessions > 0 && (
                   <li className="flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                    {sessionCounts.execSessions} terminal session{sessionCounts.execSessions !== 1 ? 's' : ''}
+                    {pluralize(sessionCounts.execSessions, 'terminal session')}
                   </li>
                 )}
               </ul>

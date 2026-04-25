@@ -12,6 +12,7 @@ import { useStartPortForward } from '../portforward/PortForwardManager'
 import { useAvailablePorts } from '../../api/client'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
 import { useNamespacedCapabilities } from '../../contexts/CapabilitiesContext'
+import { pluralize } from '@skyhook-io/k8s-ui'
 
 interface OwnedResourcesProps {
   resources: HelmOwnedResource[]
@@ -98,7 +99,7 @@ export function OwnedResources({ resources, onNavigate }: OwnedResourcesProps) {
       <div className="flex items-center justify-between">
         <div className="text-sm text-theme-text-secondary">
           {healthFilter === 'all' ? (
-            <>{resources.length} resource{resources.length !== 1 ? 's' : ''} created by this release</>
+            <>{pluralize(resources.length, 'resource')} created by this release</>
           ) : (
             <span className="flex items-center gap-2">
               Showing {filteredResources.length} of {resources.length} resources

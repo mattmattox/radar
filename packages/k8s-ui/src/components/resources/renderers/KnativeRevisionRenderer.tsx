@@ -2,6 +2,7 @@ import { Container, Settings } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Section, PropertyList, Property, ConditionsSection, KnativeNotReadyBanner } from '../../ui/drawer-components'
 import { getRevisionStatus } from '../resource-utils-knative'
+import { pluralize } from '../../../utils/pluralize'
 
 interface KnativeRevisionRendererProps {
   data: any
@@ -82,7 +83,7 @@ export function KnativeRevisionRenderer({ data }: KnativeRevisionRendererProps) 
                 )}
                 {c.env && c.env.length > 0 && (
                   <div className="text-xs text-theme-text-tertiary mt-1">
-                    Env: {c.env.length} variable{c.env.length !== 1 ? 's' : ''}
+                    Env: {pluralize(c.env.length, 'variable')}
                   </div>
                 )}
               </div>

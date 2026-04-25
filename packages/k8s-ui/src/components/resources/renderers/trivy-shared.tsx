@@ -4,6 +4,7 @@ import {
   VULN_SEVERITY_BAR,
   VULN_SEVERITY_TEXT,
 } from '../../../utils/badge-colors'
+import { pluralNoun } from '../../../utils/pluralize'
 
 // Re-export from centralized badge-colors under the legacy names used by Trivy renderers
 export const SEVERITY_BADGE_COLORS = VULN_SEVERITY_BADGE
@@ -33,7 +34,7 @@ export function TrivyAlertBanner({ critical, high, noun }: { critical: number; h
     return (
       <AlertBanner
         variant="error"
-        title={`${critical} critical ${noun}${critical !== 1 ? 's' : ''}`}
+        title={`${critical} critical ${pluralNoun(critical, noun)}`}
         message="Critical issues should be addressed immediately."
       />
     )
@@ -42,7 +43,7 @@ export function TrivyAlertBanner({ critical, high, noun }: { critical: number; h
     return (
       <AlertBanner
         variant="warning"
-        title={`${high} high-severity ${noun}${high !== 1 ? 's' : ''}`}
+        title={`${high} high-severity ${pluralNoun(high, noun)}`}
         message="Consider addressing these issues to improve security posture."
       />
     )

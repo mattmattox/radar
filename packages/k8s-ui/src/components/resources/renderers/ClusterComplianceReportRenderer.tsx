@@ -4,6 +4,7 @@ import { clsx } from 'clsx'
 import { Section, PropertyList, Property, AlertBanner } from '../../ui/drawer-components'
 import { formatAge } from '../resource-utils'
 import { SEVERITY_BADGE_COLORS, SEVERITY_ORDER } from './trivy-shared'
+import { pluralize } from '../../../utils/pluralize'
 
 interface ClusterComplianceReportRendererProps {
   data: any
@@ -77,7 +78,7 @@ export function ClusterComplianceReportRenderer({ data }: ClusterComplianceRepor
         <AlertBanner
           variant="error"
           icon={XCircle}
-          title={`${failCount} control${failCount !== 1 ? 's' : ''} failed`}
+          title={`${pluralize(failCount, 'control')} failed`}
           message="Review failed controls to improve cluster compliance."
         />
       )}

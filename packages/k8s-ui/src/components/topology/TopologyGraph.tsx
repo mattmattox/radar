@@ -29,6 +29,7 @@ import { K8sResourceNode } from './K8sResourceNode'
 import { GroupNode } from './GroupNode'
 import { buildHierarchicalElkGraph, applyHierarchicalLayout, getGroupKey, type GroupDisplayLevel } from './layout'
 import type { Topology, TopologyNode, TopologyEdge, ViewMode, GroupingMode } from '../../types'
+import { pluralize } from '../../utils/pluralize'
 
 // Edge colors by type
 const EDGE_COLORS = {
@@ -742,7 +743,7 @@ export function TopologyGraph({
                 </span>
                 <span className="text-theme-text-secondary ml-1">
                   {isAllRbac
-                    ? `${rbacWarnings.length} resource type${rbacWarnings.length > 1 ? 's' : ''} not accessible due to RBAC restrictions.`
+                    ? `${pluralize(rbacWarnings.length, 'resource type')} not accessible due to RBAC restrictions.`
                     : 'Some resources failed to load. Data may be incomplete.'}
                 </span>
                 <details className="mt-1">

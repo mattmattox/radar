@@ -3,6 +3,7 @@ import type { TrafficFlow } from '../../types'
 import { clsx } from 'clsx'
 import { ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react'
 import { SEVERITY_BADGE, SEVERITY_TEXT } from '@skyhook-io/k8s-ui/utils/badge-colors'
+import { pluralize } from '@skyhook-io/k8s-ui'
 import { useFlowSearch } from './TrafficFlowListContext'
 import { useQuery } from '@tanstack/react-query'
 import { fetchJSON } from '../../api/client'
@@ -321,7 +322,7 @@ export function TrafficFlowList({ flows }: TrafficFlowListProps) {
 
       {/* Footer */}
       <div className="px-3 py-1.5 border-t border-theme-border text-[10px] text-theme-text-tertiary">
-        {sorted.length} flow{sorted.length !== 1 ? 's' : ''}
+        {pluralize(sorted.length, 'flow')}
         {search && ` (filtered from ${flows.length})`}
       </div>
     </div>

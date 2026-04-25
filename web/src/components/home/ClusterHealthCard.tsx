@@ -10,6 +10,7 @@ import { clsx } from 'clsx'
 import { formatCPUMillicores, formatMemoryMiB } from '../../utils/format'
 import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { MCPSetupDialog } from './MCPSetupDialog'
+import { pluralize } from '@skyhook-io/k8s-ui'
 import { Tooltip } from '../ui/Tooltip'
 
 interface ClusterHealthCardProps {
@@ -190,7 +191,7 @@ export function ClusterHealthCard({
                     {Object.entries(nodeVersionSkew.versions).map(([version, nodes]) => (
                       <div key={version}>
                         <span className="font-mono font-medium">v{version}</span>
-                        <span className="text-theme-text-tertiary"> — {nodes.length} node{nodes.length > 1 ? 's' : ''}</span>
+                        <span className="text-theme-text-tertiary"> — {pluralize(nodes.length, 'node')}</span>
                         <div className="text-[10px] text-theme-text-tertiary pl-2">{nodes.join(', ')}</div>
                       </div>
                     ))}

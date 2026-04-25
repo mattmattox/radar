@@ -5,6 +5,7 @@ import { stringify as yamlStringify } from 'yaml'
 import { Section, PropertyList, Property, AlertBanner } from '../../ui/drawer-components'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import type { SecretCertificateInfo, CertificateInfo } from '../../../types'
+import { pluralize } from '../../../utils/pluralize'
 
 interface SecretRendererProps {
   data: any
@@ -125,7 +126,7 @@ export function SecretRenderer({ data, certificateInfo, resourceData, onSaveSecr
       {leafCert && !leafCert.expired && leafCert.daysLeft <= 7 && (
         <AlertBanner
           variant="error"
-          title={`Certificate expires in ${leafCert.daysLeft} day${leafCert.daysLeft !== 1 ? 's' : ''}`}
+          title={`Certificate expires in ${pluralize(leafCert.daysLeft, 'day')}`}
           message="Check that cert-manager or your CA is renewing this certificate."
         />
       )}
@@ -133,7 +134,7 @@ export function SecretRenderer({ data, certificateInfo, resourceData, onSaveSecr
       {leafCert && !leafCert.expired && leafCert.daysLeft > 7 && leafCert.daysLeft <= 30 && (
         <AlertBanner
           variant="warning"
-          title={`Certificate expires in ${leafCert.daysLeft} day${leafCert.daysLeft !== 1 ? 's' : ''}`}
+          title={`Certificate expires in ${pluralize(leafCert.daysLeft, 'day')}`}
           message="Renewal should happen automatically before expiry."
         />
       )}

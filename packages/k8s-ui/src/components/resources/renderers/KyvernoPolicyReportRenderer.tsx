@@ -14,6 +14,7 @@ import {
   getKyvernoPolicyRuleCountByType,
   getKyvernoPolicyAutogenRules,
 } from '../resource-utils-kyverno'
+import { pluralize } from '../../../utils/pluralize'
 
 // ============================================================================
 // PolicyReport / ClusterPolicyReport Renderer
@@ -112,7 +113,7 @@ export function PolicyReportRenderer({ data }: PolicyReportRendererProps) {
       {summary.fail > 0 && (
         <AlertBanner
           variant="error"
-          title={`${summary.fail} policy check${summary.fail > 1 ? 's' : ''} failed`}
+          title={`${pluralize(summary.fail, 'policy check')} failed`}
           message={failResults.length <= 3
             ? failResults.map((r: any) => `${r.policy}${r.rule ? '/' + r.rule : ''}: ${r.message || 'failed'}`).join('; ')
             : `${failResults.slice(0, 2).map((r: any) => r.policy).join(', ')} and ${failResults.length - 2} more`
@@ -122,7 +123,7 @@ export function PolicyReportRenderer({ data }: PolicyReportRendererProps) {
       {summary.error > 0 && summary.fail === 0 && (
         <AlertBanner
           variant="error"
-          title={`${summary.error} policy check${summary.error > 1 ? 's' : ''} errored`}
+          title={`${pluralize(summary.error, 'policy check')} errored`}
           message={errorResults.length <= 3
             ? errorResults.map((r: any) => `${r.policy}: ${r.message || 'error'}`).join('; ')
             : undefined
@@ -132,7 +133,7 @@ export function PolicyReportRenderer({ data }: PolicyReportRendererProps) {
       {summary.warn > 0 && summary.fail === 0 && summary.error === 0 && (
         <AlertBanner
           variant="warning"
-          title={`${summary.warn} policy warning${summary.warn > 1 ? 's' : ''}`}
+          title={pluralize(summary.warn, 'policy warning')}
         />
       )}
 

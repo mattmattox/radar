@@ -2,6 +2,7 @@
 
 import type { StatusBadge } from './resource-utils'
 import { healthColors } from './resource-utils'
+import { pluralize } from '../../utils/pluralize'
 
 // ============================================================================
 // SHARED HELPERS
@@ -134,7 +135,7 @@ export function getDestinationRuleStatus(resource: any): StatusBadge {
   const trafficPolicy = spec.trafficPolicy
 
   if (subsets.length > 0) {
-    return { text: `${subsets.length} Subset${subsets.length !== 1 ? 's' : ''}`, color: healthColors.healthy, level: 'healthy' }
+    return { text: pluralize(subsets.length, 'Subset'), color: healthColors.healthy, level: 'healthy' }
   }
 
   if (trafficPolicy) {
@@ -332,9 +333,9 @@ export function getAuthorizationPolicyStatus(resource: any): StatusBadge {
 
   switch (action) {
     case 'ALLOW':
-      return { text: `Allow (${rules.length} rule${rules.length !== 1 ? 's' : ''})`, color: healthColors.healthy, level: 'healthy' }
+      return { text: `Allow (${pluralize(rules.length, 'rule')})`, color: healthColors.healthy, level: 'healthy' }
     case 'DENY':
-      return { text: `Deny (${rules.length} rule${rules.length !== 1 ? 's' : ''})`, color: healthColors.unhealthy, level: 'unhealthy' }
+      return { text: `Deny (${pluralize(rules.length, 'rule')})`, color: healthColors.unhealthy, level: 'unhealthy' }
     case 'CUSTOM':
       return { text: 'Custom', color: healthColors.degraded, level: 'degraded' }
     case 'AUDIT':

@@ -5,6 +5,7 @@ import type { AuditFinding } from './AuditAlerts'
 import { SEVERITY_TEXT, BP_CATEGORY_BADGE, DEFAULT_BADGE_COLOR } from '../../utils/badge-colors'
 import { EmptyState } from '../ui/EmptyState'
 import { FilterPill } from '../ui/FilterPill'
+import { pluralize } from '../../utils/pluralize'
 
 const CATEGORIES = ['Security', 'Reliability', 'Efficiency'] as const
 const SEVERITIES = ['danger', 'warning'] as const
@@ -299,7 +300,7 @@ export function AuditFindingsTable({ groups, findings, checks, onResourceClick, 
                 >
                   <ChevronRight className={clsx('w-4 h-4 text-theme-text-tertiary shrink-0 transition-transform duration-200', nsExpanded && 'rotate-90')} />
                   <span className="text-sm font-semibold text-theme-text-primary">{ns}</span>
-                  <span className="text-xs text-theme-text-tertiary">{nsGroups.length} resource{nsGroups.length !== 1 ? 's' : ''}</span>
+                  <span className="text-xs text-theme-text-tertiary">{pluralize(nsGroups.length, 'resource')}</span>
                   <span className="flex-1" />
                   <div className="flex items-center gap-3 shrink-0">
                     {nsDanger > 0 && <span className={clsx('text-xs font-semibold tabular-nums', SEVERITY_TEXT.error)}>{nsDanger} critical</span>}

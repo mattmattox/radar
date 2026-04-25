@@ -1,6 +1,7 @@
 import { Shield, Clock, Globe, Key } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Section, PropertyList, Property, ConditionsSection, AlertBanner } from '../../ui/drawer-components'
+import { pluralize } from '../../../utils/pluralize'
 
 interface CertificateRendererProps {
   data: any
@@ -87,7 +88,7 @@ export function CertificateRenderer({ data }: CertificateRendererProps) {
       {expiresWithin7Days && (
         <AlertBanner
           variant="error"
-          title={`Certificate expires in ${daysUntilExpiry} day${daysUntilExpiry !== 1 ? 's' : ''}`}
+          title={`Certificate expires in ${pluralize(daysUntilExpiry, 'day')}`}
           message="Check that cert-manager is renewing this certificate."
         />
       )}
@@ -95,7 +96,7 @@ export function CertificateRenderer({ data }: CertificateRendererProps) {
       {expiresWithin30Days && (
         <AlertBanner
           variant="warning"
-          title={`Certificate expires in ${daysUntilExpiry} day${daysUntilExpiry !== 1 ? 's' : ''}`}
+          title={`Certificate expires in ${pluralize(daysUntilExpiry, 'day')}`}
           message="Renewal should happen automatically before expiry."
         />
       )}
@@ -103,7 +104,7 @@ export function CertificateRenderer({ data }: CertificateRendererProps) {
       {failedIssuanceAttempts > 0 && (
         <AlertBanner
           variant="warning"
-          title={`${failedIssuanceAttempts} failed issuance attempt${failedIssuanceAttempts !== 1 ? 's' : ''}`}
+          title={pluralize(failedIssuanceAttempts, 'failed issuance attempt')}
           message={lastFailureTime ? `Last failure: ${formatDate(lastFailureTime)}` : undefined}
         />
       )}

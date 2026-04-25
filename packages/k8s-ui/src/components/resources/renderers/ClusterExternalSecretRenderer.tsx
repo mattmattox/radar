@@ -7,6 +7,7 @@ import {
   getClusterExternalSecretNamespaces,
   getClusterExternalSecretNamespaceSelector,
 } from '../resource-utils-eso'
+import { pluralize } from '../../../utils/pluralize'
 
 interface ClusterExternalSecretRendererProps {
   data: any
@@ -38,7 +39,7 @@ export function ClusterExternalSecretRenderer({ data, onNavigate }: ClusterExter
       {failedNamespaces.length > 0 && (
         <AlertBanner
           variant="error"
-          title={`Failed in ${failedNamespaces.length} namespace${failedNamespaces.length > 1 ? 's' : ''}`}
+          title={`Failed in ${pluralize(failedNamespaces.length, 'namespace')}`}
           message="ExternalSecret provisioning failed in one or more namespaces."
           items={failedNamespaces.map(f => `${f.namespace}${f.reason ? `: ${f.reason}` : ''}`)}
         />
@@ -48,9 +49,9 @@ export function ClusterExternalSecretRenderer({ data, onNavigate }: ClusterExter
       <Section title="Overview" icon={Globe} defaultExpanded>
         <PropertyList>
           <Property label="Status" value={cesStatus.text} />
-          <Property label="Provisioned" value={`${provisionedNamespaces.length} namespace${provisionedNamespaces.length !== 1 ? 's' : ''}`} />
+          <Property label="Provisioned" value={pluralize(provisionedNamespaces.length, 'namespace')} />
           {failedNamespaces.length > 0 && (
-            <Property label="Failed" value={`${failedNamespaces.length} namespace${failedNamespaces.length !== 1 ? 's' : ''}`} />
+            <Property label="Failed" value={pluralize(failedNamespaces.length, 'namespace')} />
           )}
         </PropertyList>
       </Section>

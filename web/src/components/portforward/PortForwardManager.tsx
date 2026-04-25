@@ -30,6 +30,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { useToast } from '../ui/Toast'
 import { openExternal } from '../../utils/navigation'
 import { apiUrl } from '../../api/config'
+import { pluralize } from '@skyhook-io/k8s-ui'
 
 // --- Types -------------------------------------------------------------------
 
@@ -279,8 +280,8 @@ export function PortForwardIndicator() {
 
   const hasErrors = errorSessions.length > 0
   const tooltipText = hasErrors
-    ? `${count} port forward${count !== 1 ? 's' : ''} — ${errorSessions.length} failed`
-    : `${count} active port forward${count !== 1 ? 's' : ''}`
+    ? `${pluralize(count, 'port forward')} — ${errorSessions.length} failed`
+    : `${pluralize(count, 'active port forward')}`
 
   return (
     <Tooltip content={tooltipText} delay={150} position="bottom" disabled={isPanelOpen}>

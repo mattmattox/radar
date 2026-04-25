@@ -9,6 +9,7 @@ import {
   getPrometheusRuleGroupCount,
 } from '../resource-utils-prometheus'
 import type { PrometheusRuleGroup, PrometheusRule, PrometheusAlertRule, PrometheusRecordingRule } from '../resource-utils-prometheus'
+import { pluralize, pluralNoun } from '../../../utils/pluralize'
 
 interface PrometheusRuleRendererProps {
   data: any
@@ -135,13 +136,13 @@ function RuleGroupSection({ group, searchTerm }: { group: PrometheusRuleGroup; s
             </span>
           )}
           <span className="text-xs text-theme-text-tertiary">
-            {searchTerm ? `${filteredRules.length}/${group.ruleCount}` : group.ruleCount} rule{group.ruleCount !== 1 ? 's' : ''}
+            {searchTerm ? `${filteredRules.length}/${group.ruleCount}` : group.ruleCount} {pluralNoun(group.ruleCount, 'rule')}
           </span>
         </div>
       </button>
       {!expanded && (
         <div className="text-xs text-theme-text-secondary mt-1 ml-5.5 flex gap-3">
-          {group.alertCount > 0 && <span>{group.alertCount} alert{group.alertCount !== 1 ? 's' : ''}</span>}
+          {group.alertCount > 0 && <span>{pluralize(group.alertCount, 'alert')}</span>}
           {group.recordCount > 0 && <span>{group.recordCount} recording</span>}
         </div>
       )}
