@@ -2,6 +2,7 @@ import { Tooltip } from './Tooltip'
 import { parseContextName } from '../../utils/context-name'
 import type { ParsedContextName } from '../../utils/context-name'
 import awsLogo from './provider-logos/aws.png'
+import awsLogoDark from './provider-logos/aws-dark.png'
 import gcpLogo from './provider-logos/gcp.png'
 import azureLogo from './provider-logos/azure.svg'
 
@@ -21,10 +22,15 @@ import azureLogo from './provider-logos/azure.svg'
 // User-named clusters that don't match a known shape pass through
 // unchanged — no provider badge, no tooltip needed.
 
-const PROVIDER_LOGOS: Record<NonNullable<ParsedContextName['provider']>, string> = {
-  GKE: gcpLogo,
-  EKS: awsLogo,
-  AKS: azureLogo,
+type Provider = NonNullable<ParsedContextName['provider']>
+
+// AWS uses the official aws+smile mark, which has dark navy text — needs
+// a white-text variant on dark backgrounds. GCP (4-color cloud) and
+// Azure (blue prism A) read fine on either theme.
+const PROVIDER_LOGOS: Record<Provider, { light: string; dark?: string }> = {
+  GKE: { light: gcpLogo },
+  EKS: { light: awsLogo, dark: awsLogoDark },
+  AKS: { light: azureLogo },
 }
 
 interface Props {
@@ -38,13 +44,19 @@ interface Props {
   className?: string
 }
 
-function ProviderBadge({ provider }: { provider: NonNullable<ParsedContextName['provider']> }) {
+function ProviderBadge({ provider }: { provider: Provider }) {
+  const logos = PROVIDER_LOGOS[provider]
+  // object-contain keeps the AWS aws+smile mark from being warped when
+  // forced into a square box. GCP and Azure are square already.
+  const baseClass = 'h-4 w-4 flex-shrink-0 object-contain'
+  if (!logos.dark) {
+    return <img src={logos.light} alt={`${provider} cluster`} className={baseClass} />
+  }
   return (
-    <img
-      src={PROVIDER_LOGOS[provider]}
-      alt={`${provider} cluster`}
-      className="h-4 w-4 flex-shrink-0"
-    />
+    <>
+      <img src={logos.light} alt={`${provider} cluster`} className={`${baseClass} dark:hidden`} />
+      <img src={logos.dark} alt={`${provider} cluster`} className={`${baseClass} hidden dark:block`} />
+    </>
   )
 }
 
