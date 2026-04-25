@@ -180,6 +180,30 @@ interface Column {
   minWidth?: number // minimum width in px
 }
 
+/**
+ * Extra column injected by the parent (e.g. Hub's "Cluster" column in
+ * fleet mode). Self-contained: carries its own render/sort/filter
+ * functions so the host code doesn't need to extend KNOWN_COLUMNS or
+ * the per-kind cell renderers.
+ *
+ * When extraLeadingColumns is undefined or empty (the OSS Radar
+ * single-cluster path), the rest of ResourcesView's behavior is
+ * byte-identical to today.
+ *
+ * Keys must NOT collide with existing KNOWN_COLUMNS keys (name,
+ * namespace, age, status, ready, etc.) — collisions silently bypass
+ * the extra and fall through to the built-in cell.
+ */
+export interface ExtraColumn extends Column {
+  /** Cell content for this column. Receives the resource row. */
+  render: (resource: any) => React.ReactNode
+  /** Sort key extractor. Falls back to localeCompare on render output. */
+  getSortValue?: (resource: any) => string | number
+  /** Filter value extractor used by the column-filter dropdown's
+   *  unique-values pull. Falls back to row not being filterable. */
+  getFilterValue?: (resource: any) => string
+}
+
 // Tailwind width class → pixel minimum mapping for CSS Grid column sizing
 const TAILWIND_WIDTH_TO_PX: Record<string, number> = {
   'w-12': 48, 'w-14': 56, 'w-16': 64, 'w-20': 80, 'w-24': 96,
@@ -1629,6 +1653,11 @@ interface ResourcesViewProps {
   hideSidebar?: boolean
   /** Callback when the [+] create button is clicked. Receives the currently selected kind info. */
   onCreateResource?: (kind: { name: string; kind: string; group: string } | null) => void
+  /** Columns prepended to KNOWN_COLUMNS for every kind (e.g. Hub's
+   *  Cluster column in fleet mode). Self-contained: each carries its
+   *  own render/sort/filter functions. When undefined, behavior is
+   *  byte-identical to single-cluster mode. */
+  extraLeadingColumns?: ExtraColumn[]
 }
 
 // Default selected kind
@@ -1701,6 +1730,7 @@ export function ResourcesView({
   onSelectedKindChange,
   hideSidebar = false,
   onCreateResource,
+  extraLeadingColumns,
 }: ResourcesViewProps) {
   const location = useMemo(() => ({ search: locationSearch, pathname: locationPathname }), [locationSearch, locationPathname])
   const initialFilters = getInitialFiltersFromURL()
@@ -1806,7 +1836,22 @@ export function ResourcesView({
   }, [topPodMetrics, topNodeMetrics])
 
   // Load column settings from localStorage when kind changes
-  const allColumns = useMemo(() => getColumnsForKind(selectedKind.name, selectedKind.group), [selectedKind.name, selectedKind.group])
+  // Prepend extraLeadingColumns (Hub's fleet Cluster column) before
+  // the kind-specific KNOWN_COLUMNS entries. When extras are undefined,
+  // this collapses to the single-cluster behavior.
+  const allColumns = useMemo(() => {
+    const kindColumns = getColumnsForKind(selectedKind.name, selectedKind.group)
+    if (!extraLeadingColumns?.length) return kindColumns
+    return [...extraLeadingColumns, ...kindColumns]
+  }, [selectedKind.name, selectedKind.group, extraLeadingColumns])
+
+  // Map of extra column keys for fast O(1) lookup on each render path
+  // (cell render, sort, column-filter unique-values).
+  const extraColumnsByKey = useMemo(() => {
+    const m = new Map<string, ExtraColumn>()
+    extraLeadingColumns?.forEach(c => m.set(c.key, c))
+    return m
+  }, [extraLeadingColumns])
 
   useEffect(() => {
     const saved = loadColumnSettings(selectedKind.name, selectedKind.group)
@@ -2702,13 +2747,17 @@ export function ResourcesView({
     }
 
     // Apply column filters (generic, multi-select per column — OR within column, AND across columns)
+    // Extra columns (Hub fleet) override the built-in getCellFilterValue
+    // when the parent supplied a custom getFilterValue.
     const activeColFilters = Object.entries(columnFilters).filter(([, vals]) => vals.length > 0)
     if (activeColFilters.length > 0) {
       const kindLower = normalizeKindToPlural(selectedKind.name, selectedKind.group)
       result = result.filter((r: any) =>
-        activeColFilters.every(([col, vals]) =>
-          vals.includes(getCellFilterValue(r, col, kindLower))
-        )
+        activeColFilters.every(([col, vals]) => {
+          const extra = extraColumnsByKey.get(col)
+          const cellVal = extra?.getFilterValue ? extra.getFilterValue(r) : getCellFilterValue(r, col, kindLower)
+          return vals.includes(cellVal)
+        })
       )
     }
 
@@ -2763,11 +2812,13 @@ export function ResourcesView({
       })
     }
 
-    // Apply custom sorting if set
+    // Apply custom sorting if set. Extra columns (Hub fleet) override
+    // the built-in getSortValue for their key.
     if (sortColumn && sortDirection) {
+      const extra = extraColumnsByKey.get(sortColumn)
       result = [...result].sort((a: any, b: any) => {
-        const aVal = getSortValue(a, sortColumn, selectedKind.name)
-        const bVal = getSortValue(b, sortColumn, selectedKind.name)
+        const aVal = extra?.getSortValue ? extra.getSortValue(a) : getSortValue(a, sortColumn, selectedKind.name)
+        const bVal = extra?.getSortValue ? extra.getSortValue(b) : getSortValue(b, sortColumn, selectedKind.name)
         let comparison = 0
         if (typeof aVal === 'number' && typeof bVal === 'number') {
           comparison = aVal - bVal
@@ -2964,10 +3015,16 @@ export function ResourcesView({
     for (const col of columns) {
       if (SKIP_FILTER_COLUMNS.has(col.key)) continue
 
+      // Extra columns (Hub fleet) supply their own filter value extractor.
+      // Skip the dropdown for extras that didn't supply one (no way to
+      // build the unique-values list without it).
+      const extra = extraColumnsByKey.get(col.key)
+      if (extra && !extra.getFilterValue) continue
+
       // Count distinct values for this column
       const valueCounts: Record<string, number> = {}
       for (const r of resources) {
-        const val = getCellFilterValue(r, col.key, kindLower)
+        const val = extra?.getFilterValue ? extra.getFilterValue(r) : getCellFilterValue(r, col.key, kindLower)
         if (val) {
           valueCounts[val] = (valueCounts[val] || 0) + 1
         }
@@ -3677,6 +3734,7 @@ export function ResourcesView({
                     kind={selectedKind.name}
                     group={selectedKind.group}
                     columns={columns}
+                    extraColumnsByKey={extraColumnsByKey}
                     hasSpacerColumn={hasResizedColumns}
                     isSelected={isSelected}
                     isHighlighted={isHighlighted}
@@ -3712,6 +3770,7 @@ interface ResourceRowCellsProps {
   kind: string
   group?: string
   columns: Column[]
+  extraColumnsByKey?: Map<string, ExtraColumn>
   hasSpacerColumn: boolean
   isSelected?: boolean
   isHighlighted?: boolean
@@ -3720,7 +3779,7 @@ interface ResourceRowCellsProps {
   onMouseEnter?: () => void
 }
 
-function ResourceRowCells({ resource, kind, group, columns, hasSpacerColumn, isSelected, isHighlighted, majorityNodeMinorVersion, onClick, onMouseEnter }: ResourceRowCellsProps) {
+function ResourceRowCells({ resource, kind, group, columns, extraColumnsByKey, hasSpacerColumn, isSelected, isHighlighted, majorityNodeMinorVersion, onClick, onMouseEnter }: ResourceRowCellsProps) {
   return (
     <>
       {columns.map((col) => (
@@ -3738,7 +3797,7 @@ function ResourceRowCells({ resource, kind, group, columns, hasSpacerColumn, isS
                 : 'group-hover/row:bg-theme-surface/50'
           )}
         >
-          <CellContent resource={resource} kind={kind} group={group} column={col.key} majorityNodeMinorVersion={majorityNodeMinorVersion} />
+          <CellContent resource={resource} kind={kind} group={group} column={col.key} majorityNodeMinorVersion={majorityNodeMinorVersion} extraColumn={extraColumnsByKey?.get(col.key)} />
         </td>
       ))}
       {hasSpacerColumn && <td className="border-b-subtle p-0" />}
@@ -3778,9 +3837,19 @@ interface CellContentProps {
   column: string
   group?: string
   majorityNodeMinorVersion?: string
+  /** When provided, the parent has injected an ExtraColumn for this
+   *  column key. Render via the extra's render() and short-circuit
+   *  the built-in cell logic. */
+  extraColumn?: ExtraColumn
 }
 
-function CellContent({ resource, kind, column, group, majorityNodeMinorVersion }: CellContentProps) {
+function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, extraColumn }: CellContentProps) {
+  // Parent-injected extra columns short-circuit the built-in switch.
+  // Used by Hub's fleet view for the leading Cluster column.
+  if (extraColumn) {
+    return <>{extraColumn.render(resource)}</>
+  }
+
   const meta = resource.metadata || {}
 
   // Common columns
