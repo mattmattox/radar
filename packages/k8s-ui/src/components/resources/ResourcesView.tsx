@@ -1658,6 +1658,15 @@ interface ResourcesViewProps {
    *  own render/sort/filter functions. When undefined, behavior is
    *  byte-identical to single-cluster mode. */
   extraLeadingColumns?: ExtraColumn[]
+  /** Hub fleet escape hatch: receive the FULL resource object on row
+   *  click, instead of the stripped {kind, namespace, name, group}
+   *  shape onResourceClick gets. Lets the parent read injected fields
+   *  (e.g. `_cluster.id` for cross-tree drill-in nav) without a
+   *  parallel (kind, ns, name) → cluster lookup that wouldn't dedup
+   *  for resources sharing a namespaced name across clusters. When set,
+   *  this fires INSTEAD OF onResourceClick (the drawer-pattern handler
+   *  doesn't fit a full-page-nav drill-in). */
+  onRowSelect?: (resource: any) => void
 }
 
 // Default selected kind
@@ -1731,6 +1740,7 @@ export function ResourcesView({
   hideSidebar = false,
   onCreateResource,
   extraLeadingColumns,
+  onRowSelect,
 }: ResourcesViewProps) {
   const location = useMemo(() => ({ search: locationSearch, pathname: locationPathname }), [locationSearch, locationPathname])
   const initialFilters = getInitialFiltersFromURL()
@@ -2364,13 +2374,13 @@ export function ResourcesView({
 
     const newPath = `${basePath}/${kindInfo.name}`
     const queryStr = params.toString()
-    const newURL = queryStr ? `${newPath}?${queryStr}` : newPath
 
-    if (pushHistory) {
-      navigate({ pathname: newPath, search: queryStr }, { replace: false })
-    } else {
-      window.history.replaceState({}, '', newURL)
-    }
+    // Route both push and replace through `navigate` (which honors the
+    // onNavigate prop). The previous direct `window.history.replaceState`
+    // bypass meant a Hub-style host that wants to suppress URL writes
+    // (passing `onNavigate={() => {}}`) couldn't suppress filter-change
+    // updates — they'd still rewrite the address bar through history.
+    navigate({ pathname: newPath, search: queryStr }, { replace: !pushHistory })
   }, [navigate, basePath])
 
   // Update URL when any filter changes
@@ -2419,12 +2429,13 @@ export function ResourcesView({
     // Signal that initial resource param has been processed — URL update effect can now run
     hasProcessedInitialResource.current = true
 
-    // If the URL has no kind segment (e.g., /resources), update to include the default kind
+    // If the URL has no kind segment (e.g., /resources), update to include the default kind.
+    // Route through `navigate` so an onNavigate-suppressing host (Hub fleet) can opt out.
     const base = basePath.replace(/\/$/, '')
     const path = window.location.pathname
     if (path === base || path === base + '/') {
       const search = window.location.search
-      window.history.replaceState({}, '', `${base}/${selectedKind.name}${search}`)
+      navigate({ pathname: `${base}/${selectedKind.name}`, search: search.replace(/^\?/, '') }, { replace: true })
     }
   }, []) // Only on mount
 
@@ -3148,17 +3159,18 @@ export function ResourcesView({
         ? existing.filter(p => p !== pair)
         : [...existing, pair]
       const newSelector = newLabels.join(',')
-      // Sync to URL
+      // Sync to URL — route through `navigate` so the onNavigate prop
+      // can suppress the write (Hub fleet view).
       const params = new URLSearchParams(window.location.search)
       if (newSelector) {
         params.set('labels', newSelector)
       } else {
         params.delete('labels')
       }
-      window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`)
+      navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
       return newSelector
     })
-  }, [])
+  }, [navigate])
 
   // Parse active label pairs for display
   const activeLabelPairs = useMemo(() => {
@@ -3380,10 +3392,12 @@ export function ResourcesView({
                 onClick={() => {
                   setOwnerKind('')
                   setOwnerName('')
+                  // Route through `navigate` so onNavigate-suppressing hosts
+                  // (Hub fleet view) can opt out of the URL write.
                   const params = new URLSearchParams(window.location.search)
                   params.delete('ownerKind')
                   params.delete('ownerName')
-                  window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`)
+                  navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
                 }}
                 className="hover:text-theme-text-primary"
               >
@@ -3740,6 +3754,14 @@ export function ResourcesView({
                     isHighlighted={isHighlighted}
                     majorityNodeMinorVersion={majorityNodeMinorVersion}
                     onClick={() => {
+                      // Fleet escape hatch wins: full resource object (with
+                      // injected _cluster fields) goes through onRowSelect.
+                      // Otherwise the drawer-pattern onResourceClick handler
+                      // gets the stripped SelectedResource shape.
+                      if (onRowSelect) {
+                        onRowSelect(resource)
+                        return
+                      }
                       const res = { kind: selectedKind.name, namespace: resource.metadata?.namespace || '', name: resource.metadata?.name, group: selectedKind.group }
                       onResourceClick?.(isSelected ? null : res)
                     }}
