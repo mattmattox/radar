@@ -9,10 +9,14 @@ import { Tooltip } from './Tooltip'
 // toggle pattern, not a combobox).
 //
 // Tone-encoded active state: when tone='danger' and active=true, the
-// pill bg+text use rose; tone='warn' uses amber; etc. Matches the
-// canonical SEVERITY_BADGE / StatusPill vocabulary so Critical filters
-// and Warning filters have visually distinct active states. Useful for
-// filter rows that mix severity-bearing categories with neutral ones.
+// pill bg+text use rose; tone='warn' uses amber; etc. This is a
+// filter-UI-scoped vocabulary (neutral/danger/warn/ok/brand) — distinct
+// from the canonical HealthLevel vocabulary (healthy/degraded/alert/
+// unhealthy/neutral/unknown), since "an active filter for danger
+// problems" reads better as `tone='danger'` than `tone='unhealthy'`.
+// Useful for filter rows that mix severity-bearing categories with
+// neutral ones (Critical filters and Warning filters get visually
+// distinct active states).
 //
 // Accessibility: every pill renders aria-pressed automatically, so
 // screen readers announce pressed/unpressed correctly. Optional tooltip

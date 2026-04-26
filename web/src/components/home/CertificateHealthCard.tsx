@@ -35,25 +35,25 @@ export function CertificateHealthCard({ data, onNavigate }: CertificateHealthCar
         <div className="flex items-center gap-3 w-full">
           {/* Color bar showing distribution */}
           <div className="flex-1 h-3 rounded-full overflow-hidden bg-theme-hover flex">
-            {data.healthy > 0 && (
+            {data.total > 0 && data.healthy > 0 && (
               <div
                 className="h-full bg-green-500"
                 style={{ width: `${(data.healthy / data.total) * 100}%` }}
               />
             )}
-            {data.warning > 0 && (
+            {data.total > 0 && data.warning > 0 && (
               <div
                 className="h-full bg-yellow-500"
                 style={{ width: `${(data.warning / data.total) * 100}%` }}
               />
             )}
-            {data.critical > 0 && (
+            {data.total > 0 && data.critical > 0 && (
               <div
                 className="h-full bg-orange-500"
                 style={{ width: `${(data.critical / data.total) * 100}%` }}
               />
             )}
-            {data.expired > 0 && (
+            {data.total > 0 && data.expired > 0 && (
               <div
                 className="h-full bg-red-500"
                 style={{ width: `${(data.expired / data.total) * 100}%` }}

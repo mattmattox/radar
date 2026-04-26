@@ -35,11 +35,11 @@ export interface AuditFindingsTableProps {
   onHideCheck?: (checkID: string, title: string) => void
   onHideCategory?: (category: string) => void
   onHideNamespace?: (namespace: string) => void
-  /** When true, render a Cluster column on flat findings rows and offer a
-   *  "Group by cluster" toggle in addition to the existing namespace
-   *  grouping. Set this when findings come from multiple clusters
-   *  (cross-cluster aggregation) so users can pivot the view by cluster.
-   *  Each finding's clusterId/clusterName fields drive the column + groups. */
+  /** When true, render a Cluster column on flat findings rows. Set this
+   *  when findings come from multiple clusters (cross-cluster aggregation).
+   *  Each finding's clusterId/clusterName fields populate the column.
+   *  (Currently flat-rows only; grouped views don't surface a Cluster
+   *  column today.) */
   multiCluster?: boolean
   /** Click-through for cluster-name links in the multi-cluster view.
    *  Defaults to no-op; multi-cluster hosts pass a navigator that opens
@@ -338,7 +338,7 @@ export function AuditFindingsTable({ groups, findings, checks, onResourceClick, 
         <div className="flex flex-col gap-1">
           {filteredFindings?.map((f, i) => (
             <FlatFindingRow
-              key={`${f.clusterId ?? ''}-${f.checkID}-${i}`}
+              key={`${f.cluster?.id ?? ''}-${f.checkID}-${i}`}
               finding={f}
               onResourceClick={onResourceClick}
               showCluster={multiCluster}
@@ -470,20 +470,20 @@ function FlatFindingRow({ finding, onResourceClick, showCluster, onClusterClick 
       ) : (
         <AlertTriangle className={clsx('w-4 h-4 shrink-0', severityColor)} />
       )}
-      {showCluster && finding.clusterId && (
+      {showCluster && finding.cluster && (
         // Cluster column for multi-cluster contexts. Renders before
         // the kind/namespace/name path so cluster scope is established
         // first in the read order.
         onClusterClick ? (
           <button
-            onClick={() => onClusterClick(finding.clusterId!)}
+            onClick={() => onClusterClick(finding.cluster!.id)}
             className="text-xs text-[var(--color-radar-accent)] hover:underline shrink-0 max-w-[160px] truncate text-left"
           >
-            {finding.clusterName ?? finding.clusterId}
+            {finding.cluster.name}
           </button>
         ) : (
           <span className="text-xs text-theme-text-secondary shrink-0 max-w-[160px] truncate">
-            {finding.clusterName ?? finding.clusterId}
+            {finding.cluster.name}
           </span>
         )
       )}

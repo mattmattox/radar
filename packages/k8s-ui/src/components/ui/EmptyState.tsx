@@ -27,8 +27,11 @@ export type EmptyStateVariant = 'card' | 'inline'
 interface Props {
   tone?: EmptyStateTone
   variant?: EmptyStateVariant
-  /** Optional Lucide icon. Defaults to none for inline; not auto-set for card either —
-   *  callers pass icons that match their context (e.g. CheckCircle2 for a healthy state). */
+  /** Optional Lucide icon. When omitted: the inline variant falls back
+   *  to a small colored dot (emerald for healthy, tertiary text for the
+   *  rest) so the line keeps a visual anchor; the card variant renders
+   *  no leading visual. Callers pass icons that match their context
+   *  (e.g. CheckCircle2 for a healthy state). */
   icon?: LucideIcon
   headline: string
   body?: ReactNode

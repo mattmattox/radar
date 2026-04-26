@@ -1661,14 +1661,20 @@ interface ResourcesViewProps {
    *  When undefined, behavior is byte-identical to single-cluster mode. */
   extraLeadingColumns?: ExtraColumn[]
   /** Escape hatch for full-page-nav row selection: receive the FULL
-   *  resource object on row click, instead of the stripped
-   *  {kind, namespace, name, group} shape onResourceClick gets. Lets the
-   *  parent read injected fields (e.g. multi-cluster row-level metadata
-   *  for cross-tree drill-in nav) without a parallel
+   *  resource object on row click / Enter / `d` / search-Enter, instead
+   *  of the stripped {kind, namespace, name, group} shape onResourceClick
+   *  gets. Lets the parent read injected fields (e.g. multi-cluster
+   *  row-level metadata for cross-tree drill-in nav) without a parallel
    *  (kind, ns, name) → owner lookup that wouldn't dedup for resources
-   *  sharing a namespaced name across cluster boundaries. When set, this
-   *  fires INSTEAD OF onResourceClick (the drawer-pattern handler doesn't
-   *  fit a full-page-nav drill-in). */
+   *  sharing a namespaced name across cluster boundaries. When set,
+   *  fires INSTEAD OF onResourceClick on those selection paths.
+   *
+   *  Not honored on: `y` (open YAML — routes through onResourceClickYaml)
+   *  and `l` (open logs — different intent). URL deep-link hydration on
+   *  mount (`?resource=ns/name`) only has stripped params and always
+   *  calls onResourceClick — hosts using onRowSelect for full-page nav
+   *  should also wire onResourceClick to handle the deep-link-on-load
+   *  case. */
   onRowSelect?: (resource: any) => void
 }
 
@@ -1859,14 +1865,27 @@ export function ResourcesView({
     return { pods, nodes }
   }, [topPodMetrics, topNodeMetrics])
 
-  // Load column settings from localStorage when kind changes
   // Prepend extraLeadingColumns (host-injected leading columns) before
   // the kind-specific KNOWN_COLUMNS entries. When extras are undefined,
-  // this collapses to the single-cluster behavior.
+  // this collapses to single-cluster behavior. Built-in keys win on
+  // collision: a colliding extra is filtered out (with a dev-mode warn)
+  // so we don't render two columns sharing one key — that would yield
+  // duplicate React keys and corrupt visibleColumns / columnWidths state.
   const allColumns = useMemo(() => {
     const kindColumns = getColumnsForKind(selectedKind.name, selectedKind.group)
     if (!extraLeadingColumns?.length) return kindColumns
-    return [...extraLeadingColumns, ...kindColumns]
+    const builtinKeys = new Set(kindColumns.map(c => c.key))
+    const filteredExtras = extraLeadingColumns.filter(c => {
+      if (builtinKeys.has(c.key)) {
+        if (import.meta.env?.DEV) {
+          // eslint-disable-next-line no-console
+          console.warn(`[ResourcesView] extraLeadingColumns key "${c.key}" collides with a built-in column for kind "${selectedKind.name}" — extra ignored`)
+        }
+        return false
+      }
+      return true
+    })
+    return [...filteredExtras, ...kindColumns]
   }, [selectedKind.name, selectedKind.group, extraLeadingColumns])
 
   // Map of extra column keys for fast O(1) lookup on each render path
@@ -2055,6 +2074,28 @@ export function ResourcesView({
     return highlightedResourceRef.current
   }, [])
 
+  // Selection handler shared by row click, Enter / `d` shortcuts, and the
+  // search-Enter path. Honors the onRowSelect escape hatch when set so
+  // full-page-nav consumers stay consistent across activation paths;
+  // otherwise falls through to the drawer-pattern onResourceClick with
+  // the stripped {kind, namespace, name, group} shape.
+  // (Distinct from `y` / `l` shortcuts, which open YAML / logs rather
+  // than "select the row" — those route to their own callbacks.)
+  const selectResource = useCallback((resource: any, isSelected = false) => {
+    if (!resource?.metadata?.name) return
+    if (onRowSelect) {
+      onRowSelect(resource)
+      return
+    }
+    const stripped = {
+      kind: selectedKind.name,
+      namespace: resource.metadata.namespace || '',
+      name: resource.metadata.name,
+      group: selectedKind.group,
+    }
+    onResourceClick?.(isSelected ? null : stripped)
+  }, [onRowSelect, onResourceClick, selectedKind.name, selectedKind.group])
+
   // Register navigation shortcuts
   useRegisterShortcuts([
     {
@@ -2117,11 +2158,7 @@ export function ResourcesView({
       description: 'Open resource detail',
       category: 'Resource Actions',
       scope: 'resources',
-      handler: () => {
-        const res = getHighlightedResource()
-        if (!res?.metadata?.name) return
-        onResourceClick?.({ kind: selectedKind.name, namespace: res.metadata.namespace || '', name: res.metadata.name, group: selectedKind.group })
-      },
+      handler: () => selectResource(getHighlightedResource()),
       enabled: highlightedIndex >= 0,
     },
     {
@@ -2130,11 +2167,7 @@ export function ResourcesView({
       description: 'Open resource detail',
       category: 'Resource Actions',
       scope: 'resources',
-      handler: () => {
-        const res = getHighlightedResource()
-        if (!res?.metadata?.name) return
-        onResourceClick?.({ kind: selectedKind.name, namespace: res.metadata.namespace || '', name: res.metadata.name, group: selectedKind.group })
-      },
+      handler: () => selectResource(getHighlightedResource()),
       enabled: highlightedIndex >= 0,
     },
     {
@@ -3028,7 +3061,12 @@ export function ResourcesView({
     if (!resources || resources.length === 0) return null
 
     const kindLower = normalizeKindToPlural(selectedKind.name, selectedKind.group)
-    const columns = KNOWN_COLUMNS[kindLower] || DEFAULT_COLUMNS
+    // Iterate over allColumns (built-ins + injected extras) so an
+    // ExtraColumn with getFilterValue gets a column-filter dropdown like
+    // any built-in does. The previous formulation iterated KNOWN_COLUMNS
+    // directly, which silently skipped extras whose keys weren't already
+    // in the built-in set.
+    const columns = allColumns
 
     // Auto-detect filterable columns
     const filterableColumns: Array<{
@@ -3135,7 +3173,7 @@ export function ResourcesView({
 
     if (filterableColumns.length === 0 && !problems && labelValues.length === 0) return null
     return { columns: filterableColumns, problems, labels: labelValues }
-  }, [resources, selectedKind.name])
+  }, [resources, selectedKind.name, selectedKind.group, allColumns])
 
   // Map filterable columns by key for O(1) lookup in header rendering
   const filterableColumnMap = useMemo(() => {
@@ -3254,9 +3292,7 @@ export function ResourcesView({
                   // Defer to next frame so the highlight renders before we open
                   requestAnimationFrame(() => {
                     const res = highlightedResourceRef.current ?? filteredResources[0]
-                    if (res?.metadata?.name) {
-                      onResourceClick?.({ kind: selectedKind.name, namespace: res.metadata.namespace || '', name: res.metadata.name, group: selectedKind.group })
-                    }
+                    selectResource(res)
                   })
                 } else if (e.key === 'Escape') {
                   searchInputRef.current?.blur()
@@ -3767,20 +3803,7 @@ export function ResourcesView({
                     isSelected={isSelected}
                     isHighlighted={isHighlighted}
                     majorityNodeMinorVersion={majorityNodeMinorVersion}
-                    onClick={() => {
-                      // Full-row escape hatch wins: when set, the parent
-                      // wants the whole resource object (e.g. multi-cluster
-                      // hosts that injected row-level metadata for cross-tree
-                      // navigation) and we skip the drawer-pattern handler.
-                      // Otherwise the drawer-pattern onResourceClick handler
-                      // gets the stripped SelectedResource shape.
-                      if (onRowSelect) {
-                        onRowSelect(resource)
-                        return
-                      }
-                      const res = { kind: selectedKind.name, namespace: resource.metadata?.namespace || '', name: resource.metadata?.name, group: selectedKind.group }
-                      onResourceClick?.(isSelected ? null : res)
-                    }}
+                    onClick={() => selectResource(resource, isSelected)}
                     onMouseEnter={() => setHighlightedIndex(-1)}
                   />
                 )

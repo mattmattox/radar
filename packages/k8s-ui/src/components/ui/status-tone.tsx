@@ -28,6 +28,12 @@ import { type HealthLevel } from '../resources/resource-utils';
 // Audit findings, Cert expiry buckets) — without it, "high" and either
 // "critical" or "medium" collapse into the same color.
 
+// `StatusTone` is intentionally a name for `HealthLevel` at call sites
+// where the concern is presentation (which color/dot to render) rather
+// than the underlying health state — `tone: StatusTone` reads cleaner
+// than `tone: HealthLevel`. The two are structurally identical today;
+// keeping a separate name preserves the option to diverge later (e.g.
+// a future `brand` tone that isn't a health state).
 export type StatusTone = HealthLevel;
 
 // Solid dot colors for StatusDot (the .status-* CSS classes are pill

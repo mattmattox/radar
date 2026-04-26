@@ -11,13 +11,12 @@ export interface AuditFinding {
   category: string
   severity: string
   message: string
-  /** Optional cluster identifier — set when findings come from multiple
-   *  clusters (cross-cluster aggregation). When all findings have the same
-   *  clusterId or none is set, AuditFindingsTable hides the cluster column. */
-  clusterId?: string
-  /** Optional human-readable cluster name. Used for the cluster column
-   *  display when clusterId is set. */
-  clusterName?: string
+  /** Cluster context — set when findings come from multiple clusters
+   *  (cross-cluster aggregation). Rendered as a Cluster column when the
+   *  host passes `multiCluster` to AuditFindingsTable. Grouped as one
+   *  optional object so id and name stay in lockstep — `name` is
+   *  meaningless without `id`. */
+  cluster?: { id: string; name: string }
 }
 
 interface AuditAlertsProps {
