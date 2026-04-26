@@ -144,8 +144,36 @@ type CacheConfig struct {
 	// SyncTimeout is the maximum time to wait for critical informers to sync
 	// before proceeding with partial data. Unsynced critical informers are
 	// promoted to deferred and continue syncing in the background.
-	// Zero means wait indefinitely (original behavior).
+	// Zero means wait indefinitely (original behavior). Prefer PatienceWindow
+	// + MinimalSet for application-driven first-paint, this remains for
+	// backwards compat (skyhook-connector still uses it).
 	SyncTimeout time.Duration
+
+	// PatienceWindow is the soft deadline after which the cache returns as
+	// soon as MinimalSet (below) is fully synced. Critical informers not in
+	// MinimalSet that are still syncing are promoted to deferred so the
+	// caller can render a useful first paint while the rest stream in.
+	//
+	// When 0 or when MinimalSet is empty, this falls back to the legacy
+	// behavior controlled by SyncTimeout.
+	PatienceWindow time.Duration
+
+	// MinimalSet is the subset of critical resource types (keyed by
+	// ResourceType, e.g. Pods, Services) that the application considers
+	// the irreducible minimum for a useful first render. Once these are
+	// synced AND the patience window has elapsed, NewResourceCache
+	// returns even if other critical informers are still syncing.
+	//
+	// Keys must reference types also present in ResourceTypes. Members
+	// that are deferred or absent are ignored.
+	MinimalSet map[string]bool
+
+	// SyncProgress is invoked roughly every second during the critical
+	// sync phase with the current progress. It is also invoked once when
+	// first paint becomes ready (allCritical=true OR minimalReady=true
+	// after the patience window elapsed). Application code uses this to
+	// surface a "loading X of Y resource types" indicator.
+	SyncProgress func(synced, total int, minimalReady bool)
 
 	// DeferredSyncTimeout caps how long we wait for deferred informers to
 	// finish syncing before giving up. When the deadline fires, deferredDone

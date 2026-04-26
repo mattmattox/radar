@@ -176,6 +176,118 @@ func TestNewResourceCache_DeferredSync_PartialFailure(t *testing.T) {
 	}
 }
 
+// TestNewResourceCache_MinimalSet_AllFast verifies that when the patience
+// window is set but every informer syncs quickly, NewResourceCache returns
+// via the all-critical-synced path (not the minimal-set fallback). No
+// informers should be promoted, syncProgress should fire to completion.
+func TestNewResourceCache_MinimalSet_AllFast(t *testing.T) {
+	client := fake.NewSimpleClientset()
+
+	var lastSynced, lastTotal int
+	var lastReady bool
+	var progMu sync.Mutex
+
+	rc, err := NewResourceCache(CacheConfig{
+		Client: client,
+		ResourceTypes: map[string]bool{
+			Pods:        true,
+			Services:    true,
+			Deployments: true,
+			Ingresses:   true,
+		},
+		PatienceWindow: 2 * time.Second,
+		MinimalSet: map[string]bool{
+			Pods:     true,
+			Services: true,
+		},
+		SyncProgress: func(synced, total int, ready bool) {
+			progMu.Lock()
+			lastSynced, lastTotal, lastReady = synced, total, ready
+			progMu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	// All four critical informers should be synced — no promotion.
+	if got := rc.PromotedKinds(); len(got) != 0 {
+		t.Errorf("expected no promoted kinds when all critical synced fast, got %v", got)
+	}
+
+	progMu.Lock()
+	defer progMu.Unlock()
+	if lastTotal != 4 {
+		t.Errorf("expected SyncProgress.total=4, got %d", lastTotal)
+	}
+	if lastSynced != 4 {
+		t.Errorf("expected SyncProgress.synced=4, got %d", lastSynced)
+	}
+	if !lastReady {
+		t.Error("expected final SyncProgress to report minimalReady=true")
+	}
+}
+
+// TestNewResourceCache_MinimalSet_Promotion verifies the slow-cluster path:
+// when a non-minimal critical informer can't sync within the patience
+// window but minimal-set members are ready, NewResourceCache returns and
+// promotes the slow informer to deferred. The promoted informer must
+// continue running and eventually become available.
+func TestNewResourceCache_MinimalSet_Promotion(t *testing.T) {
+	client := fake.NewSimpleClientset()
+
+	// Make ingresses LIST fail. The reflector retries with backoff, so
+	// HasSynced() stays false, but the failure returns immediately —
+	// no shared tracker lock held, pods/services LIST proceed normally.
+	// Ingress is critical (not in MinimalSet) so it should be the one
+	// that gets promoted.
+	client.PrependReactor("list", "ingresses", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("simulated slow API: ingresses unavailable")
+	})
+
+	start := time.Now()
+	rc, err := NewResourceCache(CacheConfig{
+		Client: client,
+		ResourceTypes: map[string]bool{
+			Pods:      true,
+			Services:  true,
+			Ingresses: true,
+		},
+		PatienceWindow: 200 * time.Millisecond,
+		MinimalSet: map[string]bool{
+			Pods:     true,
+			Services: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	elapsed := time.Since(start)
+	if elapsed < 200*time.Millisecond {
+		t.Errorf("expected return after at least the patience window (200ms), got %v", elapsed)
+	}
+	// Cap upper bound generously: patience window + a few jitter ticks.
+	if elapsed > 3*time.Second {
+		t.Errorf("returned far later than patience window — minimal-set fallback didn't trigger? elapsed=%v", elapsed)
+	}
+
+	promoted := rc.PromotedKinds()
+	if len(promoted) != 1 || promoted[0] != "Ingress" {
+		t.Errorf("expected Ingress to be promoted, got %v", promoted)
+	}
+
+	// Minimal-set listers should be available immediately.
+	if rc.Pods() == nil {
+		t.Error("expected Pods() lister available after first paint")
+	}
+	if rc.Services() == nil {
+		t.Error("expected Services() lister available after first paint")
+	}
+}
+
 func TestNewResourceCache_Callbacks(t *testing.T) {
 	// Pre-create a pod so the informer fires an add event
 	pod := &corev1.Pod{
