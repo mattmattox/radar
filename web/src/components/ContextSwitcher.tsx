@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Server, AlertTriangle } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import {
   ClusterSwitcher,
   type ClusterSwitcherItem,
@@ -61,9 +61,14 @@ export function ContextSwitcher({ className = '' }: ContextSwitcherProps) {
         : hasMultipleAccounts
           ? 'Other'
           : undefined
+      // `name` is the raw context — ClusterSwitcher renders it through
+      // ClusterName, which collapses GKE/EKS/AKS shapes to the meaningful
+      // tail. `secondary` shows the original raw when we collapsed it,
+      // so users always see the full context at a glance (rather than
+      // having to hover to reveal it).
       return {
         id: p.context.name,
-        name: p.clusterName,
+        name: p.context.name,
         secondary: p.provider ? p.raw : undefined,
         badge: p.region || undefined,
         group: { key: groupKey, label: groupLabel },
@@ -148,7 +153,6 @@ export function ContextSwitcher({ className = '' }: ContextSwitcherProps) {
   }
 
   const currentRaw = clusterInfo?.context || contexts?.find(c => c.isCurrent)?.name || 'Unknown'
-  const currentParsed = parseContextName(currentRaw)
   const currentId = contexts?.find(c => c.isCurrent)?.name
 
   return (
@@ -156,9 +160,7 @@ export function ContextSwitcher({ className = '' }: ContextSwitcherProps) {
       <ClusterSwitcher
         className={className}
         currentId={currentId}
-        currentName={currentParsed.clusterName}
-        currentTooltip={currentRaw}
-        triggerIcon={<Server className="w-3.5 h-3.5 text-theme-text-secondary" />}
+        currentName={currentRaw}
         items={items}
         onSelect={handleSelect}
         loading={switchContext.isPending}
