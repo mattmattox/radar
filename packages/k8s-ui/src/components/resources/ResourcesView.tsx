@@ -1763,8 +1763,8 @@ export function ResourcesView({
   pinned = [],
   togglePin = () => {},
   isPinned = () => false,
-  locationSearch = '',
-  locationPathname = '',
+  locationSearch,
+  locationPathname,
   onNavigate,
   basePath = '/resources',
   onOpenLogs,
@@ -1775,7 +1775,6 @@ export function ResourcesView({
   extraLeadingColumns,
   onRowSelect,
 }: ResourcesViewProps) {
-  const location = useMemo(() => ({ search: locationSearch, pathname: locationPathname }), [locationSearch, locationPathname])
   const initialFilters = getInitialFiltersFromURL()
   const [selectedKind, setSelectedKind] = useState<SelectedKindInfo>(() => getInitialKindFromURL(basePath, locationPathname, locationSearch))
   // Sync selectedKind from URL when locationPathname changes (e.g., browser back, external sidebar navigation)
@@ -2367,7 +2366,7 @@ export function ResourcesView({
     requestAnimationFrame(() => {
       isSyncingFromURL.current = false
     })
-  }, [location.search, location.pathname]) // Re-run when URL path or search params change
+  }, [locationPathname, locationSearch]) // Re-run when injected URL path or search params change
 
   const navigate = useMemo(() => {
     if (!onNavigate) return (_pathOrObj: any, _opts?: any) => {}
