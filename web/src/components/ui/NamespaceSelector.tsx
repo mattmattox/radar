@@ -155,6 +155,16 @@ export function NamespaceSelector({
     }
   }, [isOpen, closeDropdown])
 
+  // Also close on browser navigation (back/forward, programmatic
+  // route changes that publish popstate). Without this the dropdown
+  // would survive in-app navigations triggered while it was open.
+  useEffect(() => {
+    if (!isOpen) return
+    const onPop = () => closeDropdown()
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [isOpen, closeDropdown])
+
   // Handle keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     switch (e.key) {
@@ -232,11 +242,16 @@ export function NamespaceSelector({
       {isOpen &&
         createPortal(
           <>
-          {/* Backdrop to capture clicks outside the dropdown */}
-          <div
-            className="fixed inset-0 z-[9998]"
-            onClick={closeDropdown}
-          />
+          {/* No click-eating backdrop here. The previous implementation
+              mounted a `fixed inset-0` overlay that swallowed any click
+              outside the dropdown, so clicking e.g. the "Resources"
+              tab while the namespace dropdown was open closed the
+              dropdown but did NOT propagate the click to the tab —
+              the user perceived this as the click being silently
+              dropped. (SKY-822 bug 7)
+              The mousedown document listener at line ~136 already
+              dismisses the dropdown on outside clicks; without the
+              backdrop the underlying click reaches its real target. */}
           <div
             ref={dropdownRef}
             className="fixed z-[9999] bg-theme-elevated border border-theme-border rounded-md shadow-lg overflow-hidden"

@@ -1,25 +1,26 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { User, LogOut } from 'lucide-react'
 import { useAuthMe } from '../api/client'
 import { useQueryClient } from '@tanstack/react-query'
+import { useDismissable } from '@skyhook-io/k8s-ui/hooks/useDismissable'
 
 export function UserMenu() {
   const { data: authMe } = useAuthMe()
   const [isOpen, setIsOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
+  const close = useCallback(() => setIsOpen(false), [])
 
-  // Close on click outside
-  useEffect(() => {
-    if (!isOpen) return
-    function handleClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setIsOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [isOpen])
+  // Dismiss on outside pointerdown, Escape, AND route change. The
+  // previous implementation only handled outside clicks via
+  // mousedown — but UserMenu lives in the app shell and survives
+  // route changes, so the menu would persist visibly across
+  // navigations. (SKY-822 bug 8)
+  useDismissable({
+    isOpen,
+    onDismiss: close,
+    containers: [menuRef],
+  })
 
   const handleLogout = useCallback(async () => {
     let redirectTo = '/'
