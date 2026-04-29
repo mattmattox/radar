@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react'
 
 /**
+ * Pure predicate for whether `useNow` should schedule a tick for the
+ * given interval. Extracted so the scheduling rule (null and non-positive
+ * intervals opt out; anything > 0 ticks) can be unit-tested without a
+ * React renderer.
+ */
+export function shouldScheduleNow(intervalMs: number | null): boolean {
+  if (intervalMs === null) return false
+  if (intervalMs <= 0) return false
+  return true
+}
+
+/**
  * Returns the current wall-clock time, refreshed every `intervalMs`.
  *
  * Use this when you have UI that derives a relative time string (e.g.
@@ -24,12 +36,11 @@ export function useNow(intervalMs: number | null = 1000): number {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    if (intervalMs === null) return
-    if (intervalMs <= 0) return
+    if (!shouldScheduleNow(intervalMs)) return
     // Use the global setInterval rather than `window.setInterval` so the
     // hook works under SSR / Node-based tests too. In browsers they're
     // the same function; in Node, `window` is undefined.
-    const id = setInterval(() => setNow(Date.now()), intervalMs)
+    const id = setInterval(() => setNow(Date.now()), intervalMs as number)
     return () => {
       clearInterval(id)
     }
