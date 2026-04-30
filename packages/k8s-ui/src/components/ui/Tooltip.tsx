@@ -1,6 +1,7 @@
 import { ReactNode, useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { clsx } from 'clsx'
+import { twMerge } from 'tailwind-merge'
 import { computeTooltipPosition } from './tooltip-position'
 
 // Module-level singleton coordinator: only one Tooltip can be visible
@@ -199,7 +200,14 @@ export function Tooltip({
     <>
       <span
         ref={triggerRef}
-        className={clsx('inline-flex max-w-full', wrapperClassName)}
+        // twMerge so a caller-supplied display utility (e.g.
+        // `wrapperClassName="block"` from ChartBrowser, where the
+        // wrapper needs to fill its `flex-1 min-w-0` parent so the
+        // child's `truncate` triggers) actually overrides our default
+        // `inline-flex`. Plain clsx concatenation can't override
+        // utilities that share a Tailwind property group, since the
+        // generated stylesheet ordering — not className order — wins.
+        className={twMerge(clsx('inline-flex max-w-full', wrapperClassName))}
         style={wrapperStyle}
         onMouseEnter={showTooltip}
         onMouseLeave={hideTooltip}

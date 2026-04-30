@@ -72,6 +72,7 @@
     "lucide-react": ">=0.400.0",
     "react": ">=18.0.0",
     "react-dom": ">=18.0.0",
+    "tailwind-merge": ">=2",
     "yaml": ">=2.0.0"
   },
   "devDependencies": {
