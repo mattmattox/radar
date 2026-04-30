@@ -174,7 +174,6 @@ function calculateInterestingnessWithBreakdown(lane: ResourceLane): ScoreBreakdo
 }
 
 import { formatZoomLabel } from '@skyhook-io/k8s-ui/utils/zoom-label'
-export { formatZoomLabel }
 
 interface ZoomWindowPickerProps {
   zoom: number
