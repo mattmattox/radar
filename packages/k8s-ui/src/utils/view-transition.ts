@@ -39,23 +39,18 @@ export function startViewTransitionSafe(update: () => void): void {
   // the user — they got what they wanted (the new state). Swallow it
   // so it doesn't become a noisy console exception.
   transition.finished.catch((err: unknown) => {
-    if (
-      err &&
-      typeof err === 'object' &&
-      'name' in err &&
-      (err as { name: unknown }).name === 'InvalidStateError'
-    ) {
-      return
-    }
+    if (isInvalidStateError(err)) return
     // Anything else really is unexpected — let it surface.
     throw err
   })
 }
 
 /**
- * Predicate used by tests / call sites that want to short-circuit
- * around the API. Exposed alongside `startViewTransitionSafe` so the
- * rejection-classifying logic can be unit-tested in isolation.
+ * Predicate that classifies the rejection thrown by the View
+ * Transitions API when a new transition supersedes an in-flight one.
+ * Used by `startViewTransitionSafe` to know what to swallow, and
+ * exported so tests (and any future call site that wraps the API
+ * differently) can pin the exact name we treat as expected.
  */
 export function isInvalidStateError(err: unknown): boolean {
   return (
