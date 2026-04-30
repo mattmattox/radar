@@ -47,3 +47,37 @@ export function computeDeploymentsProgressing(args: {
 }): number {
   return Math.max(0, args.total - args.available - args.unavailable)
 }
+
+/**
+ * Visible / total / hidden counts for the topology filter footer.
+ * Both `visibleCount` and `totalCount` MUST come from the same
+ * denominator (the kinds the user can actually filter), otherwise
+ * the "· N filtered" badge appears even when nothing is filtered
+ * — the synthetic `Internet` node in the topology graph is not in
+ * `availableKindKeys`, and `nodes.length` would over-count it.
+ *
+ *   inputs:
+ *     kindCounts        — per-kind node counts derived from `nodes`
+ *     availableKindKeys — kinds the user CAN filter (excludes Internet)
+ *     visibleKindKeys   — subset of availableKindKeys currently checked
+ *
+ *   contract:
+ *     visibleCount <= totalCount
+ *     hiddenCount === totalCount - visibleCount
+ *     hiddenCount === 0 when no filter is active
+ */
+export function computeTopologyFooterCounts(args: {
+  kindCounts: ReadonlyMap<string, number>
+  availableKindKeys: ReadonlyArray<string>
+  visibleKindKeys: ReadonlySet<string>
+}): { visibleCount: number; totalCount: number; hiddenCount: number } {
+  const sum = (keys: ReadonlyArray<string>) =>
+    keys.reduce((acc, k) => acc + (args.kindCounts.get(k) || 0), 0)
+  const totalCount = sum(args.availableKindKeys)
+  const visibleCount = sum(args.availableKindKeys.filter(k => args.visibleKindKeys.has(k)))
+  return {
+    visibleCount,
+    totalCount,
+    hiddenCount: Math.max(0, totalCount - visibleCount),
+  }
+}

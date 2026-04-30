@@ -11,6 +11,7 @@ import type { LucideIcon } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { NodeKind, TopologyNode } from '../../types'
 import { getTopologyIcon } from '../../utils/resource-icons'
+import { computeTopologyFooterCounts } from '../../utils/count-reconcile'
 
 // Resource kind configuration
 const RESOURCE_KINDS: {
@@ -387,14 +388,17 @@ export const TopologyFilterSidebar = memo(function TopologyFilterSidebar({
       {/* Footer stats */}
       <div className="px-3 py-2 border-t border-theme-border bg-theme-surface/50">
         {(() => {
-          // Compute visible-vs-total once and explain the gap.
-          // (SKY-827 bug 16: "Showing 625 of 639" gave no clue
-          // what the missing 14 were — the gap was the user's own
-          // kind-filter selection, but nothing surfaced that.)
-          const visibleByKind = availableKinds.filter(k => visibleKinds.has(k.kind))
-          const visibleCount = visibleByKind.reduce((sum, k) => sum + (kindCounts.get(k.kind) || 0), 0)
-          const totalCount = nodes.length
-          const hiddenCount = totalCount - visibleCount
+          // Both numerator and denominator come from
+          // `availableKinds` — `nodes.length` would include the
+          // synthetic "Internet" node which isn't in
+          // `availableKinds` (deliberately excluded above), and
+          // mixing the two inflates the hidden count so the
+          // "· N filtered" badge appears even with no filter.
+          const { visibleCount, totalCount, hiddenCount } = computeTopologyFooterCounts({
+            kindCounts,
+            availableKindKeys: availableKinds.map(k => k.kind),
+            visibleKindKeys: visibleKinds,
+          })
           const hiddenKinds = availableKinds.filter(k => !visibleKinds.has(k.kind) && (kindCounts.get(k.kind) || 0) > 0)
           const hiddenSummary = hiddenKinds.length > 0
             ? `${hiddenCount} hidden by kind filter (${hiddenKinds.map(k => `${kindCounts.get(k.kind)} ${k.kind}`).join(', ')})`
