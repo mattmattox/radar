@@ -366,7 +366,7 @@ function AppInner() {
   const switchContext = useSwitchContext()
 
   // View switching keyboard shortcuts
-  const views: ExtendedMainView[] = ['home', 'topology', 'resources', 'timeline', 'helm', 'traffic']
+  const views: ExtendedMainView[] = ['home', 'topology', 'resources', 'timeline', 'helm', 'traffic', 'cost', 'audit']
   useRegisterShortcuts([
     ...views.map((view, i) => ({
       id: `view-${view}`,
