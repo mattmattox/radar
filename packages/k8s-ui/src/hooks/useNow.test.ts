@@ -1,25 +1,17 @@
-import { describe, it, expect } from 'vitest'
-import { useNow, shouldScheduleNow } from './useNow'
+import { describe, it, expect, vi } from 'vitest'
+import { useNow, shouldScheduleNow, scheduleNowTicks } from './useNow'
 
-// We don't have @testing-library/react / jsdom in this package's
-// vitest setup, so we can't invoke the hook through a renderer here.
-// Instead we:
-//   1. Import `useNow` so the test fails if the module fails to load
-//      or the export shape changes (catches accidental signature
-//      breaks in CI).
-//   2. Pin the scheduling predicate `shouldScheduleNow` — extracted
-//      from the hook precisely so the branch logic that decides
-//      "tick or don't tick" is unit-testable without a renderer.
-//
-// (Cursor Bugbot pointed out that a previous iteration of this file
-// inlined the branch logic without ever importing `useNow`, giving
-// false coverage. This rewrite makes the test reflect what's actually
-// shipped.)
+// This package's vitest config has no @testing-library/react and no
+// jsdom — we can't render hooks here. Instead the hook's effect
+// body is hoisted into the pure `scheduleNowTicks` driver, and we
+// exercise THAT directly: the same opt-out rules, the same
+// setInterval call, the same cleanup contract that the hook
+// installs at runtime. The hook itself is also imported so the
+// suite fails if its export shape regresses.
 
 describe('useNow', () => {
   it('exports a callable hook with the documented signature', () => {
     expect(typeof useNow).toBe('function')
-    // useNow(intervalMs?) — single optional parameter.
     expect(useNow.length).toBeLessThanOrEqual(1)
   })
 })
@@ -42,5 +34,72 @@ describe('shouldScheduleNow', () => {
   it('opts out when intervalMs is negative', () => {
     expect(shouldScheduleNow(-1)).toBe(false)
     expect(shouldScheduleNow(-1000)).toBe(false)
+  })
+})
+
+describe('scheduleNowTicks (the pure body of useNow)', () => {
+  function fakeTimers() {
+    const setInterval = vi.fn(() => 'TIMER_ID' as unknown)
+    const clearInterval = vi.fn()
+    const now = vi.fn(() => 1700000000000)
+    return {
+      timers: { setInterval, clearInterval, now },
+      setInterval,
+      clearInterval,
+      now,
+    }
+  }
+
+  it('installs no timer and returns a no-op cleanup when interval is null', () => {
+    const setNow = vi.fn()
+    const { timers, setInterval, clearInterval } = fakeTimers()
+    const cleanup = scheduleNowTicks(null, setNow, timers)
+    expect(setInterval).not.toHaveBeenCalled()
+    cleanup()
+    expect(clearInterval).not.toHaveBeenCalled()
+  })
+
+  it('installs no timer when interval is zero or negative', () => {
+    const setNow = vi.fn()
+    for (const bad of [0, -1, -1000]) {
+      const { timers, setInterval } = fakeTimers()
+      scheduleNowTicks(bad, setNow, timers)
+      expect(setInterval, `interval=${bad}`).not.toHaveBeenCalled()
+    }
+  })
+
+  it('installs an interval that calls setNow with the current time', () => {
+    const setNow = vi.fn()
+    const { timers, setInterval, now } = fakeTimers()
+    scheduleNowTicks(1000, setNow, timers)
+    expect(setInterval).toHaveBeenCalledTimes(1)
+    expect(setInterval.mock.calls[0][1]).toBe(1000)
+
+    // Fire the registered tick — the hook must update state with
+    // the latest wall-clock value, NOT the value captured at
+    // mount.
+    const tick = setInterval.mock.calls[0][0] as () => void
+    now.mockReturnValue(1700000005000)
+    tick()
+    expect(setNow).toHaveBeenCalledWith(1700000005000)
+    now.mockReturnValue(1700000010000)
+    tick()
+    expect(setNow).toHaveBeenLastCalledWith(1700000010000)
+  })
+
+  it('returns a cleanup that clears the registered timer id', () => {
+    const setNow = vi.fn()
+    const { timers, setInterval, clearInterval } = fakeTimers()
+    setInterval.mockReturnValue(42)
+    const cleanup = scheduleNowTicks(1000, setNow, timers)
+    cleanup()
+    expect(clearInterval).toHaveBeenCalledWith(42)
+  })
+
+  it('passes the interval through unchanged (1Hz vs 60Hz callers)', () => {
+    const setNow = vi.fn()
+    const { timers, setInterval } = fakeTimers()
+    scheduleNowTicks(60_000, setNow, timers)
+    expect(setInterval.mock.calls[0][1]).toBe(60_000)
   })
 })

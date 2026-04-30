@@ -1753,11 +1753,11 @@ type SortDirection = 'asc' | 'desc' | null
 /**
  * "Updated Xs" / "Updated 1m" badge in the toolbar.
  *
- * Lives in its own component so the 1Hz `useNow` tick re-renders only
- * this tiny label, NOT the entire ResourcesView (which is ~4000 lines
- * and contains a virtualized table). Without this, every visible
- * row's React render would run once per second just to advance one
- * label by 1s. (Cursor Bugbot caught this on PR #572.)
+ * Lives in its own component so the 1Hz `useNow` tick re-renders
+ * only this tiny label, NOT the entire ResourcesView (which is
+ * ~4000 lines and contains a virtualized table). Without this
+ * boundary, every visible row's React render would run once per
+ * second just to advance one label by 1s.
  */
 function LastUpdatedLabel({ lastUpdated }: { lastUpdated: Date }) {
   // Read the ticking clock here so only this subtree re-renders.
@@ -2656,7 +2656,7 @@ export function ResourcesView({
   // data arrived when nothing actually changed, and the user reads the
   // "<1s" jump as evidence that opening a filter drawer triggered a real
   // network round-trip. Gate the bump on data-reference change so we only
-  // bump when the cache actually mutated. (SKY-820 / bug 16)
+  // bump when the cache actually mutated.
   const lastDataRef = useRef<unknown>(undefined)
   useEffect(() => {
     if (dataUpdatedAt && resources !== lastDataRef.current) {
@@ -2664,12 +2664,6 @@ export function ResourcesView({
       setLastUpdated(new Date(dataUpdatedAt))
     }
   }, [dataUpdatedAt, resources])
-
-  // The 1Hz tick that advances "Updated Xs" lives in `LastUpdatedLabel`
-  // below — extracted to its own tiny component on purpose, so we
-  // don't re-render this ~4000-line ResourcesView (and every visible
-  // virtualized row) once per second just to update one label.
-  // (Cursor Bugbot caught this on PR #572.)
 
   // Derive counts — prefer lightweight resourceCounts prop over full query data
   const counts = useMemo(() => {
@@ -3988,11 +3982,11 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
     )
   }
   if (column === 'age') {
-    // Tooltip with the absolute creationTimestamp gives users a stable
-    // reference. Reported in SKY-820: relative-age values felt like they
-    // shifted between refreshes, eroding trust in the column. The
-    // absolute timestamp is the ground truth — exposing it on hover
-    // lets users self-verify without leaving the table.
+    // Tooltip with the absolute creationTimestamp gives users a
+    // stable reference: relative-age values felt like they shifted
+    // between refreshes, eroding trust in the column. The absolute
+    // timestamp is the ground truth — exposing it on hover lets
+    // users self-verify without leaving the table.
     if (!meta.creationTimestamp) {
       return <span className="text-sm text-theme-text-secondary">-</span>
     }
