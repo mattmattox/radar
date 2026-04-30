@@ -1,12 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { computeUserInitials } from './user-initials'
 
-// Pinning the SKY-825 bug 41 contract: the previous implementation
-// only looked at separator-split segments, so any username without a
-// '.', '_', or '-' (e.g. "mkohli", "alice") produced empty initials
-// and the UserMenu fell back to a generic silhouette icon. The new
-// helper guarantees a non-empty, uppercase 1-2-letter label whenever
-// there's a usable username.
+// Pin the contract that the avatar circle never tries to render a
+// non-letter glyph: previous implementations either produced
+// silhouettes for separator-free usernames OR leaked separator
+// characters into the result (e.g. ".U" for ".user").
 
 describe('computeUserInitials', () => {
   it('uses segment initials when separators are present', () => {
@@ -19,7 +17,7 @@ describe('computeUserInitials', () => {
     expect(computeUserInitials('a.b.c.d')).toBe('AB')
   })
 
-  it('falls back to leading letters when no separators (the SKY-825 bug 41 fix)', () => {
+  it('falls back to leading letters when no separators', () => {
     expect(computeUserInitials('mkohli')).toBe('MK')
     expect(computeUserInitials('alice')).toBe('AL')
   })
@@ -39,7 +37,7 @@ describe('computeUserInitials', () => {
     expect(computeUserInitials('aLiCe')).toBe('AL')
   })
 
-  it('returns empty string for null/undefined/empty inputs (caller falls back to silhouette)', () => {
+  it('returns empty string for null/undefined/empty inputs', () => {
     expect(computeUserInitials(null)).toBe('')
     expect(computeUserInitials(undefined)).toBe('')
     expect(computeUserInitials('')).toBe('')
@@ -52,5 +50,40 @@ describe('computeUserInitials', () => {
 
   it('handles email-only usernames with @ as the first character', () => {
     expect(computeUserInitials('@example.com')).toBe('')
+  })
+
+  it('does not include separator characters in the fallback', () => {
+    // Bugbot regression: the v2 fallback returned `localPart.slice(0,2)`
+    // which leaked the leading separator into the avatar circle as
+    // ".U", "-A", "_O" etc.
+    expect(computeUserInitials('.user')).toBe('US')
+    expect(computeUserInitials('-admin')).toBe('AD')
+    expect(computeUserInitials('_ops')).toBe('OP')
+  })
+
+  it('takes only the first letter of a single segment with trailing separator', () => {
+    // Reviewer regression: the v2 docstring said "if local-part
+    // contains separators, use the first letter of each segment",
+    // but the code branched on segments.length >= 2 AFTER
+    // filter(Boolean), so 'mary.' (one segment) used the
+    // whole-localPart fallback and returned 'MA'. The contract is
+    // that single-segment inputs should fall back to leading
+    // letters of the SEGMENT, not the localPart.
+    expect(computeUserInitials('mary.')).toBe('MA')
+    expect(computeUserInitials('.mary')).toBe('MA')
+  })
+
+  it('returns empty for inputs with no letters', () => {
+    // Docstring contract: "Returns '' when no letters survive".
+    // v2 returned '..', '12', '_' for these inputs.
+    expect(computeUserInitials('..')).toBe('')
+    expect(computeUserInitials('123')).toBe('')
+    expect(computeUserInitials('_')).toBe('')
+    expect(computeUserInitials('---')).toBe('')
+  })
+
+  it('skips digits and punctuation interleaved with letters', () => {
+    expect(computeUserInitials('m1k')).toBe('MK')
+    expect(computeUserInitials('a$b$c')).toBe('AB')
   })
 })
