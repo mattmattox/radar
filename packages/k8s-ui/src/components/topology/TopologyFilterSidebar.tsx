@@ -386,9 +386,33 @@ export const TopologyFilterSidebar = memo(function TopologyFilterSidebar({
 
       {/* Footer stats */}
       <div className="px-3 py-2 border-t border-theme-border bg-theme-surface/50">
-        <div className="text-xs text-theme-text-tertiary">
-          Showing {availableKinds.filter(k => visibleKinds.has(k.kind)).reduce((sum, k) => sum + (kindCounts.get(k.kind) || 0), 0)} of {nodes.length} resources
-        </div>
+        {(() => {
+          // Compute visible-vs-total once and explain the gap.
+          // (SKY-827 bug 16: "Showing 625 of 639" gave no clue
+          // what the missing 14 were — the gap was the user's own
+          // kind-filter selection, but nothing surfaced that.)
+          const visibleByKind = availableKinds.filter(k => visibleKinds.has(k.kind))
+          const visibleCount = visibleByKind.reduce((sum, k) => sum + (kindCounts.get(k.kind) || 0), 0)
+          const totalCount = nodes.length
+          const hiddenCount = totalCount - visibleCount
+          const hiddenKinds = availableKinds.filter(k => !visibleKinds.has(k.kind) && (kindCounts.get(k.kind) || 0) > 0)
+          const hiddenSummary = hiddenKinds.length > 0
+            ? `${hiddenCount} hidden by kind filter (${hiddenKinds.map(k => `${kindCounts.get(k.kind)} ${k.kind}`).join(', ')})`
+            : ''
+          return (
+            <div
+              className="text-xs text-theme-text-tertiary"
+              title={hiddenSummary || `All ${totalCount} resources visible`}
+            >
+              Showing {visibleCount} of {totalCount} resources
+              {hiddenCount > 0 && (
+                <span className="ml-1 text-amber-400 cursor-help">
+                  · {hiddenCount} filtered
+                </span>
+              )}
+            </div>
+          )
+        })()}
       </div>
     </div>
   )

@@ -10,7 +10,7 @@ import { clsx } from 'clsx'
 import { formatCPUMillicores, formatMemoryMiB } from '../../utils/format'
 import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { MCPSetupDialog } from './MCPSetupDialog'
-import { pluralize, parseContextName } from '@skyhook-io/k8s-ui'
+import { pluralize, parseContextName, computeDeploymentsProgressing, computePodTransientCount } from '@skyhook-io/k8s-ui'
 import { Tooltip } from '../ui/Tooltip'
 
 interface ClusterHealthCardProps {
@@ -119,17 +119,39 @@ export function ClusterHealthCard({
   const restricted = counts.restricted ?? []
   const isRestricted = (kind: string) => restricted.includes(kind)
 
-  // Pods ring segments
-  const podsTotal = health.healthy + health.warning + health.error
+  // Pods ring segments.
+  // Use `counts.pods.total` (the cluster-wide pod count) as the
+  // label so it agrees with the Resources view and the sidebar.
+  // Earlier this was `healthy + warning + error`, which excluded
+  // Pending and other transient states and made the Home count
+  // look smaller than every other view's count. The remainder is
+  // shown as a slate "transient" segment so users can see *why*
+  // the categorised buckets sum to less than the total.
+  // (SKY-827 bug 14, derivation pure-tested in count-reconcile.ts)
+  const podsTotal = counts.pods.total
+  const podsTransitioning = computePodTransientCount({
+    total: podsTotal,
+    healthy: health.healthy,
+    warning: health.warning,
+    error: health.error,
+  })
   const podsRingSegments = [
     { value: health.healthy, color: '#22c55e' }, // green-500
     { value: health.warning, color: '#eab308' }, // yellow-500
     { value: health.error, color: '#ef4444' },   // red-500
+    { value: podsTransitioning, color: '#94a3b8' }, // slate-400 — transient (Pending/Unknown)
   ]
 
-  // Deployments ring segments
+  // Deployments ring segments.
+  // See count-reconcile.ts for the derivation rule. Without the
+  // `progressing` bucket the ring undercounts: e.g. total=100,
+  // available=88, unavailable=9 leaves 3 deployments unaccounted
+  // for and the user sees "100" with "88 available, 9 unavailable"
+  // and wonders where the missing 3 went. (SKY-827 bug 18)
+  const deploymentsProgressing = computeDeploymentsProgressing(counts.deployments)
   const deploymentsRingSegments = [
     { value: counts.deployments.available, color: '#22c55e' },
+    { value: deploymentsProgressing, color: '#f59e0b' },
     { value: counts.deployments.unavailable, color: '#ef4444' },
   ]
 
@@ -279,6 +301,14 @@ export function ClusterHealthCard({
                       {health.error}
                     </span>
                   )}
+                  {podsTransitioning > 0 && (
+                    <span
+                      className="flex items-center gap-0.5 text-slate-400"
+                      title="Pending or transitioning pods — not yet in a healthy/warning/error state"
+                    >
+                      {podsTransitioning} transient
+                    </span>
+                  )}
                 </div>
               </button>
             )}
@@ -295,6 +325,11 @@ export function ClusterHealthCard({
                 <span className="text-sm font-semibold uppercase tracking-wider text-theme-text-secondary">Deployments</span>
                 <div className="flex items-center gap-2 text-xs font-mono">
                   <span className="text-green-500">{counts.deployments.available} available</span>
+                  {deploymentsProgressing > 0 && (
+                    <span className="text-amber-500" title="Mid-rollout: replicas updating, neither fully available nor explicitly unavailable yet">
+                      {deploymentsProgressing} progressing
+                    </span>
+                  )}
                   {counts.deployments.unavailable > 0 && (
                     <span className="text-red-500">{counts.deployments.unavailable} unavailable</span>
                   )}
