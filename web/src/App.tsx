@@ -1124,9 +1124,7 @@ function AppInner() {
                         value={namespaces}
                         onChange={(next) => {
                           setNamespaces(next)
-                          if (next.length > 0) {
-                            setForceNamespaceFilter(next)
-                          }
+                          setForceNamespaceFilter(next.length > 0 ? next : undefined)
                         }}
                         namespaces={availableNamespaces}
                         namespacesError={namespacesError}
