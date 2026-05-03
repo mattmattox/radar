@@ -1636,6 +1636,8 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
   const kindLower = kind.toLowerCase()
 
   switch (column) {
+    case 'namespace':
+      return resource.metadata?.namespace || ''
     case 'type':
       if (kindLower === 'secrets' || kindLower === 'sealedsecrets') return getSecretType(resource).type
       if (kindLower === 'services') return resource.spec?.type || ''
