@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAudit, useAuditSettings, useUpdateAuditSettings } from '../../api/client'
 import type { SelectedResource } from '../../types'
 import { AuditFindingsTable, PaneLoader } from '@skyhook-io/k8s-ui'
@@ -16,6 +17,16 @@ export function AuditView({ namespaces, onBack, onNavigateToResource }: AuditVie
   const { data: auditSettings } = useAuditSettings()
   const updateSettings = useUpdateAuditSettings()
   const [showSettings, setShowSettings] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const groupByNS = searchParams.get('groupBy') === 'namespace'
+  const setGroupByNS = useCallback((value: boolean) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (value) next.set('groupBy', 'namespace')
+      else next.delete('groupBy')
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
 
   const ignoredCount = auditSettings?.ignoredNamespaces?.length ?? 0
 
@@ -108,6 +119,8 @@ export function AuditView({ namespaces, onBack, onNavigateToResource }: AuditVie
         onHideCheck={hideCheck}
         onHideCategory={hideCategory}
         onHideNamespace={hideNamespace}
+        groupByNS={groupByNS}
+        onGroupByNSChange={setGroupByNS}
       />
 
       {showSettings && <AuditSettingsDialog namespaces={namespaces} onClose={() => setShowSettings(false)} />}
