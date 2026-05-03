@@ -45,27 +45,16 @@ export interface AuditFindingsTableProps {
    *  Defaults to no-op; multi-cluster hosts pass a navigator that opens
    *  the cluster's per-cluster audit page. */
   onClusterClick?: (clusterId: string) => void
-  /** Controlled "group by namespace" toggle. When provided, the parent owns
-   *  the state (e.g. persists it to URL search params) so it survives
-   *  remounts caused by data refetches on namespace changes. */
-  groupByNS?: boolean
-  onGroupByNSChange?: (value: boolean) => void
 }
 
-export function AuditFindingsTable({ groups, findings, checks, onResourceClick, onHideCheck, onHideCategory, onHideNamespace, multiCluster, onClusterClick, groupByNS: groupByNSProp, onGroupByNSChange }: AuditFindingsTableProps) {
+export function AuditFindingsTable({ groups, findings, checks, onResourceClick, onHideCheck, onHideCategory, onHideNamespace, multiCluster, onClusterClick }: AuditFindingsTableProps) {
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
   const [severityFilter, setSeverityFilter] = useState<string | null>(null)
   const [frameworkFilter, setFrameworkFilter] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [expandedNS, setExpandedNS] = useState<Set<string>>(new Set())
-  const [uncontrolledGroupByNS, setUncontrolledGroupByNS] = useState(false)
-  const isControlledGroupByNS = groupByNSProp !== undefined
-  const groupByNS = isControlledGroupByNS ? groupByNSProp : uncontrolledGroupByNS
-  const setGroupByNS = (value: boolean) => {
-    if (!isControlledGroupByNS) setUncontrolledGroupByNS(value)
-    onGroupByNSChange?.(value)
-  }
+  const [groupByNS, setGroupByNS] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   // "/" keyboard shortcut to focus search
