@@ -66,10 +66,14 @@ export function AuditFindingsTable({ groups, findings, checks, onResourceClick, 
     })
   }
 
-  const clearAllFilters = () => {
+  const clearChipFilters = () => {
     setCategoryFilter(new Set())
     setSeverityFilter(new Set())
     setFrameworkFilter(new Set())
+  }
+
+  const clearAllFilters = () => {
+    clearChipFilters()
     setSearchTerm('')
   }
 
@@ -109,9 +113,8 @@ export function AuditFindingsTable({ groups, findings, checks, onResourceClick, 
   const matchesFinding = (f: AuditFinding) => {
     if (categoryFilter.size > 0 && !categoryFilter.has(f.category)) return false
     if (severityFilter.size > 0 && !severityFilter.has(f.severity)) return false
-    if (frameworkFilter.size > 0) {
-      const meta = checks?.[f.checkID]
-      const fws = meta?.frameworks
+    if (frameworkFilter.size > 0 && checks) {
+      const fws = checks[f.checkID]?.frameworks
       if (!fws || !fws.some(fw => frameworkFilter.has(fw))) return false
     }
     return true
@@ -159,7 +162,8 @@ export function AuditFindingsTable({ groups, findings, checks, onResourceClick, 
   }
 
   // Compute counts from filtered results (so summary reflects active filters)
-  const hasActiveFilters = categoryFilter.size > 0 || severityFilter.size > 0 || frameworkFilter.size > 0 || searchTerm !== ''
+  const hasActiveChipFilters = categoryFilter.size > 0 || severityFilter.size > 0 || frameworkFilter.size > 0
+  const hasActiveFilters = hasActiveChipFilters || searchTerm !== ''
   const filteredAllFindings = filteredGroups
     ? filteredGroups.flatMap(g => g.findings)
     : filteredFindings ?? []
@@ -265,7 +269,7 @@ export function AuditFindingsTable({ groups, findings, checks, onResourceClick, 
             Each chip is an independent toggle. Multiple chips within a dimension OR together;
             dimensions AND together. */}
         <div className="flex flex-wrap items-center gap-1.5">
-          <FilterPill label="All" active={!hasActiveFilters} onClick={clearAllFilters} />
+          <FilterPill label="All" active={!hasActiveChipFilters} onClick={clearChipFilters} />
           <span className="w-px h-5 bg-theme-border mx-2" />
           {CATEGORIES.map(cat => (
             <FilterPill key={cat} label={cat} active={categoryFilter.has(cat)} onClick={() => toggleInSet(setCategoryFilter, cat)} />
