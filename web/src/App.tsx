@@ -42,7 +42,6 @@ import radarLoadingIcon from '@skyhook-io/k8s-ui/assets/radar/radar-icon-loading
 import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
-import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
 import { SettingsDialog } from './components/settings/SettingsDialog'
 import type { TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
 import { kindToPlural, openExternal } from './utils/navigation'
@@ -894,7 +893,12 @@ function AppInner() {
           {/* Namespace selector with search */}
           <NamespaceSelector
             value={namespaces}
-            onChange={setNamespaces}
+            onChange={(next) => {
+              setNamespaces(next)
+              if (forceNamespaceFilter !== undefined) {
+                setForceNamespaceFilter(next.length > 0 ? next : undefined)
+              }
+            }}
             namespaces={availableNamespaces}
             namespacesError={namespacesError}
             disabled={mainView === 'helm'}
@@ -1120,14 +1124,15 @@ function AppInner() {
                       This cluster has too many resources to render the full topology.
                       Select a namespace to explore.
                     </p>
-                    <div className="relative">
-                      <LargeClusterNamespacePicker
-                        namespaces={availableNamespaces}
-                        onSelect={(ns) => {
-                          setNamespaces([ns])
-                          // Large clusters need server-side filtering — reconnect SSE with namespace
-                          setForceNamespaceFilter([ns])
+                    <div className="relative flex justify-center">
+                      <NamespaceSelector
+                        value={namespaces}
+                        onChange={(next) => {
+                          setNamespaces(next)
+                          setForceNamespaceFilter(next.length > 0 ? next : undefined)
                         }}
+                        namespaces={availableNamespaces}
+                        namespacesError={namespacesError}
                       />
                     </div>
                   </div>
