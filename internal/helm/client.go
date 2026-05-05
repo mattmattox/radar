@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -968,15 +969,13 @@ func (c *Client) checkForUpgrade(namespace, name, username string, groups []stri
 	cacheDir := c.settings.RepositoryCache
 
 	for _, r := range f.Repositories {
-		// Load the index file for this repo
 		indexPath := filepath.Join(cacheDir, fmt.Sprintf("%s-index.yaml", r.Name))
 		indexFile, err := repo.LoadIndexFile(indexPath)
 		if err != nil {
-			// Skip repos with missing/invalid index
+			log.Printf("[helm] skipping repo %q: failed to load index %s: %v", r.Name, indexPath, err)
 			continue
 		}
 
-		// Look for the chart
 		if versions, ok := indexFile.Entries[chartName]; ok {
 			var latestInRepo string
 			hasCurrentVersion := false
@@ -1076,9 +1075,11 @@ func findBestUpgradeVersion(candidates []repoVersionInfo, sourceHosts []string) 
 	return "", ""
 }
 
-// chartSourceHosts collects the hostnames (and their registered domains)
-// declared on a chart's Home and Sources URLs, used to disambiguate which
-// configured Helm repo is actually upstream when chart names collide.
+// chartSourceHosts builds the host-affinity set for a chart from its declared
+// Home and Sources URLs. Most charts on github.com don't host their helm repo
+// on github.com itself, so we also derive `<org>.github.io` from any
+// `github.com/<org>/<repo>` URL — that's what lets a release of argoproj's
+// argo-cd recognize the `argoproj.github.io` repo as upstream.
 func chartSourceHosts(home string, sources []string) []string {
 	urls := make([]string, 0, 1+len(sources))
 	if home != "" {
@@ -1106,13 +1107,44 @@ func chartSourceHosts(home string, sources []string) []string {
 		h := strings.ToLower(u.Hostname())
 		add(h)
 		add(registeredDomain(h))
+		if h == "github.com" {
+			if org := firstPathSegment(u.Path); org != "" {
+				add(org + ".github.io")
+			}
+		}
 	}
 	return hosts
 }
 
-// repoURLMatchesAny reports whether repoURL's host (or registered domain)
-// equals any of the supplied source hosts. Coarse on purpose — the goal is
-// to reject unrelated mirrors, not RFC-correct domain matching.
+// markCurrentVersion returns a copy of base with hasCurrentVersion set on
+// each candidate whose repo's index lists installedVersion. The copy matters:
+// multiple releases share the base slice (indexed by chart name), so mutating
+// it would leak one release's flags onto another with the same chart name.
+func markCurrentVersion(base []repoVersionInfo, versionsByRepo map[string][]string, installedVersion string) []repoVersionInfo {
+	out := slices.Clone(base)
+	for i := range out {
+		if slices.Contains(versionsByRepo[out[i].repoName], installedVersion) {
+			out[i].hasCurrentVersion = true
+		}
+	}
+	return out
+}
+
+// firstPathSegment returns the first non-empty path segment lowercased,
+// e.g. "/argoproj/argo-helm" → "argoproj".
+func firstPathSegment(p string) string {
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return ""
+	}
+	if i := strings.Index(p, "/"); i > 0 {
+		return strings.ToLower(p[:i])
+	}
+	return strings.ToLower(p)
+}
+
+// repoURLMatchesAny is coarse on purpose: reject unrelated mirrors, not
+// RFC-correct domain matching.
 func repoURLMatchesAny(repoURL string, hosts []string) bool {
 	if repoURL == "" || len(hosts) == 0 {
 		return false
@@ -1136,16 +1168,31 @@ func repoURLMatchesAny(repoURL string, hosts []string) bool {
 	return false
 }
 
-// registeredDomain returns a coarse "registered domain" form by taking the
-// last two host labels. Doesn't consult the Public Suffix List, but matching
-// is one-shot host equality so the worst case is a missed match (Tier 2
-// falls through to Tier 3 / bail-out), never a wrong one.
+// multiTenantSuffixes are two-label hosts where the registered-domain
+// fallback would produce false positives (every project hosts on the same
+// suffix). We treat the full host as the matching unit instead.
+var multiTenantSuffixes = map[string]bool{
+	"github.io": true,
+	"gitlab.io": true,
+}
+
+// registeredDomain returns the last two host labels (e.g. "charts.bitnami.com"
+// → "bitnami.com"), used as a fallback for source-affinity matching. Returns
+// "" for IP literals and for known multi-tenant suffixes (github.io etc.)
+// where the last two labels would collapse unrelated projects together.
 func registeredDomain(host string) string {
+	if host == "" || net.ParseIP(host) != nil {
+		return ""
+	}
 	parts := strings.Split(host, ".")
 	if len(parts) < 2 {
 		return ""
 	}
-	return parts[len(parts)-2] + "." + parts[len(parts)-1]
+	candidate := parts[len(parts)-2] + "." + parts[len(parts)-1]
+	if multiTenantSuffixes[candidate] {
+		return ""
+	}
+	return candidate
 }
 
 // compareVersions compares two semver strings
@@ -1398,7 +1445,7 @@ func (c *Client) batchCheckUpgrades(namespace, username string, groups []string)
 		actionConfig, err = c.getActionConfig(namespace)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to build helm action config: %w", err)
 	}
 
 	// We need full *release.Release objects (Chart.Metadata.Home/Sources are
@@ -1433,9 +1480,9 @@ func (c *Client) batchCheckUpgrades(namespace, username string, groups []string)
 		return result, nil
 	}
 
-	// chartName -> per-repo summary; chartName -> repoName -> all versions
-	// (used to test whether a release's currently installed version is in
-	// that repo's index).
+	// Split into two maps: latest-per-repo drives ranking; per-repo full
+	// version lists let us detect whether a release's installed version
+	// (which may not be the latest) is present in that repo's index.
 	chartRepoVersions := make(map[string][]repoVersionInfo)
 	chartAllVersions := make(map[string]map[string][]string)
 
@@ -1444,6 +1491,7 @@ func (c *Client) batchCheckUpgrades(namespace, username string, groups []string)
 		indexPath := filepath.Join(cacheDir, fmt.Sprintf("%s-index.yaml", r.Name))
 		indexFile, err := repo.LoadIndexFile(indexPath)
 		if err != nil {
+			log.Printf("[helm] skipping repo %q: failed to load index %s: %v", r.Name, indexPath, err)
 			continue
 		}
 
@@ -1484,17 +1532,7 @@ func (c *Client) batchCheckUpgrades(namespace, username string, groups []string)
 			continue
 		}
 
-		// Per-release copy: hasCurrentVersion depends on this release's own
-		// installed version, so the shared slice must not be mutated.
-		candidates := make([]repoVersionInfo, len(baseCandidates))
-		copy(candidates, baseCandidates)
-		for i := range candidates {
-			versionsInRepo := chartAllVersions[rel.Chart.Metadata.Name][candidates[i].repoName]
-			if slices.Contains(versionsInRepo, currentVersion) {
-				candidates[i].hasCurrentVersion = true
-			}
-		}
-
+		candidates := markCurrentVersion(baseCandidates, chartAllVersions[rel.Chart.Metadata.Name], currentVersion)
 		sourceHosts := chartSourceHosts(rel.Chart.Metadata.Home, rel.Chart.Metadata.Sources)
 		latestVersion, repoName := findBestUpgradeVersion(candidates, sourceHosts)
 		if latestVersion == "" {

@@ -130,15 +130,30 @@ func TestChartSourceHosts(t *testing.T) {
 			want: []string{"bitnami.com"},
 		},
 		{
-			name:    "subdomain expands to registered domain",
-			home:    "https://charts.bitnami.com",
-			want:    []string{"charts.bitnami.com", "bitnami.com"},
+			name: "subdomain expands to registered domain",
+			home: "https://charts.bitnami.com",
+			want: []string{"charts.bitnami.com", "bitnami.com"},
 		},
 		{
 			name:    "deduplicates across home and sources",
 			home:    "https://github.com/argoproj/argo-helm",
 			sources: []string{"https://github.com/argoproj/argo-cd"},
-			want:    []string{"github.com"},
+			want:    []string{"github.com", "argoproj.github.io"},
+		},
+		{
+			name: "argo-cd realistic chart metadata derives argoproj.github.io",
+			home: "https://github.com/argoproj/argo-helm",
+			want: []string{"github.com", "argoproj.github.io"},
+		},
+		{
+			name: "github.io chart home does not seed bare github.io (multi-tenant)",
+			home: "https://argoproj.github.io",
+			want: []string{"argoproj.github.io"},
+		},
+		{
+			name: "ipv4 host does not seed a bogus registered domain",
+			home: "http://127.0.0.1:8080/charts",
+			want: []string{"127.0.0.1"},
 		},
 		{
 			name:    "skips invalid urls",
@@ -169,6 +184,10 @@ func TestRepoURLMatchesAny(t *testing.T) {
 		{name: "exact host match", repoURL: "https://argoproj.github.io/argo-helm", hosts: []string{"argoproj.github.io"}, want: true},
 		{name: "registered-domain match", repoURL: "https://charts.bitnami.com/bitnami", hosts: []string{"bitnami.com"}, want: true},
 		{name: "no match", repoURL: "https://charts.bitnami.com", hosts: []string{"argoproj.github.io"}, want: false},
+		{name: "github.io is multi-tenant: unrelated github.io repos do not match each other", repoURL: "https://kubernetes-sigs.github.io/external-dns", hosts: []string{"argoproj.github.io"}, want: false},
+		{name: "oci registry host match", repoURL: "oci://registry-1.docker.io/bitnamicharts/argo-cd", hosts: []string{"docker.io"}, want: true},
+		{name: "https with explicit port", repoURL: "https://charts.example.com:8443/charts", hosts: []string{"example.com"}, want: true},
+		{name: "https with userinfo", repoURL: "https://user:pass@charts.bitnami.com/bitnami", hosts: []string{"bitnami.com"}, want: true},
 		{name: "invalid url", repoURL: "://broken", hosts: []string{"bitnami.com"}, want: false},
 	}
 
@@ -178,6 +197,30 @@ func TestRepoURLMatchesAny(t *testing.T) {
 				t.Errorf("repoURLMatchesAny(%q, %v) = %v, want %v", tt.repoURL, tt.hosts, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMarkCurrentVersion_DoesNotMutateBaseOrLeakAcrossReleases(t *testing.T) {
+	base := []repoVersionInfo{
+		{repoName: "bitnami", latestVersion: "20.0.0"},
+		{repoName: "argo", latestVersion: "8.5.0"},
+	}
+	versions := map[string][]string{
+		"bitnami": {"19.0.0", "20.0.0"},
+		"argo":    {"8.4.0", "8.5.0"},
+	}
+
+	a := markCurrentVersion(base, versions, "20.0.0")
+	b := markCurrentVersion(base, versions, "8.5.0")
+
+	if !a[0].hasCurrentVersion || a[1].hasCurrentVersion {
+		t.Errorf("release A: bitnami should match, argo should not; got %+v", a)
+	}
+	if b[0].hasCurrentVersion || !b[1].hasCurrentVersion {
+		t.Errorf("release B: argo should match, bitnami should not; got %+v", b)
+	}
+	if base[0].hasCurrentVersion || base[1].hasCurrentVersion {
+		t.Errorf("base slice was mutated; per-release flags would leak across releases sharing a chart name: %+v", base)
 	}
 }
 

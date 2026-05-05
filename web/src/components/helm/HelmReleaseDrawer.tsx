@@ -344,6 +344,13 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
               <span className={clsx('badge', SEVERITY_BADGE.success)} title="Chart is up to date">
                 latest
               </span>
+            ) : upgradeInfo?.error ? (
+              <span
+                className="badge bg-theme-hover/50 text-theme-text-secondary"
+                title={upgradeInfo.error}
+              >
+                upstream unknown
+              </span>
             ) : null}
           </div>
           <div className="flex items-center gap-1">
