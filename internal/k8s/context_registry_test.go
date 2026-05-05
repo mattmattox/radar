@@ -4,7 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -387,6 +390,414 @@ func injectEmptyExec(t *testing.T, path, userName string) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("writeback %s: %v", path, err)
 	}
+}
+
+// SKY-834 bug 52: kubeconfig files rewritten or deleted on disk
+// after Radar startup kept showing their old contexts in the
+// cluster dropdown — the in-memory registry was built once in
+// setupIsolatedLoad and never refreshed in multi-file mode. The
+// user saw "junk clusters" that errored out on switch.
+//
+// refreshContextRegistry is the surgical fix: same per-file
+// isolation as buildContextRegistry, but driven by mtime so it
+// only re-parses files that actually changed.
+
+func loadFixture(t *testing.T, paths []string) (
+	map[string]contextEntry,
+	map[string]*clientcmdapi.Config,
+	map[string]time.Time,
+) {
+	t.Helper()
+	registry, fileConfigs := buildContextRegistry(paths)
+	mtimes := make(map[string]time.Time, len(paths))
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat fixture %s: %v", p, err)
+		}
+		mtimes[p] = info.ModTime()
+	}
+	return registry, fileConfigs, mtimes
+}
+
+func TestRefreshContextRegistry_DropsRemovedFile(t *testing.T) {
+	// CAPI scenario: a file that was watched at startup is removed
+	// from disk (the cluster was destroyed and the controller
+	// cleaned up). All registry entries pointing at that file MUST
+	// disappear from the dropdown on the next refresh, otherwise
+	// the user sees a junk row that errors on switch.
+	dir := t.TempDir()
+	f1 := writeKubeconfig(t, dir, "alive.yaml", "ctx-alive", []kubeEntry{
+		{ctxName: "ctx-alive", userName: "u", clusterName: "c1"},
+	})
+	f2 := writeKubeconfig(t, dir, "doomed.yaml", "ctx-doomed", []kubeEntry{
+		{ctxName: "ctx-doomed", userName: "u", clusterName: "c2"},
+	})
+
+	registry, fileConfigs, mtimes := loadFixture(t, []string{f1, f2})
+	if _, ok := registry["ctx-doomed"]; !ok {
+		t.Fatalf("setup: expected ctx-doomed in registry, got %v", keysOf(registry))
+	}
+
+	if err := os.Remove(f2); err != nil {
+		t.Fatalf("remove fixture: %v", err)
+	}
+
+	newRegistry, newFileConfigs, newMtimes, changed := refreshContextRegistry(registry, fileConfigs, mtimes)
+	if !changed {
+		t.Errorf("expected refresh to report a change after deleting %s", filepath.Base(f2))
+	}
+	if _, ok := newRegistry["ctx-doomed"]; ok {
+		t.Errorf("ctx-doomed still in registry after file removed: %v", keysOf(newRegistry))
+	}
+	if _, ok := newRegistry["ctx-alive"]; !ok {
+		t.Errorf("ctx-alive should still be in registry: %v", keysOf(newRegistry))
+	}
+	if _, ok := newFileConfigs[f2]; ok {
+		t.Errorf("perFileConfigs still has entry for removed file %s", filepath.Base(f2))
+	}
+	if _, ok := newMtimes[f2]; ok {
+		t.Errorf("perFileMtimes still has entry for removed file %s", filepath.Base(f2))
+	}
+	// Original maps must be untouched — refresh returns fresh maps so
+	// snapshot readers (SwitchContext, WriteKubeconfigForCurrentContext)
+	// can iterate the captured maps without locking.
+	if _, ok := registry["ctx-doomed"]; !ok {
+		t.Errorf("input registry was mutated; expected immutability")
+	}
+	if _, ok := fileConfigs[f2]; !ok {
+		t.Errorf("input fileConfigs was mutated; expected immutability")
+	}
+	if _, ok := mtimes[f2]; !ok {
+		t.Errorf("input mtimes was mutated; expected immutability")
+	}
+}
+
+func TestRefreshContextRegistry_DropsContextRemovedFromFile(t *testing.T) {
+	// `kubectl config delete-context` rewrites the kubeconfig in
+	// place: same file, different mtime, fewer contexts. The
+	// removed context MUST disappear from the dropdown.
+	dir := t.TempDir()
+	f1 := writeKubeconfig(t, dir, "two.yaml", "ctx-keep", []kubeEntry{
+		{ctxName: "ctx-keep", userName: "u", clusterName: "c1"},
+		{ctxName: "ctx-delete", userName: "u", clusterName: "c2"},
+	})
+
+	registry, fileConfigs, mtimes := loadFixture(t, []string{f1})
+	if _, ok := registry["ctx-delete"]; !ok {
+		t.Fatalf("setup: expected ctx-delete in registry")
+	}
+
+	rewriteKubeconfig(t, f1, []kubeEntry{
+		{ctxName: "ctx-keep", userName: "u", clusterName: "c1"},
+	})
+
+	newRegistry, _, _, changed := refreshContextRegistry(registry, fileConfigs, mtimes)
+	if !changed {
+		t.Errorf("expected refresh to report a change after rewriting %s", filepath.Base(f1))
+	}
+	if _, ok := newRegistry["ctx-delete"]; ok {
+		t.Errorf("ctx-delete still in registry after rewrite: %v", keysOf(newRegistry))
+	}
+	if _, ok := newRegistry["ctx-keep"]; !ok {
+		t.Errorf("ctx-keep should still be in registry: %v", keysOf(newRegistry))
+	}
+	if _, ok := registry["ctx-delete"]; !ok {
+		t.Errorf("input registry was mutated; expected immutability")
+	}
+}
+
+func TestRefreshContextRegistry_PicksUpNewContextInSameFile(t *testing.T) {
+	// `kubectl config set-context foo` adds a new entry to an
+	// existing file. The new context should appear after refresh
+	// without needing a Radar restart.
+	dir := t.TempDir()
+	f1 := writeKubeconfig(t, dir, "one.yaml", "ctx-original", []kubeEntry{
+		{ctxName: "ctx-original", userName: "u", clusterName: "c1"},
+	})
+	registry, fileConfigs, mtimes := loadFixture(t, []string{f1})
+
+	rewriteKubeconfig(t, f1, []kubeEntry{
+		{ctxName: "ctx-original", userName: "u", clusterName: "c1"},
+		{ctxName: "ctx-new", userName: "u", clusterName: "c2"},
+	})
+
+	newRegistry, _, _, changed := refreshContextRegistry(registry, fileConfigs, mtimes)
+	if !changed {
+		t.Errorf("expected refresh to report a change after add")
+	}
+	if _, ok := newRegistry["ctx-new"]; !ok {
+		t.Errorf("ctx-new not picked up after refresh: %v", keysOf(newRegistry))
+	}
+	if _, ok := newRegistry["ctx-original"]; !ok {
+		t.Errorf("ctx-original disappeared from registry: %v", keysOf(newRegistry))
+	}
+}
+
+func TestRefreshContextRegistry_NoOpWhenNothingChanged(t *testing.T) {
+	dir := t.TempDir()
+	f1 := writeKubeconfig(t, dir, "stable.yaml", "ctx-a", []kubeEntry{
+		{ctxName: "ctx-a", userName: "u", clusterName: "c1"},
+	})
+	registry, fileConfigs, mtimes := loadFixture(t, []string{f1})
+	before := keysOf(registry)
+
+	newRegistry, _, _, changed := refreshContextRegistry(registry, fileConfigs, mtimes)
+	if changed {
+		t.Errorf("expected no change on stable disk state, got changed=true")
+	}
+	after := keysOf(newRegistry)
+	sort.Strings(before)
+	sort.Strings(after)
+	if len(before) != len(after) {
+		t.Errorf("registry shape changed during no-op refresh: %v vs %v", before, after)
+	}
+}
+
+func TestRefreshContextRegistry_NilMtimeMapNoOp(t *testing.T) {
+	// Defensive: if perFileMtimes is nil (e.g. a future code path
+	// forgets to initialise it after MergeAndSwitchContext promoted
+	// single-file → isolated-load), refresh must not panic. The
+	// production path already nil-inits before calling, but the
+	// helper is exported and we want depth.
+	dir := t.TempDir()
+	f1 := writeKubeconfig(t, dir, "a.yaml", "ctx-a", []kubeEntry{
+		{ctxName: "ctx-a", userName: "u", clusterName: "c1"},
+	})
+	registry, fileConfigs := buildContextRegistry([]string{f1})
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("refresh panicked on nil mtimes: %v", r)
+		}
+	}()
+	var nilMtimes map[string]time.Time
+	newRegistry, _, _, changed := refreshContextRegistry(registry, fileConfigs, nilMtimes)
+	if changed {
+		t.Errorf("refresh on nil mtimes should report no-op (changed=false)")
+	}
+	// Registry must be untouched on the nil-mtimes no-op path.
+	if _, ok := newRegistry["ctx-a"]; !ok {
+		t.Errorf("nil-mtimes refresh should not have modified the registry")
+	}
+}
+
+func TestRefreshContextRegistry_SeedsByFileFromMtimesEvenWhenRegistryEmptyForFile(t *testing.T) {
+	// Regression: if every context in a file got removed by a
+	// previous refresh, the file path stayed in fileMtimes but
+	// wasn't in the registry — so the next refresh's byFile only
+	// included paths still represented in the registry, and the
+	// emptied file would never be re-stat'd. Any new contexts
+	// later added to that file would be invisible until restart.
+	dir := t.TempDir()
+	f1 := writeKubeconfig(t, dir, "a.yaml", "ctx-a", []kubeEntry{
+		{ctxName: "ctx-a", userName: "u", clusterName: "c1"},
+	})
+	registry, fileConfigs := buildContextRegistry([]string{f1})
+	mtimes := map[string]time.Time{}
+	for _, p := range []string{f1} {
+		if info, err := os.Stat(p); err == nil {
+			mtimes[p] = info.ModTime()
+		}
+	}
+	// Simulate "all contexts in f1 were removed by a prior refresh"
+	// while leaving the mtime cache intact.
+	delete(registry, "ctx-a")
+	if len(registry) != 0 {
+		t.Fatalf("setup: expected empty registry, got %v", registry)
+	}
+	// Wait, then rewrite f1 to add a brand-new context. The mtime
+	// cache will still hold the OLD timestamp, so refresh should
+	// see the file as changed and rebuild it.
+	rewriteKubeconfig(t, f1, []kubeEntry{
+		{ctxName: "ctx-a-fresh", userName: "u", clusterName: "c1"},
+		{ctxName: "ctx-b-fresh", userName: "u", clusterName: "c1"},
+	})
+	newRegistry, _, _, _ := refreshContextRegistry(registry, fileConfigs, mtimes)
+	if _, ok := newRegistry["ctx-a-fresh"]; !ok {
+		t.Errorf("refresh should have picked up ctx-a-fresh; got %v", newRegistry)
+	}
+	if _, ok := newRegistry["ctx-b-fresh"]; !ok {
+		t.Errorf("refresh should have picked up ctx-b-fresh; got %v", newRegistry)
+	}
+}
+
+func TestRefreshContextRegistry_BadParseDoesNotDropExisting(t *testing.T) {
+	// Defensive case: user is mid-edit and saved a syntactically
+	// broken kubeconfig (mtime moved, parse fails). We deliberately
+	// keep the previous registry entries — silently pruning the
+	// dropdown while the user saves would be more confusing than a
+	// momentarily stale entry.
+	dir := t.TempDir()
+	f1 := writeKubeconfig(t, dir, "broken.yaml", "ctx-a", []kubeEntry{
+		{ctxName: "ctx-a", userName: "u", clusterName: "c1"},
+	})
+	registry, fileConfigs, mtimes := loadFixture(t, []string{f1})
+
+	if err := os.WriteFile(f1, []byte("not: valid: yaml: at: all"), 0o600); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+
+	newRegistry, _, _, _ := refreshContextRegistry(registry, fileConfigs, mtimes)
+	if _, ok := newRegistry["ctx-a"]; !ok {
+		t.Errorf("ctx-a was dropped on parse failure; expected to keep it: %v", keysOf(newRegistry))
+	}
+}
+
+func keysOf(m map[string]contextEntry) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func rewriteKubeconfig(t *testing.T, path string, entries []kubeEntry) {
+	t.Helper()
+	cfg := clientcmdapi.NewConfig()
+	for _, e := range entries {
+		cfg.Contexts[e.ctxName] = &clientcmdapi.Context{
+			Cluster:   e.clusterName,
+			AuthInfo:  e.userName,
+			Namespace: e.namespace,
+		}
+		if _, ok := cfg.Clusters[e.clusterName]; !ok {
+			cfg.Clusters[e.clusterName] = &clientcmdapi.Cluster{
+				Server:                "https://" + e.clusterName,
+				InsecureSkipTLSVerify: true,
+			}
+		}
+		if _, ok := cfg.AuthInfos[e.userName]; !ok {
+			cfg.AuthInfos[e.userName] = &clientcmdapi.AuthInfo{Token: "fake-token-for-" + e.userName}
+		}
+	}
+	data, err := clientcmd.Write(*cfg)
+	if err != nil {
+		t.Fatalf("rewrite serialize: %v", err)
+	}
+	// Force a different mtime even if the test writes within the
+	// same filesystem-resolution tick (HFS+ is 1s).
+	time.Sleep(15 * time.Millisecond)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("rewrite %s: %v", path, err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatalf("chtimes %s: %v", path, err)
+	}
+}
+
+// Regression: GetAvailableContexts triggers refreshContextRegistry under
+// the write lock; concurrent callers that snapshot the live maps under
+// RLock and iterate after unlocking must not race with the refresh. The
+// previous shape mutated maps in place, so a refresh during another
+// caller's post-RLock iteration triggered Go's "concurrent map read and
+// map write" panic. The fix swaps maps atomically rather than mutating —
+// this test runs both patterns concurrently with the race detector.
+func TestGetAvailableContexts_ConcurrentRefreshAndSnapshotIterate(t *testing.T) {
+	dir := t.TempDir()
+	f1 := writeKubeconfig(t, dir, "a.yaml", "ctx-a", []kubeEntry{
+		{ctxName: "ctx-a", userName: "u", clusterName: "c1"},
+	})
+	f2 := writeKubeconfig(t, dir, "b.yaml", "ctx-b", []kubeEntry{
+		{ctxName: "ctx-b", userName: "u", clusterName: "c2"},
+	})
+
+	// Stand up the package globals to look like multi-file isolated-load
+	// mode. Restore them after the test so other tests in this package
+	// don't see a polluted state.
+	clientMu.Lock()
+	prevRegistry := contextRegistry
+	prevConfigs := perFileConfigs
+	prevMtimes := perFileMtimes
+	prevPaths := kubeconfigPaths
+	prevName := contextName
+	registry, fileConfigs := buildContextRegistry([]string{f1, f2})
+	mtimes := make(map[string]time.Time, 2)
+	for _, p := range []string{f1, f2} {
+		if info, err := os.Stat(p); err == nil {
+			mtimes[p] = info.ModTime()
+		}
+	}
+	contextRegistry = registry
+	perFileConfigs = fileConfigs
+	perFileMtimes = mtimes
+	kubeconfigPaths = []string{f1, f2}
+	contextName = "ctx-a"
+	clientMu.Unlock()
+	t.Cleanup(func() {
+		clientMu.Lock()
+		contextRegistry = prevRegistry
+		perFileConfigs = prevConfigs
+		perFileMtimes = prevMtimes
+		kubeconfigPaths = prevPaths
+		contextName = prevName
+		clientMu.Unlock()
+	})
+
+	const iterations = 200
+	const writers = 4
+	const snapshotters = 4
+	var wg sync.WaitGroup
+	var stop atomic.Bool
+
+	// Writer goroutines: rewrite kubeconfig files on disk so the next
+	// GetAvailableContexts call observes a changed mtime and re-parses,
+	// exercising the refresh path that previously mutated maps in place.
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < iterations && !stop.Load(); j++ {
+				target := f1
+				if j%2 == 1 {
+					target = f2
+				}
+				ctxBase := "ctx-a"
+				if target == f2 {
+					ctxBase = "ctx-b"
+				}
+				rewriteKubeconfig(t, target, []kubeEntry{
+					{ctxName: ctxBase, userName: "u", clusterName: "c1"},
+				})
+				if _, err := GetAvailableContexts(); err != nil {
+					t.Errorf("GetAvailableContexts: %v", err)
+					stop.Store(true)
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Snapshotter goroutines: replicate SwitchContext /
+	// WriteKubeconfigForCurrentContext's bare-reference snapshot pattern,
+	// then iterate after releasing the lock. Without map immutability
+	// this races with refresh and panics.
+	for i := 0; i < snapshotters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations && !stop.Load(); j++ {
+				clientMu.RLock()
+				snapReg := contextRegistry
+				snapConfigs := perFileConfigs
+				clientMu.RUnlock()
+
+				// Iterate outside the lock — same shape as SwitchContext.
+				for qName, entry := range snapReg {
+					_ = qName
+					cfg, ok := snapConfigs[entry.SourceFile]
+					if !ok {
+						continue
+					}
+					for name := range cfg.Contexts {
+						_ = name
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 func TestAggregateExecPluginCommands_UniqueAcrossFiles(t *testing.T) {

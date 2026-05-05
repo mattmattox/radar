@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -43,7 +44,14 @@ var (
 	contextRegistry map[string]contextEntry
 	// perFileConfigs caches each file's parsed api.Config so GetAvailableContexts
 	// doesn't re-read N files on every call. Keyed by absolute file path.
-	perFileConfigs    map[string]*clientcmdapi.Config
+	perFileConfigs map[string]*clientcmdapi.Config
+	// perFileMtimes lets refreshContextRegistry detect rewritten or
+	// removed kubeconfig files between calls. Without this the
+	// registry is built once at startup and never refreshes, so
+	// destroyed clusters / removed contexts linger in the dropdown
+	// (they only error out when the user tries to switch to them).
+	// Same lifecycle / lock as perFileConfigs.
+	perFileMtimes     map[string]time.Time
 	contextName       string
 	clusterName       string
 	contextNamespace  string // Default namespace from kubeconfig context
@@ -692,16 +700,48 @@ func GetAvailableContexts() ([]ContextInfo, error) {
 		}, nil
 	}
 
-	clientMu.RLock()
+	// Reconcile registry against disk before reading. This is the
+	// only refresh point in multi-file (isolated-load) mode — without
+	// it, kubeconfigs that were rewritten or deleted on disk after
+	// startup keep showing up in the dropdown until the user
+	// restarts Radar (the "junk clusters" complaint).
+	//
+	// refreshContextRegistry returns NEW maps when anything changes,
+	// so we publish them atomically under the write lock. Snapshot
+	// readers (SwitchContext, WriteKubeconfigForCurrentContext) take
+	// bare references under RLock and use them after the unlock — that
+	// pattern is only safe as long as the maps they captured are never
+	// mutated. Returning fresh maps preserves that invariant.
+	clientMu.Lock()
+	if contextRegistry != nil {
+		// Lazy init: a future code path that promotes single-file mode
+		// to isolated-load without touching perFileMtimes would leave
+		// it nil. Seeding it here is safe because we always hold the
+		// write lock and refresh's nil guard catches it too.
+		if perFileMtimes == nil {
+			perFileMtimes = make(map[string]time.Time, len(perFileConfigs))
+		}
+		newRegistry, newFileConfigs, newFileMtimes, changed := refreshContextRegistry(
+			contextRegistry, perFileConfigs, perFileMtimes,
+		)
+		if changed {
+			contextRegistry = newRegistry
+			perFileConfigs = newFileConfigs
+			perFileMtimes = newFileMtimes
+		}
+	}
 	registry := contextRegistry
 	fileConfigs := perFileConfigs
 	currentCtx := contextName
-	clientMu.RUnlock()
+	clientMu.Unlock()
 
 	if registry != nil {
 		// Isolated-load mode: enumerate every registered context, pulling
 		// cluster/user/namespace from the file it originally lives in.
 		// No merge happens — shared names across files stay distinct.
+		// Iterating outside the lock is safe because refresh publishes
+		// fresh maps on change rather than mutating in place, so the
+		// snapshot we captured is frozen.
 		contexts := make([]ContextInfo, 0, len(registry))
 		for qName, entry := range registry {
 			cfg, ok := fileConfigs[entry.SourceFile]
@@ -913,9 +953,17 @@ func MergeAndSwitchContext(kubeconfigData []byte, contextName string) (string, s
 	if existingPath, ok := capiKubeconfigs[contextName]; ok {
 		if err := clientcmd.WriteToFile(*newConfig, existingPath); err == nil {
 			// Refresh the cached parsed config so subsequent GetAvailableContexts
-			// calls reflect any changes in the incoming YAML.
+			// calls reflect any changes in the incoming YAML. Also bump the
+			// cached mtime so the next refresh doesn't see a stale value
+			// (the WriteToFile above just changed the file's mtime) and
+			// uselessly re-parse a file we've already re-parsed here.
 			if parsed, perr := clientcmd.LoadFromFile(existingPath); perr == nil {
 				perFileConfigs[existingPath] = parsed
+				if perFileMtimes != nil {
+					if info, serr := os.Stat(existingPath); serr == nil {
+						perFileMtimes[existingPath] = info.ModTime()
+					}
+				}
 			}
 			qName := findQualifiedNameForPath(contextRegistry, existingPath, contextName)
 			if qName == "" {
@@ -948,6 +996,7 @@ func MergeAndSwitchContext(kubeconfigData []byte, contextName string) (string, s
 	// remove the temp file and leave the globals untouched — no half-state.
 	var newRegistry map[string]contextEntry
 	var newFileConfigs map[string]*clientcmdapi.Config
+	var newFileMtimes map[string]time.Time
 	var newPaths []string
 
 	if contextRegistry == nil {
@@ -964,6 +1013,18 @@ func MergeAndSwitchContext(kubeconfigData []byte, contextName string) (string, s
 		}
 		newRegistry = registry
 		newFileConfigs = fileConfigs
+		// Seed the mtime cache for the same set of files. Without
+		// this, the next refresh would write to a nil map
+		// (perFileMtimes is package-level and stays nil through the
+		// promotion). Refresh's nil-map guard would also catch this,
+		// but seeding here keeps the invariant "perFileMtimes is
+		// non-nil whenever contextRegistry is non-nil".
+		newFileMtimes = make(map[string]time.Time, len(seedPaths))
+		for _, p := range seedPaths {
+			if info, err := os.Stat(p); err == nil {
+				newFileMtimes[p] = info.ModTime()
+			}
+		}
 		newPaths = seedPaths
 	} else {
 		cfg, err := clientcmd.LoadFromFile(tmpPath)
@@ -982,6 +1043,13 @@ func MergeAndSwitchContext(kubeconfigData []byte, contextName string) (string, s
 			newFileConfigs[k] = v
 		}
 		newFileConfigs[tmpPath] = cfg
+		newFileMtimes = make(map[string]time.Time, len(perFileMtimes)+1)
+		for k, v := range perFileMtimes {
+			newFileMtimes[k] = v
+		}
+		if info, err := os.Stat(tmpPath); err == nil {
+			newFileMtimes[tmpPath] = info.ModTime()
+		}
 		newPaths = append(append([]string(nil), kubeconfigPaths...), tmpPath)
 		for name := range cfg.Contexts {
 			qName := qualifyContextName(newRegistry, name, tmpPath)
@@ -1001,6 +1069,7 @@ func MergeAndSwitchContext(kubeconfigData []byte, contextName string) (string, s
 	// Commit. All globals updated atomically under the single Lock held above.
 	contextRegistry = newRegistry
 	perFileConfigs = newFileConfigs
+	perFileMtimes = newFileMtimes
 	kubeconfigPaths = newPaths
 	capiKubeconfigs[contextName] = tmpPath
 
