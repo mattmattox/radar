@@ -1950,7 +1950,6 @@ function streamHelmProgress(
 
         const decoder = new TextDecoder()
         let buffer = ''
-        let terminalEventReceived = false
 
         while (true) {
           const { done, value } = await reader.read()
@@ -1968,11 +1967,9 @@ function streamHelmProgress(
                 onProgress(data)
 
                 if (data.type === 'complete') {
-                  terminalEventReceived = true
                   resolve(data)
                   return
                 } else if (data.type === 'error') {
-                  terminalEventReceived = true
                   reject(new Error(data.message || failureLabel))
                   return
                 }
@@ -1984,9 +1981,7 @@ function streamHelmProgress(
           }
         }
 
-        if (!terminalEventReceived) {
-          reject(new Error(`${failureLabel}: stream ended before completion`))
-        }
+        reject(new Error(`${failureLabel}: stream ended before completion`))
       })
       .catch(reject)
   })
