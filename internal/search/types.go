@@ -65,6 +65,8 @@ type Result struct {
 // IncludeMode controls per-hit verbosity.
 type IncludeMode int
 
+// Note: Options.Namespaces lives in search.go alongside the rest of Options.
+
 const (
 	IncludeSummary IncludeMode = iota
 	IncludeRaw

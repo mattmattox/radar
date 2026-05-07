@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -31,9 +32,33 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auth-filter the namespaces the user can see, then intersect with any
+	// `ns:` modifier parsed from the query. The result both gates the scan
+	// (so listers don't read namespaces outside the user's RBAC) and
+	// constrains the post-hoc match() filter.
+	allowed := s.parseNamespacesForUser(r)
+	if noNamespaceAccess(allowed) {
+		s.writeJSON(w, search.Result{Hits: []search.Hit{}})
+		return
+	}
+	scanNamespaces := intersectNamespaces(allowed, parsed.NSFilter)
+	if allowed != nil && len(scanNamespaces) == 0 {
+		// User is namespace-restricted but their `ns:` filter doesn't
+		// intersect — empty result without scanning.
+		s.writeJSON(w, search.Result{Hits: []search.Hit{}})
+		return
+	}
+	parsed.NSFilter = scanNamespaces
+
+	include, err := parseInclude(r.URL.Query().Get("include"))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	opts := search.Options{
-		Limit:   parseLimit(r.URL.Query().Get("limit")),
-		Include: parseInclude(r.URL.Query().Get("include")),
+		Limit:      parseLimit(r.URL.Query().Get("limit")),
+		Include:    include,
+		Namespaces: scanNamespaces,
 	}
 	if expr := r.URL.Query().Get("filter"); expr != "" {
 		f, err := filter.CachedObjectFilter(expr)
@@ -52,6 +77,31 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, result)
 }
 
+// intersectNamespaces returns the namespaces to actually scan. nil `allowed`
+// means the user is unrestricted; preserve `requested` (which may also be nil
+// for cluster-wide). When the user is restricted, keep only the requested
+// namespaces they're allowed to see; if `requested` is empty, fall back to
+// the full allowed set.
+func intersectNamespaces(allowed, requested []string) []string {
+	if allowed == nil {
+		return requested
+	}
+	if len(requested) == 0 {
+		return allowed
+	}
+	allowSet := make(map[string]struct{}, len(allowed))
+	for _, ns := range allowed {
+		allowSet[ns] = struct{}{}
+	}
+	out := make([]string, 0, len(requested))
+	for _, ns := range requested {
+		if _, ok := allowSet[ns]; ok {
+			out = append(out, ns)
+		}
+	}
+	return out
+}
+
 func parseLimit(v string) int {
 	if v == "" {
 		return 0
@@ -63,13 +113,15 @@ func parseLimit(v string) int {
 	return n
 }
 
-func parseInclude(v string) search.IncludeMode {
+func parseInclude(v string) (search.IncludeMode, error) {
 	switch v {
+	case "", "summary":
+		return search.IncludeSummary, nil
 	case "raw":
-		return search.IncludeRaw
+		return search.IncludeRaw, nil
 	case "none":
-		return search.IncludeNone
+		return search.IncludeNone, nil
 	default:
-		return search.IncludeSummary
+		return 0, fmt.Errorf("unknown include=%q (want: summary, raw, none)", v)
 	}
 }

@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -80,14 +81,28 @@ func Compose(p Provider, f Filters) []Issue {
 	// Optional CEL filter — evaluated last so it sees the normalized
 	// row shape. Eval errors count as non-match (matches "missing
 	// field" semantics; agent gets zero hits + a clean response,
-	// rather than a 500).
+	// rather than a 500). We log the first eval error so an operator
+	// debugging "my filter returns nothing" can see a type mismatch /
+	// cost-limit fault in the logs instead of guessing.
 	if f.Filter != nil {
 		filtered := out[:0]
+		var firstErr error
+		errCount := 0
 		for _, i := range out {
-			ok, _ := f.Filter.Match(issueToActivation(i))
+			ok, err := f.Filter.Match(issueToActivation(i))
+			if err != nil {
+				errCount++
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
 			if ok {
 				filtered = append(filtered, i)
 			}
+		}
+		if errCount > 0 {
+			log.Printf("[issues] CEL filter eval errors: %d/%d rows; first=%v", errCount, len(out), firstErr)
 		}
 		out = filtered
 	}

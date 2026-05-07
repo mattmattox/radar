@@ -19,6 +19,12 @@ import (
 // annotations are extracted via meta.Accessor for typed access; the
 // nested metadata blob is the JSON-marshaled form so deeper fields
 // like metadata.creationTimestamp / ownerReferences remain reachable.
+//
+// JSON unmarshal turns every number into float64. We walk the result
+// and convert whole-number floats back to int64 so CEL arithmetic
+// expressions like `spec.replicas + 1` work — CEL doesn't promote
+// double↔int across operators (`no such overload`), and the eval
+// error is silently treated as a non-match upstream.
 func objectActivation(obj runtime.Object, kind string) (map[string]any, error) {
 	k8s.SetTypeMeta(obj)
 	raw, err := json.Marshal(obj)
@@ -29,16 +35,47 @@ func objectActivation(obj runtime.Object, kind string) (map[string]any, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
 	}
+	normalizeNumbers(m)
 	return assembleActivation(m, kind), nil
 }
 
 // unstructuredActivation builds the activation map for a CRD object.
-// We already hold the map form — no marshal/unmarshal cost.
+// We use a deep copy of u.Object so the in-place number normalization
+// doesn't mutate the cache-held unstructured.
 func unstructuredActivation(u *unstructured.Unstructured, kind string) map[string]any {
 	if u == nil || u.Object == nil {
 		return nil
 	}
-	return assembleActivation(u.Object, kind)
+	m := u.DeepCopy().Object
+	normalizeNumbers(m)
+	return assembleActivation(m, kind)
+}
+
+// normalizeNumbers walks v and converts every whole-number float64 to
+// int64 in-place. CEL's int and double types don't share arithmetic
+// overloads, so a JSON-roundtripped `spec.replicas` (float64) errors
+// on `+ 1` (int literal) instead of evaluating. Recursion order
+// doesn't matter — we mutate slice elements and map values directly.
+func normalizeNumbers(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, vv := range x {
+			x[k] = normalizeNumbers(vv)
+		}
+		return x
+	case []any:
+		for i, vv := range x {
+			x[i] = normalizeNumbers(vv)
+		}
+		return x
+	case float64:
+		if x == float64(int64(x)) {
+			return int64(x)
+		}
+		return x
+	default:
+		return v
+	}
 }
 
 // assembleActivation projects the JSON-shaped object into the bound

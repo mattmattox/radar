@@ -15,6 +15,19 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 )
 
+// selfUpgradePatchOptions returns the PatchOptions used by the self-upgrade
+// endpoint. Field manager "helm" plus Force is what keeps `.image` ownership
+// stable across self-upgrade and `helm upgrade` cycles. With an empty
+// FieldManager the apiserver derives one from User-Agent → "radar", which
+// then permanently owns .image and breaks every subsequent helm upgrade.
+//
+// Extracted for tripwire test; if a refactor reverts these values, the test
+// in selfupgrade_test.go fails before the bug ships.
+func selfUpgradePatchOptions() metav1.PatchOptions {
+	force := true
+	return metav1.PatchOptions{FieldManager: "helm", Force: &force}
+}
+
 // handleSelfUpgrade patches this Radar Deployment's container image so the
 // pod restarts on a new version. Called by Radar Cloud's upgrade-agent endpoint
 // over the yamux tunnel — no user terminal or cloud credentials needed.
@@ -67,29 +80,31 @@ func (s *Server) handleSelfUpgrade(w http.ResponseWriter, r *http.Request) {
 		req.Image,
 	))
 
-	// Patch as field manager "helm" with Force so a subsequent `helm upgrade`
-	// doesn't conflict on .image. With an empty FieldManager, the apiserver
-	// would derive one from User-Agent → "radar" — which then permanently
-	// owns .image until reclaimed, breaking every later helm upgrade.
-	force := true
 	_, err := client.AppsV1().Deployments(ns).Patch(
 		r.Context(),
 		deployment,
 		types.StrategicMergePatchType,
 		patch,
-		metav1.PatchOptions{FieldManager: "helm", Force: &force},
+		selfUpgradePatchOptions(),
 	)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
+		switch {
+		case apierrors.IsNotFound(err):
 			s.writeError(w, http.StatusNotFound, "deployment not found")
-			return
-		}
-		if apierrors.IsForbidden(err) {
+		case apierrors.IsForbidden(err):
 			s.writeError(w, http.StatusForbidden, "SA lacks patch permission on this Deployment (rbac.selfUpgrade=true?)")
-			return
+		case apierrors.IsConflict(err):
+			// Force=true reclaims field ownership, but a concurrent helm
+			// upgrade can still race. Retryable on the caller's side.
+			s.writeError(w, http.StatusConflict, "concurrent modification, retry")
+		case apierrors.IsTooManyRequests(err) || apierrors.IsServerTimeout(err):
+			s.writeError(w, http.StatusServiceUnavailable, "apiserver throttled, retry")
+		case apierrors.IsInvalid(err):
+			s.writeError(w, http.StatusBadRequest, "invalid patch")
+		default:
+			log.Printf("[self-upgrade] patch failed: ns=%s deploy=%s tag=%s err=%v", ns, deployment, tag, err)
+			s.writeError(w, http.StatusInternalServerError, "patch failed")
 		}
-		log.Printf("[self-upgrade] patch failed: ns=%s deploy=%s tag=%s err=%v", ns, deployment, tag, err)
-		s.writeError(w, http.StatusInternalServerError, "patch failed")
 		return
 	}
 

@@ -11,6 +11,7 @@ package search
 
 import (
 	"context"
+	"log"
 	"sort"
 	"strings"
 
@@ -67,6 +68,14 @@ var typedKinds = []struct {
 type Options struct {
 	Limit   int
 	Include IncludeMode
+	// Namespaces, when non-empty, scopes typed/dynamic listers to those
+	// namespaces. The handler computes this as the intersection of the
+	// caller's RBAC-allowed namespaces and any `ns:` modifier in the
+	// parsed query, so listers never read namespaces the user can't see.
+	// Cluster-scoped kinds (Node, Namespace, PersistentVolume, etc.) are
+	// returned regardless — namespace-restricted users still get them
+	// because they're orthogonal to namespace RBAC.
+	Namespaces []string
 	// Filter is an optional compiled CEL predicate. When set, each
 	// candidate that passed the modifier+token match is also evaluated
 	// against the filter; non-truthy results (including eval errors)
@@ -86,13 +95,26 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 
 	var res Result
 	var hits []Hit
+	// CEL filter eval errors are silently dropped per-row (the agent
+	// just gets fewer hits, no 500), but we log the first error so an
+	// operator can see when a filter is structurally wrong or hits
+	// the cost limit. Without this, "my filter returns nothing" is
+	// indistinguishable from "the cluster has nothing matching."
+	var firstFilterErr error
+	filterErrCount := 0
 
 	// Typed kinds.
 	for _, tk := range typedKinds {
 		if !shouldScanTyped(tk.Kind, q) {
 			continue
 		}
-		objs, err := p.ListTyped(tk.Plural, nil)
+		// Cluster-scoped kinds ignore the namespace constraint — they're
+		// orthogonal to namespace RBAC.
+		listNs := opts.Namespaces
+		if isClusterScopedKind(tk.Kind) {
+			listNs = nil
+		}
+		objs, err := p.ListTyped(tk.Plural, listNs)
 		if err != nil {
 			// Forbidden / unknown — silently skip this kind, partial
 			// results are better than blanking the whole search.
@@ -114,7 +136,14 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 				if err != nil {
 					continue
 				}
-				ok, _ := opts.Filter.Match(act)
+				ok, err := opts.Filter.Match(act)
+				if err != nil {
+					filterErrCount++
+					if firstFilterErr == nil {
+						firstFilterErr = err
+					}
+					continue
+				}
 				if !ok {
 					continue
 				}
@@ -132,9 +161,25 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if !shouldScanCRD(kind, q) {
 			continue
 		}
-		items, err := p.ListDynamic(ctx, gvr, "")
-		if err != nil {
-			continue
+		// CRDs may be cluster-scoped or namespaced — we don't know without
+		// API discovery here, so when a namespace constraint is set we
+		// query each requested namespace and union the results. If no
+		// constraint, the empty-namespace lookup is cluster-wide.
+		var items []*unstructured.Unstructured
+		if len(opts.Namespaces) == 0 {
+			its, err := p.ListDynamic(ctx, gvr, "")
+			if err != nil {
+				continue
+			}
+			items = its
+		} else {
+			for _, ns := range opts.Namespaces {
+				its, err := p.ListDynamic(ctx, gvr, ns)
+				if err != nil {
+					continue
+				}
+				items = append(items, its...)
+			}
 		}
 		res.Searched += len(items)
 		for _, u := range items {
@@ -148,13 +193,24 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 				if act == nil {
 					continue
 				}
-				ok, _ := opts.Filter.Match(act)
+				ok, err := opts.Filter.Match(act)
+				if err != nil {
+					filterErrCount++
+					if firstFilterErr == nil {
+						firstFilterErr = err
+					}
+					continue
+				}
 				if !ok {
 					continue
 				}
 			}
 			hits = append(hits, buildHit(score, matched, c, opts.Include, nil, u))
 		}
+	}
+
+	if filterErrCount > 0 {
+		log.Printf("[search] CEL filter eval errors: %d rows; first=%v", filterErrCount, firstFilterErr)
 	}
 
 	sort.SliceStable(hits, func(i, j int) bool {
@@ -192,6 +248,17 @@ func shouldScanCRD(kind string, q Query) bool {
 		return kindMatches(kind, q.KindFilter)
 	}
 	return true
+}
+
+// isClusterScopedKind returns true for the kinds in typedKinds that exist
+// outside any namespace. Used to bypass the namespace-list filter for them
+// (a cluster-scoped lister rejects a non-empty namespace argument).
+func isClusterScopedKind(kind string) bool {
+	switch kind {
+	case "Node", "Namespace", "PersistentVolume", "StorageClass":
+		return true
+	}
+	return false
 }
 
 // buildHit assembles the response shape for a matched candidate. Exactly

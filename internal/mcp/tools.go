@@ -1458,9 +1458,17 @@ func handleIssuesTool(_ context.Context, _ *mcp.CallToolRequest, input issuesInp
 	if provider == nil {
 		return nil, nil, fmt.Errorf("not connected to cluster")
 	}
+	severities, err := parseSeverityList(input.Severity)
+	if err != nil {
+		return nil, nil, err
+	}
+	sources, err := parseSourceList(input.Source)
+	if err != nil {
+		return nil, nil, err
+	}
 	filters := issues.Filters{
-		Severities: parseSeverityList(input.Severity),
-		Sources:    parseSourceList(input.Source),
+		Severities: severities,
+		Sources:    sources,
 		Kinds:      splitCSVStr(input.Kind),
 		Limit:      input.Limit,
 	}
@@ -1474,7 +1482,14 @@ func handleIssuesTool(_ context.Context, _ *mcp.CallToolRequest, input issuesInp
 	if input.Namespace != "" {
 		filters.Namespaces = []string{input.Namespace}
 	}
-	if d, err := time.ParseDuration(input.Since); err == nil && d > 0 {
+	if input.Since != "" {
+		d, err := time.ParseDuration(input.Since)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid since=%q: %w", input.Since, err)
+		}
+		if d < 0 {
+			return nil, nil, fmt.Errorf("since must be non-negative, got %s", d)
+		}
 		filters.Since = d
 	}
 	// audit-source opt-in via either source list OR an explicit flag
@@ -1493,31 +1508,37 @@ func handleIssuesTool(_ context.Context, _ *mcp.CallToolRequest, input issuesInp
 	})
 }
 
-func parseSeverityList(v string) []issues.Severity {
+func parseSeverityList(v string) ([]issues.Severity, error) {
 	if v == "" {
-		return nil
+		return nil, nil
 	}
 	var out []issues.Severity
 	for _, p := range strings.Split(v, ",") {
 		switch strings.ToLower(strings.TrimSpace(p)) {
+		case "":
+			continue
 		case "critical":
 			out = append(out, issues.SeverityCritical)
 		case "warning":
 			out = append(out, issues.SeverityWarning)
 		case "info":
 			out = append(out, issues.SeverityInfo)
+		default:
+			return nil, fmt.Errorf("unknown severity %q (want: critical, warning, info)", p)
 		}
 	}
-	return out
+	return out, nil
 }
 
-func parseSourceList(v string) []issues.Source {
+func parseSourceList(v string) ([]issues.Source, error) {
 	if v == "" {
-		return nil
+		return nil, nil
 	}
 	var out []issues.Source
 	for _, p := range strings.Split(v, ",") {
 		switch strings.ToLower(strings.TrimSpace(p)) {
+		case "":
+			continue
 		case "problem":
 			out = append(out, issues.SourceProblem)
 		case "audit":
@@ -1526,9 +1547,11 @@ func parseSourceList(v string) []issues.Source {
 			out = append(out, issues.SourceEvent)
 		case "condition":
 			out = append(out, issues.SourceCondition)
+		default:
+			return nil, fmt.Errorf("unknown source %q (want: problem, audit, event, condition)", p)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func splitCSVStr(v string) []string {
@@ -1549,12 +1572,16 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	if provider == nil {
 		return nil, nil, fmt.Errorf("not connected to cluster")
 	}
-	include := search.IncludeSummary
+	var include search.IncludeMode
 	switch input.Include {
+	case "", "summary":
+		include = search.IncludeSummary
 	case "raw":
 		include = search.IncludeRaw
 	case "none":
 		include = search.IncludeNone
+	default:
+		return nil, nil, fmt.Errorf("unknown include=%q (want: summary, raw, none)", input.Include)
 	}
 	opts := search.Options{
 		Limit:   input.Limit,
