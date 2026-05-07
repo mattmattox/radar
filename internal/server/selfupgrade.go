@@ -67,12 +67,17 @@ func (s *Server) handleSelfUpgrade(w http.ResponseWriter, r *http.Request) {
 		req.Image,
 	))
 
+	// Patch as field manager "helm" with Force so a subsequent `helm upgrade`
+	// doesn't conflict on .image. With an empty FieldManager, the apiserver
+	// would derive one from User-Agent → "radar" — which then permanently
+	// owns .image until reclaimed, breaking every later helm upgrade.
+	force := true
 	_, err := client.AppsV1().Deployments(ns).Patch(
 		r.Context(),
 		deployment,
 		types.StrategicMergePatchType,
 		patch,
-		metav1.PatchOptions{},
+		metav1.PatchOptions{FieldManager: "helm", Force: &force},
 	)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
