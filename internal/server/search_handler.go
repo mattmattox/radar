@@ -60,6 +60,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Limit:      parseLimit(r.URL.Query().Get("limit")),
 		Include:    include,
 		Namespaces: scanNamespaces,
+		// SAR-gate sensitive kinds (Secret + cluster-scoped) by the
+		// END user's identity, not the SA's. The cache itself reads
+		// as the SA so it carries Secrets/Nodes/etc., but exposing
+		// them through search to a namespace-bound viewer would let
+		// them enumerate cluster-scope info their k8s RBAC denies.
+		// In auth-mode=none, returns nil and the SA's own RBAC at
+		// the cache lister layer is the only filter.
+		SkipKinds: s.computeSearchSkipKinds(r),
 	}
 	if expr := r.URL.Query().Get("filter"); expr != "" {
 		f, err := filter.CachedObjectFilter(expr)

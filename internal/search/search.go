@@ -75,8 +75,18 @@ type Options struct {
 	// parsed query, so listers never read namespaces the user can't see.
 	// Cluster-scoped kinds (Node, Namespace, PersistentVolume, etc.) are
 	// returned regardless — namespace-restricted users still get them
-	// because they're orthogonal to namespace RBAC.
+	// because they're orthogonal to namespace RBAC. SkipKinds below
+	// is the lever that excludes them for namespace-only-RBAC users.
 	Namespaces []string
+	// SkipKinds names kinds the walker must NOT scan, regardless of
+	// query/filter content. The handler populates this from per-user
+	// SubjectAccessReviews against sensitive kinds (Secret, Node,
+	// PersistentVolume, StorageClass, Namespace) — users without the
+	// list verb at cluster scope don't see those rows even if the
+	// underlying SA's informer cache holds them. Without this gate, a
+	// k8s `view` Cloud viewer would see Secret names, Node IPs, etc.
+	// because the cache reads happen as the SA, not the end user.
+	SkipKinds map[string]bool
 	// Filter is an optional compiled CEL predicate. When set, each
 	// candidate that passed the modifier+token match is also evaluated
 	// against the filter; non-truthy results (including eval errors)
@@ -113,6 +123,14 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	// Typed kinds.
 	for _, tk := range typedKinds {
 		if !shouldScanTyped(tk.Kind, q) {
+			continue
+		}
+		if opts.SkipKinds[tk.Kind] {
+			// Per-user RBAC says no — drop the kind entirely whether
+			// or not the query asked for it. An explicit `kind:Secret`
+			// request from a user who can't list secrets ends up
+			// returning zero hits rather than leaking names. Same as
+			// the SA-forbidden lister returning ErrForbidden today.
 			continue
 		}
 		// Cluster-scoped kinds ignore the namespace constraint — they're
@@ -256,6 +274,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	return res, nil
 }
 
+// shouldScanTyped also consults Options.SkipKinds via the closure below
+// when invoked from Search; the standalone form here only honors the
+// query-derived kind filter.
 func shouldScanTyped(kind string, q Query) bool {
 	if len(q.KindFilter) > 0 {
 		return kindMatches(kind, q.KindFilter)
