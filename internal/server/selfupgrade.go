@@ -16,16 +16,24 @@ import (
 )
 
 // selfUpgradePatchOptions returns the PatchOptions used by the self-upgrade
-// endpoint. Field manager "helm" plus Force is what keeps `.image` ownership
-// stable across self-upgrade and `helm upgrade` cycles. With an empty
-// FieldManager the apiserver derives one from User-Agent → "radar", which
-// then permanently owns .image and breaks every subsequent helm upgrade.
+// endpoint. FieldManager "helm" is what keeps `.image` ownership stable
+// across self-upgrade and `helm upgrade` cycles: with an empty FieldManager
+// the apiserver derives one from User-Agent → "radar", which then
+// permanently owns .image and breaks every subsequent helm upgrade with a
+// server-side-apply conflict.
 //
-// Extracted for tripwire test; if a refactor reverts these values, the test
-// in selfupgrade_test.go fails before the bug ships.
+// We deliberately do NOT set Force here. K8s apimachinery rejects Force on
+// non-Apply patches (apimachinery/pkg/apis/meta/v1/validation:
+// `field.Forbidden("force", "may not be specified for non-apply patch")`)
+// so a StrategicMergePatch with Force=true returns 422 Invalid and the
+// upgrade never runs. If we ever need to reclaim conflicting ownership,
+// the route is to switch the request to ApplyPatchType with a full apply
+// object — not to flip Force back on a strategic merge.
+//
+// Extracted for tripwire test; if a refactor reverts these values, the
+// test in selfupgrade_test.go fails before the bug ships.
 func selfUpgradePatchOptions() metav1.PatchOptions {
-	force := true
-	return metav1.PatchOptions{FieldManager: "helm", Force: &force}
+	return metav1.PatchOptions{FieldManager: "helm"}
 }
 
 // handleSelfUpgrade patches this Radar Deployment's container image so the
@@ -94,8 +102,10 @@ func (s *Server) handleSelfUpgrade(w http.ResponseWriter, r *http.Request) {
 		case apierrors.IsForbidden(err):
 			s.writeError(w, http.StatusForbidden, "SA lacks patch permission on this Deployment (rbac.selfUpgrade=true?)")
 		case apierrors.IsConflict(err):
-			// Force=true reclaims field ownership, but a concurrent helm
-			// upgrade can still race. Retryable on the caller's side.
+			// A concurrent helm upgrade or apply can race the patch.
+			// Retryable on the caller's side. (We could reclaim
+			// ownership via server-side apply, but the StrategicMerge
+			// path keeps the request small and a retry is cheap.)
 			s.writeError(w, http.StatusConflict, "concurrent modification, retry")
 		case apierrors.IsTooManyRequests(err) || apierrors.IsServerTimeout(err):
 			s.writeError(w, http.StatusServiceUnavailable, "apiserver throttled, retry")

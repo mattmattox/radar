@@ -337,9 +337,9 @@ type searchInput struct {
 type issuesInput struct {
 	Namespace string `json:"namespace,omitempty" jsonschema:"filter to one namespace"`
 	Severity  string `json:"severity,omitempty" jsonschema:"comma-separated: critical,warning"`
-	Source    string `json:"source,omitempty" jsonschema:"comma-separated: problem,audit,event,condition. audit excluded by default"`
+	Source    string `json:"source,omitempty" jsonschema:"comma-separated: problem,audit,event,condition. Defaults to problem+condition only. Pass 'event' to opt in K8s Warning events (off by default — they flood thousands per cluster and mostly duplicate problem-source rows). Pass 'audit' to opt in best-practice findings (off by default — 50–200 per cluster)."`
 	Kind      string `json:"kind,omitempty" jsonschema:"comma-separated kind filter (e.g. Deployment,Pod)"`
-	Since     string `json:"since,omitempty" jsonschema:"event lookback window, e.g. 15m or 1h"`
+	Since     string `json:"since,omitempty" jsonschema:"event lookback window, e.g. 15m or 1h. Only affects the event source; when events are enabled and since is omitted, defaults to 1h to avoid pulling the full event-cache backlog."`
 	Limit     int    `json:"limit,omitempty" jsonschema:"max issues returned (default 200, max 1000)"`
 	Filter    string `json:"filter,omitempty" jsonschema:"optional CEL boolean expression run against each composed Issue. Bindings: severity, source, kind, group, ns (the namespace — note: use 'ns' not 'namespace' because the latter is a CEL reserved word), name, reason, message, count (int), cluster, last_seen (unix seconds). Examples: 'severity == \"critical\" && count > 5', 'source == \"condition\" && ns.startsWith(\"prod-\")'"`
 }
@@ -1492,19 +1492,32 @@ func handleIssuesTool(_ context.Context, _ *mcp.CallToolRequest, input issuesInp
 		}
 		filters.Since = d
 	}
-	// audit-source opt-in via either source list OR an explicit flag
-	// — honor the source list here since the input doesn't expose a
-	// separate include_audit knob.
+	// Audit + event sources are both opt-in (default off). The
+	// MCP input doesn't surface separate include_* knobs, so the
+	// source list IS the opt-in. Mirror the HTTP handler's
+	// behavior — including the 1h since-default when events are
+	// enabled with no explicit window, so an MCP caller doesn't
+	// silently inherit the full event-cache backlog.
 	for _, s := range filters.Sources {
-		if s == issues.SourceAudit {
+		switch s {
+		case issues.SourceAudit:
 			filters.IncludeAudit = true
-			break
+		case issues.SourceEvent:
+			filters.IncludeEvents = true
 		}
+	}
+	if filters.IncludeEvents && filters.Since == 0 {
+		filters.Since = time.Hour
 	}
 	out, stats := issues.ComposeWithStats(provider, filters)
 	resp := map[string]any{
 		"issues": out,
 		"total":  len(out),
+		// total_matched is the uncapped count — tells the caller
+		// whether the response is windowed or the whole set. Without
+		// it, an MCP agent can't distinguish "200 returned" from
+		// "200 of 1000". Mirrors the HTTP /api/issues response shape.
+		"total_matched": stats.TotalMatched,
 	}
 	if stats.FilterErrors > 0 {
 		resp["filter_errors"] = stats.FilterErrors
