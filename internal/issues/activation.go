@@ -15,7 +15,10 @@ func issueToActivation(i Issue) map[string]any {
 		"source":    string(i.Source),
 		"kind":      i.Kind,
 		"group":     i.Group,
-		"namespace": i.Namespace,
+		// `ns` rather than `namespace` — `namespace` is a CEL reserved
+		// identifier and bare references fail at parse time. See
+		// internal/filter.envIssue for the rationale.
+		"ns":        i.Namespace,
 		"name":      i.Name,
 		"reason":    i.Reason,
 		"message":   i.Message,

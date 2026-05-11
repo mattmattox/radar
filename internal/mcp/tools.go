@@ -336,12 +336,12 @@ type searchInput struct {
 
 type issuesInput struct {
 	Namespace string `json:"namespace,omitempty" jsonschema:"filter to one namespace"`
-	Severity  string `json:"severity,omitempty" jsonschema:"comma-separated: critical,warning,info"`
+	Severity  string `json:"severity,omitempty" jsonschema:"comma-separated: critical,warning"`
 	Source    string `json:"source,omitempty" jsonschema:"comma-separated: problem,audit,event,condition. audit excluded by default"`
 	Kind      string `json:"kind,omitempty" jsonschema:"comma-separated kind filter (e.g. Deployment,Pod)"`
 	Since     string `json:"since,omitempty" jsonschema:"event lookback window, e.g. 15m or 1h"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"max issues returned (default 200, max 1000)"`
-	Filter    string `json:"filter,omitempty" jsonschema:"optional CEL boolean expression run against each composed Issue. Bindings: severity, source, kind, group, namespace, name, reason, message, count (int), cluster, last_seen (unix seconds). Examples: 'severity == \"critical\" && count > 5', 'source == \"condition\" && namespace.startsWith(\"prod-\")'"`
+	Filter    string `json:"filter,omitempty" jsonschema:"optional CEL boolean expression run against each composed Issue. Bindings: severity, source, kind, group, ns (the namespace — note: use 'ns' not 'namespace' because the latter is a CEL reserved word), name, reason, message, count (int), cluster, last_seen (unix seconds). Examples: 'severity == \"critical\" && count > 5', 'source == \"condition\" && ns.startsWith(\"prod-\")'"`
 }
 
 // Tool handlers
@@ -1501,11 +1501,16 @@ func handleIssuesTool(_ context.Context, _ *mcp.CallToolRequest, input issuesInp
 			break
 		}
 	}
-	out := issues.Compose(provider, filters)
-	return toJSONResult(map[string]any{
+	out, stats := issues.ComposeWithStats(provider, filters)
+	resp := map[string]any{
 		"issues": out,
 		"total":  len(out),
-	})
+	}
+	if stats.FilterErrors > 0 {
+		resp["filter_errors"] = stats.FilterErrors
+		resp["filter_error_sample"] = stats.FilterErrorSample
+	}
+	return toJSONResult(resp)
 }
 
 func parseSeverityList(v string) ([]issues.Severity, error) {
@@ -1521,10 +1526,8 @@ func parseSeverityList(v string) ([]issues.Severity, error) {
 			out = append(out, issues.SeverityCritical)
 		case "warning":
 			out = append(out, issues.SeverityWarning)
-		case "info":
-			out = append(out, issues.SeverityInfo)
 		default:
-			return nil, fmt.Errorf("unknown severity %q (want: critical, warning, info)", p)
+			return nil, fmt.Errorf("unknown severity %q (want: critical, warning)", p)
 		}
 	}
 	return out, nil

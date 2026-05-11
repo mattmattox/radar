@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -71,6 +72,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	result, err := search.Search(r.Context(), provider, parsed, opts)
 	if err != nil {
+		// Log before writing per radar's CLAUDE.md convention. Today
+		// Search() never returns an error, but the moment that
+		// changes we want context — the query string itself is the
+		// most useful fingerprint.
+		log.Printf("[search] failed q=%q filter=%q: %v", parsed.Raw, r.URL.Query().Get("filter"), err)
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

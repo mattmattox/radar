@@ -93,8 +93,16 @@ func TestCompileObjectFilter_ParseError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
-	if !strings.Contains(err.Error(), "ERROR") && !strings.Contains(err.Error(), "error") {
-		t.Logf("error message: %q", err.Error())
+	// cel-go emits position-tagged diagnostics like
+	// "ERROR: <input>:1:9: Syntax error: ...". Assert on the marker
+	// substring directly — the agent reads this verbatim to fix the
+	// expression, so losing the position info is a real regression.
+	msg := err.Error()
+	if !strings.Contains(msg, "Syntax") {
+		t.Errorf("expected cel diagnostic containing 'Syntax', got %q", msg)
+	}
+	if !strings.Contains(msg, ":1:") {
+		t.Errorf("expected diagnostic to include position '<input>:1:N:', got %q", msg)
 	}
 }
 

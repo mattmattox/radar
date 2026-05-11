@@ -17,8 +17,10 @@ import (
 // Query params:
 //
 //	namespace= / namespaces=  one or comma-separated
-//	severity=  critical,warning,info  (default: all)
-//	source=    problem,audit,event,condition  (default: all except audit)
+//	severity=  critical,warning  (default: all)
+//	source=    problem,audit,event,condition. Default omits audit;
+//	           opt audit in by passing 'audit' in source= OR by
+//	           setting include_audit=true.
 //	kind=      Pod,Deployment,...  (default: all)
 //	since=     duration like 15m, 1h (default: no time restriction; only affects events)
 //	limit=     default 200, max 1000
@@ -78,11 +80,16 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		filters.Filter = f
 	}
 
-	out := issues.Compose(provider, filters)
-	s.writeJSON(w, map[string]any{
+	out, stats := issues.ComposeWithStats(provider, filters)
+	resp := map[string]any{
 		"issues": out,
 		"total":  len(out),
-	})
+	}
+	if stats.FilterErrors > 0 {
+		resp["filter_errors"] = stats.FilterErrors
+		resp["filter_error_sample"] = stats.FilterErrorSample
+	}
+	s.writeJSON(w, resp)
 }
 
 func parseSeverities(v string) ([]issues.Severity, error) {
@@ -100,10 +107,8 @@ func parseSeverities(v string) ([]issues.Severity, error) {
 			out = append(out, issues.SeverityCritical)
 		case "warning":
 			out = append(out, issues.SeverityWarning)
-		case "info":
-			out = append(out, issues.SeverityInfo)
 		default:
-			return nil, fmt.Errorf("unknown severity %q (want: critical, warning, info)", p)
+			return nil, fmt.Errorf("unknown severity %q (want: critical, warning)", p)
 		}
 	}
 	return out, nil

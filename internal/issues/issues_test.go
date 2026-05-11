@@ -225,7 +225,7 @@ func TestCompose_KindFilter(t *testing.T) {
 	}
 }
 
-func TestCompose_LimitTrunates(t *testing.T) {
+func TestCompose_LimitTruncates(t *testing.T) {
 	probs := make([]k8s.Problem, 0, 50)
 	for i := 0; i < 50; i++ {
 		probs = append(probs, k8s.Problem{Kind: "Pod", Name: "p", Severity: "critical"})

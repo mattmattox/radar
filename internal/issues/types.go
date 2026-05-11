@@ -31,7 +31,6 @@ type Severity string
 const (
 	SeverityCritical Severity = "critical"
 	SeverityWarning  Severity = "warning"
-	SeverityInfo     Severity = "info"
 )
 
 // Source records which underlying detection channel emitted this
@@ -70,7 +69,7 @@ type Issue struct {
 	FirstSeen time.Time `json:"first_seen,omitzero"`
 	LastSeen  time.Time `json:"last_seen,omitzero"`
 	Count     int       `json:"count,omitempty"`
-	Owner     *Ref      `json:"owner,omitempty"`
+	Owner     Ref       `json:"owner,omitzero"`
 	// Cluster is left empty here; the hub injects it when emitting
 	// cross-cluster envelopes via fleet_issues.
 	Cluster string `json:"cluster,omitempty"`

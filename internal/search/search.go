@@ -11,6 +11,7 @@ package search
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -97,9 +98,15 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	var hits []Hit
 	// CEL filter eval errors are silently dropped per-row (the agent
 	// just gets fewer hits, no 500), but we log the first error so an
-	// operator can see when a filter is structurally wrong or hits
-	// the cost limit. Without this, "my filter returns nothing" is
-	// indistinguishable from "the cluster has nothing matching."
+	// operator can see when rows are dying to runtime issues — typical
+	// causes: missing-field traversal (filter assumed a field this
+	// kind doesn't carry), type mismatches on dyn-typed nested
+	// fields, or cost-limit overruns. Parse/type errors against the
+	// declared bindings fail at compile and return 400 before we ever
+	// get here. Without this log line, "my filter returns nothing" is
+	// indistinguishable from "the cluster has nothing matching" —
+	// stats.FilterErrors on the response surfaces the same signal to
+	// the agent.
 	var firstFilterErr error
 	filterErrCount := 0
 
@@ -134,6 +141,13 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			if opts.Filter != nil {
 				act, err := objectActivation(obj, tk.Kind)
 				if err != nil {
+					// JSON-marshal of a typed object failing is rare
+					// (chan fields / unsupported reflect targets) but
+					// silent loss of a row is worse than a log line.
+					filterErrCount++
+					if firstFilterErr == nil {
+						firstFilterErr = fmt.Errorf("activation: %w", err)
+					}
 					continue
 				}
 				ok, err := opts.Filter.Match(act)
@@ -191,6 +205,11 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			if opts.Filter != nil {
 				act := unstructuredActivation(u, kind)
 				if act == nil {
+					// Defensive: u or u.Object was nil. Shouldn't
+					// happen for cache-listed objects but a log
+					// surfaces an unexpected cache state instead of
+					// silently losing rows.
+					log.Printf("[search] unexpected nil unstructured for kind=%s gvr=%s", kind, gvr.String())
 					continue
 				}
 				ok, err := opts.Filter.Match(act)
@@ -211,6 +230,10 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 
 	if filterErrCount > 0 {
 		log.Printf("[search] CEL filter eval errors: %d rows; first=%v", filterErrCount, firstFilterErr)
+		res.FilterErrors = filterErrCount
+		if firstFilterErr != nil {
+			res.FilterErrorSample = firstFilterErr.Error()
+		}
 	}
 
 	sort.SliceStable(hits, func(i, j int) bool {

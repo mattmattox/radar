@@ -60,12 +60,20 @@ type Result struct {
 	Hits     []Hit `json:"hits"`
 	Total    int   `json:"total"`    // number of hits returned (after limit)
 	Searched int   `json:"searched"` // approx. number of objects scanned
+	// FilterErrors counts rows the CEL filter rejected with an eval
+	// error (not parse — parse errors fail compile and return 400).
+	// Zero on a healthy filter; non-zero means some rows had missing
+	// fields or type mismatches the filter assumed away. Agents
+	// reading this can self-correct: "filter excluded everything" vs
+	// "cluster has nothing matching" become distinguishable.
+	FilterErrors int `json:"filter_errors,omitempty"`
+	// FilterErrorSample is the first eval error message verbatim so
+	// the caller has an actionable hint. Empty when FilterErrors=0.
+	FilterErrorSample string `json:"filter_error_sample,omitempty"`
 }
 
 // IncludeMode controls per-hit verbosity.
 type IncludeMode int
-
-// Note: Options.Namespaces lives in search.go alongside the rest of Options.
 
 const (
 	IncludeSummary IncludeMode = iota

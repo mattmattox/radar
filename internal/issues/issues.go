@@ -28,10 +28,28 @@ type Provider interface {
 	KindForGVR(gvr schema.GroupVersionResource) string
 }
 
-// Compose runs the four sources and merges their output into one
-// normalized, sorted, capped Issue slice. Sort order is severity desc,
-// then last-seen desc, then kind/ns/name for stable tiebreaks.
+// ComposeStats reports anything the caller would want to surface
+// alongside the issue list — currently CEL-filter eval-error
+// counters so the caller can distinguish "filter excluded
+// everything" from "cluster has nothing matching."
+type ComposeStats struct {
+	FilterErrors      int
+	FilterErrorSample string
+}
+
+// Compose runs the four sources and merges their output. Backward-
+// compatible signature for callers that don't care about stats.
 func Compose(p Provider, f Filters) []Issue {
+	out, _ := ComposeWithStats(p, f)
+	return out
+}
+
+// ComposeWithStats does the same work as Compose but also returns
+// counters the caller may want to forward — currently the per-row
+// CEL filter eval-error count + first error sample. Sort order is
+// severity desc, then last-seen desc, then kind/ns/name for stable
+// tiebreaks.
+func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	if f.Limit == 0 {
 		f.Limit = DefaultLimit
 	}
@@ -81,9 +99,14 @@ func Compose(p Provider, f Filters) []Issue {
 	// Optional CEL filter — evaluated last so it sees the normalized
 	// row shape. Eval errors count as non-match (matches "missing
 	// field" semantics; agent gets zero hits + a clean response,
-	// rather than a 500). We log the first eval error so an operator
-	// debugging "my filter returns nothing" can see a type mismatch /
-	// cost-limit fault in the logs instead of guessing.
+	// rather than a 500). Runtime causes: missing-field traversal,
+	// type mismatches on dyn-typed nested fields, cost-limit
+	// overruns. Parse/type errors against the declared bindings
+	// fail at compile and never reach here. ComposeStats surfaces
+	// the count + first sample back to the handler so the agent can
+	// distinguish "filter excluded everything" from "cluster has
+	// nothing matching."
+	var stats ComposeStats
 	if f.Filter != nil {
 		filtered := out[:0]
 		var firstErr error
@@ -103,6 +126,10 @@ func Compose(p Provider, f Filters) []Issue {
 		}
 		if errCount > 0 {
 			log.Printf("[issues] CEL filter eval errors: %d/%d rows; first=%v", errCount, len(out), firstErr)
+			stats.FilterErrors = errCount
+			if firstErr != nil {
+				stats.FilterErrorSample = firstErr.Error()
+			}
 		}
 		out = filtered
 	}
@@ -125,7 +152,7 @@ func Compose(p Provider, f Filters) []Issue {
 	if len(out) > f.Limit {
 		out = out[:f.Limit]
 	}
-	return out
+	return out, stats
 }
 
 // detectGenericCRDIssues walks every watched dynamic CRD and emits a
@@ -325,8 +352,6 @@ func severityRank(s Severity) int {
 		return 3
 	case SeverityWarning:
 		return 2
-	case SeverityInfo:
-		return 1
 	}
 	return 0
 }

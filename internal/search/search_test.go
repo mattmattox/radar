@@ -110,7 +110,7 @@ func TestSearch_ImageMatch(t *testing.T) {
 	}
 }
 
-func TestSearch_LimitTrunates(t *testing.T) {
+func TestSearch_LimitTruncates(t *testing.T) {
 	pods := make([]runtime.Object, 0, 100)
 	for i := 0; i < 100; i++ {
 		pods = append(pods, newPod("ns", "pod-with-redis", "redis:6.2", nil))

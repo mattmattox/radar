@@ -32,7 +32,6 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
-	"github.com/google/cel-go/common/types/ref"
 )
 
 // Filter is a compiled boolean predicate.
@@ -68,6 +67,13 @@ func (f *Filter) Match(activation map[string]any) (bool, error) {
 // and reused — building takes a few hundred microseconds and creating
 // a new env per request would dominate evaluation cost on repeat
 // queries.
+//
+// MIRROR: radar-hub/internal/server/celcheck.go declares the same
+// bindings (celObjectEnv) for fail-fast pre-validation at the hub.
+// If you change the binding list, update both places in lockstep —
+// there's no shared package and no compile-time check that catches
+// drift. Hub's TestCelEnv_ObjectDeclarations exercises the bindings
+// from its side; radar's filter_test.go does the same here.
 var envObject = mustNewEnv(
 	cel.Variable("kind", cel.StringType),
 	cel.Variable("apiVersion", cel.StringType),
@@ -81,12 +87,18 @@ var envObject = mustNewEnv(
 // envIssue is the CEL environment for /api/issues filters. The shape
 // mirrors issues.Issue's JSON form so an LLM that's seen one row of
 // output can write a filter against it without docs.
+// envIssue uses `ns` instead of `namespace` because the latter is a
+// CEL reserved identifier — bare references like `namespace == "x"`
+// fail at parse time even when the variable is declared. We took the
+// short form rather than fight cel-go's reservation list; `ns:` is
+// also the short modifier in the search query parser, so the two
+// surfaces stay parallel.
 var envIssue = mustNewEnv(
 	cel.Variable("severity", cel.StringType),
 	cel.Variable("source", cel.StringType),
 	cel.Variable("kind", cel.StringType),
 	cel.Variable("group", cel.StringType),
-	cel.Variable("namespace", cel.StringType),
+	cel.Variable("ns", cel.StringType),
 	cel.Variable("name", cel.StringType),
 	cel.Variable("reason", cel.StringType),
 	cel.Variable("message", cel.StringType),
@@ -161,8 +173,15 @@ func compileWith(env *cel.Env, expr string) (*Filter, error) {
 // ---------------------------------------------------------------------------
 
 const (
+	// maxCacheEntries — 256 covers typical agent + UI working sets
+	// while keeping the O(n) eviction sweep fast. Tuned by intuition;
+	// revisit when telemetry exists.
 	maxCacheEntries = 256
-	cacheTTL        = 1 * time.Hour
+	// cacheTTL — 1h roughly matches a typical AI agent session.
+	// Beyond that a "stale" compile is no real harm (the same
+	// expression compiles to the same program) but bounding the
+	// working set keeps the memory profile flat for long-lived hubs.
+	cacheTTL = 1 * time.Hour
 )
 
 type cacheEntry struct {
@@ -246,5 +265,3 @@ func CachedIssueFilter(expr string) (*Filter, error) {
 	return f, nil
 }
 
-// Avoid unused-import noise during file evolution.
-var _ ref.Val
