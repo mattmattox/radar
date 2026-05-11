@@ -266,6 +266,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		}
 		return hits[i].Name < hits[j].Name
 	})
+	res.TotalMatched = len(hits)
 	if len(hits) > opts.Limit {
 		hits = hits[:opts.Limit]
 	}

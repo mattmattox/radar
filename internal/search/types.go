@@ -60,6 +60,12 @@ type Result struct {
 	Hits     []Hit `json:"hits"`
 	Total    int   `json:"total"`    // number of hits returned (after limit)
 	Searched int   `json:"searched"` // approx. number of objects scanned
+	// TotalMatched is the count of hits BEFORE truncation by Limit.
+	// Equals Total when no truncation occurred. Surfaced so callers
+	// (the hub's fleet aggregator, agents, the SPA) can report honest
+	// "X of N" counts when the limit clips the result set — without
+	// it the caller has no way to tell it's looking at a windowed view.
+	TotalMatched int `json:"total_matched"`
 	// FilterErrors counts rows the CEL filter rejected with an eval
 	// error (not parse — parse errors fail compile and return 400).
 	// Zero on a healthy filter; non-zero means some rows had missing

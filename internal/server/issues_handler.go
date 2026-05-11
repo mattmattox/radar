@@ -84,6 +84,12 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"issues": out,
 		"total":  len(out),
+		// total_matched is the uncapped count — i.e. how many issues
+		// would have been in `issues` if no limit applied. Tells the
+		// caller whether they're looking at a windowed view or the
+		// whole set. The hub forwards this per-cluster in fleet
+		// envelopes so the SPA can render "X of N total".
+		"total_matched": stats.TotalMatched,
 	}
 	if stats.FilterErrors > 0 {
 		resp["filter_errors"] = stats.FilterErrors

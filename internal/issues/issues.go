@@ -35,6 +35,13 @@ type Provider interface {
 type ComposeStats struct {
 	FilterErrors      int
 	FilterErrorSample string
+	// TotalMatched is the count of issues that survived ALL filters
+	// (severity, source, kind, namespace, CEL) but BEFORE the Limit
+	// truncation. Surfaced so the hub aggregator + agents + UI can
+	// distinguish "this cluster had 500 issues; we returned 200" from
+	// "this cluster had 200." Equal to len(returned slice) when no
+	// truncation occurred.
+	TotalMatched int
 }
 
 // Compose runs the four sources and merges their output. Backward-
@@ -149,6 +156,7 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 		}
 		return out[i].Name < out[j].Name
 	})
+	stats.TotalMatched = len(out)
 	if len(out) > f.Limit {
 		out = out[:f.Limit]
 	}
