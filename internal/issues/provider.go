@@ -37,16 +37,14 @@ func NewCacheProvider() *CacheProvider {
 }
 
 func (p *CacheProvider) DetectProblems(namespaces []string) []k8s.Problem {
-	// k8s.DetectProblems takes a single namespace ("" = all). Iterate
-	// across the filter and concat — the call is cache-only / cheap.
 	if len(namespaces) == 0 {
 		return k8s.DetectProblems(p.cache, "")
 	}
-	var out []k8s.Problem
+	perNs := make([][]k8s.Problem, 0, len(namespaces))
 	for _, ns := range namespaces {
-		out = append(out, k8s.DetectProblems(p.cache, ns)...)
+		perNs = append(perNs, k8s.DetectProblems(p.cache, ns))
 	}
-	return out
+	return flattenNamespacedProblems(perNs)
 }
 
 func (p *CacheProvider) DetectCAPIProblems(namespaces []string) []k8s.Problem {
@@ -56,9 +54,32 @@ func (p *CacheProvider) DetectCAPIProblems(namespaces []string) []k8s.Problem {
 	if len(namespaces) == 0 {
 		return k8s.DetectCAPIProblems(p.dynamic, p.discovery, "")
 	}
-	var out []k8s.Problem
+	perNs := make([][]k8s.Problem, 0, len(namespaces))
 	for _, ns := range namespaces {
-		out = append(out, k8s.DetectCAPIProblems(p.dynamic, p.discovery, ns)...)
+		perNs = append(perNs, k8s.DetectCAPIProblems(p.dynamic, p.discovery, ns))
+	}
+	return flattenNamespacedProblems(perNs)
+}
+
+// flattenNamespacedProblems concatenates per-namespace problem lists
+// while dropping cluster-scoped entries (those with empty Namespace).
+//
+// k8s.DetectProblems appends cluster-scoped problems (Node, and any
+// future kind with no Namespace) to its result regardless of the
+// namespace argument — calling it per-namespace would therefore both
+// LEAK those rows to a namespace-bounded caller (a Cloud viewer scoped
+// to one ns has no RBAC to list cluster-scoped resources) and
+// DUPLICATE them len(namespaces) times. Callers that want cluster-
+// scoped issues pass namespaces == nil and skip this helper.
+func flattenNamespacedProblems(perNs [][]k8s.Problem) []k8s.Problem {
+	var out []k8s.Problem
+	for _, lst := range perNs {
+		for _, prob := range lst {
+			if prob.Namespace == "" {
+				continue
+			}
+			out = append(out, prob)
+		}
 	}
 	return out
 }

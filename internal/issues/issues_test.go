@@ -257,3 +257,60 @@ func TestCompose_DeterministicOrderForTies(t *testing.T) {
 
 // silence unused-import lint when sort isn't used elsewhere
 var _ = sort.Strings
+
+// flattenNamespacedProblems exists to keep CacheProvider's per-
+// namespace fan-out from leaking + duplicating cluster-scoped
+// problems (Node, etc.). These tests pin that contract.
+
+func TestFlattenNamespacedProblems_DropsClusterScopedEntries(t *testing.T) {
+	// Each per-namespace list as returned by k8s.DetectProblems
+	// includes the cluster-scoped Node block — without filtering, a
+	// namespace-bounded caller asking for {ns1, ns2} would see Node
+	// problems twice AND see them at all (RBAC violation if the user
+	// lacks `list nodes` at cluster scope).
+	perNs := [][]k8s.Problem{
+		{
+			{Kind: "Pod", Namespace: "ns1", Name: "p1", Severity: "critical"},
+			{Kind: "Node", Name: "node-1", Severity: "high"}, // empty Namespace
+		},
+		{
+			{Kind: "Pod", Namespace: "ns2", Name: "p2", Severity: "critical"},
+			{Kind: "Node", Name: "node-1", Severity: "high"}, // dup leak
+		},
+	}
+	out := flattenNamespacedProblems(perNs)
+	if len(out) != 2 {
+		t.Fatalf("want 2 namespaced problems, got %d: %+v", len(out), out)
+	}
+	for _, p := range out {
+		if p.Kind == "Node" {
+			t.Errorf("Node problem leaked through namespace-scoped flatten: %+v", p)
+		}
+		if p.Namespace == "" {
+			t.Errorf("cluster-scoped problem leaked: %+v", p)
+		}
+	}
+}
+
+func TestFlattenNamespacedProblems_PreservesNamespacedAcrossSlices(t *testing.T) {
+	// Namespaced rows from different per-namespace calls all survive
+	// — no over-zealous dedup.
+	perNs := [][]k8s.Problem{
+		{{Kind: "Pod", Namespace: "ns1", Name: "a"}},
+		{{Kind: "Pod", Namespace: "ns2", Name: "a"}}, // same name, different ns
+		{{Kind: "Service", Namespace: "ns3", Name: "svc"}},
+	}
+	out := flattenNamespacedProblems(perNs)
+	if len(out) != 3 {
+		t.Fatalf("want 3 problems preserved, got %d: %+v", len(out), out)
+	}
+}
+
+func TestFlattenNamespacedProblems_EmptyInputReturnsNil(t *testing.T) {
+	if out := flattenNamespacedProblems(nil); len(out) != 0 {
+		t.Errorf("nil input should produce empty output, got %+v", out)
+	}
+	if out := flattenNamespacedProblems([][]k8s.Problem{}); len(out) != 0 {
+		t.Errorf("empty input should produce empty output, got %+v", out)
+	}
+}
