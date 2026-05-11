@@ -11,20 +11,29 @@ import (
 )
 
 // handleIssues serves GET /api/issues — the unified cluster-health
-// endpoint. Composes problems + audit findings (opt-in) + warning
-// events + generic CRD condition fallback into one normalized list.
+// endpoint. Composes problems + condition fallback by default; audit
+// + event sources are opt-in (both are loud — audit findings run 50–
+// 200 per cluster, and events flood with thousands of redundant
+// rows on noisy clusters).
 //
 // Query params:
 //
 //	namespace= / namespaces=  one or comma-separated
 //	severity=  critical,warning  (default: all)
-//	source=    problem,audit,event,condition. Default omits audit;
-//	           opt audit in by passing 'audit' in source= OR by
-//	           setting include_audit=true.
+//	source=    problem,audit,event,condition. Defaults to problem+
+//	           condition (audit + event excluded). Pass any source
+//	           explicitly to opt it in; "audit" lifts include_audit,
+//	           "event" lifts include_events. The two flags exist so
+//	           callers can opt those sources in without also
+//	           narrowing to ONLY them.
 //	kind=      Pod,Deployment,...  (default: all)
-//	since=     duration like 15m, 1h (default: no time restriction; only affects events)
+//	since=     duration like 15m, 1h. Affects event source only;
+//	           when events are enabled and since is omitted, the
+//	           handler defaults to 1h to avoid pulling the full
+//	           cached event backlog.
 //	limit=     default 200, max 1000
-//	include_audit=true  shorthand to opt audit findings in
+//	include_audit=true   opt audit findings in
+//	include_events=true  opt warning events in
 func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	if !s.requireConnected(w) {
 		return
@@ -62,14 +71,23 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	includeEvents := q.Get("include_events") == "true" || hasSource(q.Get("source"), "event")
+	// When events are enabled and no explicit window was passed, cap
+	// the lookback at 1h. Without this an opt-in immediately yields
+	// the full cache window (hours of accumulated Warning events,
+	// most of which duplicate problem-source rows already returned).
+	if includeEvents && since == 0 {
+		since = time.Hour
+	}
 	filters := issues.Filters{
-		Namespaces:   namespaces,
-		Severities:   severities,
-		Sources:      sources,
-		Kinds:        splitCSV(q.Get("kind")),
-		Since:        since,
-		Limit:        parseLimit(q.Get("limit")),
-		IncludeAudit: q.Get("include_audit") == "true" || hasSourceAudit(q.Get("source")),
+		Namespaces:    namespaces,
+		Severities:    severities,
+		Sources:       sources,
+		Kinds:         splitCSV(q.Get("kind")),
+		Since:         since,
+		Limit:         parseLimit(q.Get("limit")),
+		IncludeAudit:  q.Get("include_audit") == "true" || hasSource(q.Get("source"), "audit"),
+		IncludeEvents: includeEvents,
 	}
 	if expr := q.Get("filter"); expr != "" {
 		f, err := filter.CachedIssueFilter(expr)
@@ -146,12 +164,14 @@ func parseSources(v string) ([]issues.Source, error) {
 	return out, nil
 }
 
-// hasSourceAudit lets `?source=audit` implicitly opt audit in without
-// the caller also passing `?include_audit=true` — the param-source
-// list is more discoverable.
-func hasSourceAudit(v string) bool {
+// hasSource reports whether the caller's `?source=` list explicitly
+// names `target`. Used to derive the opt-in flags for audit and
+// event sources — passing them in the source list is more
+// discoverable than the parallel include_* booleans, and we honor
+// both.
+func hasSource(v, target string) bool {
 	for _, p := range strings.Split(v, ",") {
-		if strings.EqualFold(strings.TrimSpace(p), "audit") {
+		if strings.EqualFold(strings.TrimSpace(p), target) {
 			return true
 		}
 	}

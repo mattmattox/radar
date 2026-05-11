@@ -39,7 +39,7 @@ func TestCompose_WithCELFilter_FiltersByCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, stats := ComposeWithStats(p, Filters{Filter: f})
+	out, stats := ComposeWithStats(p, Filters{Filter: f, IncludeEvents: true})
 	if len(out) != 1 || out[0].Name != "evt-pod" {
 		t.Fatalf("expected single event-source hit, got %+v", out)
 	}

@@ -92,7 +92,14 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	}
 
 	// ---- Source: event (recent K8s Warning events) -----------------
-	if wantSource(f, SourceEvent) {
+	// Gated by IncludeEvents, analogous to IncludeAudit. Events are
+	// the noisiest source by far on real clusters (each broken Pod
+	// emits a Warning Event every few seconds, retained for the cache
+	// window) and almost always duplicate signal already surfaced by
+	// SourceProblem. Default-off keeps the Issue count aligned with
+	// the per-cluster "X problems" intuition; user opts in via
+	// include_events=true or by passing "event" in source=.
+	if f.IncludeEvents && wantSource(f, SourceEvent) {
 		for _, e := range p.WarningEvents(f.Namespaces, f.Since) {
 			out = append(out, fromWarningEvent(e))
 		}

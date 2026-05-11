@@ -91,6 +91,17 @@ type Filters struct {
 	// per cluster) and the LLM use case usually wants problems first.
 	// Set true to opt in.
 	IncludeAudit bool
+	// IncludeEvents defaults to false. Warning events are the noisiest
+	// source by an order of magnitude — a single broken Pod emits a
+	// FailedScheduling / BackOff / etc. Event every few seconds, and
+	// the event informer retains them for the cache window (default 1h+).
+	// On a multi-thousand-Pod cluster this floods the Issue list with
+	// rows that mostly duplicate `problem` source (a CrashLoopBackOff
+	// Pod already shows up under SourceProblem). Treat events as opt-in
+	// like audit; when enabled the caller should also pass a Since
+	// window (handler defaults to 1h when events are on and Since is
+	// zero).
+	IncludeEvents bool
 	// Filter is an optional compiled CEL predicate evaluated against
 	// each composed Issue's row bindings. Compile happens in the
 	// handler (and is cached); this layer just runs the program.

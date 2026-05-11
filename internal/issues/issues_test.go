@@ -110,7 +110,10 @@ func TestCompose_WarningEventsIncluded(t *testing.T) {
 			},
 		},
 	}
-	out := Compose(p, Filters{})
+	// Events are opt-in (analogous to audit); IncludeEvents=true is
+	// required to surface them from Compose. The default-off behavior
+	// is covered separately by TestCompose_EventsExcludedByDefault.
+	out := Compose(p, Filters{IncludeEvents: true})
 	if len(out) != 1 {
 		t.Fatalf("got %d issues", len(out))
 	}
@@ -119,6 +122,27 @@ func TestCompose_WarningEventsIncluded(t *testing.T) {
 	}
 	if out[0].Count != 5 {
 		t.Fatalf("count not propagated: %d", out[0].Count)
+	}
+}
+
+func TestCompose_EventsExcludedByDefault(t *testing.T) {
+	// The default Compose call must NOT surface warning events. Pins
+	// the audit-style opt-in contract so a future refactor doesn't
+	// silently re-enable the event flood on noisy clusters.
+	now := time.Now()
+	p := &fakeProvider{
+		events: []*corev1.Event{{
+			ObjectMeta:     metav1.ObjectMeta{Namespace: "ns", Name: "evt-1"},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "p"},
+			Reason:         "FailedMount",
+			Type:           corev1.EventTypeWarning,
+			LastTimestamp:  metav1.Time{Time: now},
+			Count:          1,
+		}},
+	}
+	out := Compose(p, Filters{})
+	if len(out) != 0 {
+		t.Fatalf("event leaked through default Compose: %+v", out)
 	}
 }
 
