@@ -53,33 +53,39 @@ describe('computeUserInitials', () => {
   })
 
   it('does not include separator characters in the fallback', () => {
-    // Bugbot regression: the v2 fallback returned `localPart.slice(0,2)`
-    // which leaked the leading separator into the avatar circle as
-    // ".U", "-A", "_O" etc.
+    // Leading/trailing separators must not leak into the avatar
+    // circle as ".U", "-A", "_O" — non-letters get filtered before
+    // the slice, not after.
     expect(computeUserInitials('.user')).toBe('US')
     expect(computeUserInitials('-admin')).toBe('AD')
     expect(computeUserInitials('_ops')).toBe('OP')
   })
 
-  it('takes only the first letter of a single segment with trailing separator', () => {
-    // Reviewer regression: the v2 docstring said "if local-part
-    // contains separators, use the first letter of each segment",
-    // but the code branched on segments.length >= 2 AFTER
-    // filter(Boolean), so 'mary.' (one segment) used the
-    // whole-localPart fallback and returned 'MA'. The contract is
-    // that single-segment inputs should fall back to leading
-    // letters of the SEGMENT, not the localPart.
+  it('takes leading letters of the segment, not the whole localPart, for trailing/leading separator inputs', () => {
+    // Single-segment inputs must fall back to leading letters of
+    // the SEGMENT, not the raw localPart — otherwise `'mary.'`
+    // returns `'MA'` from the wrong slice and inconsistency with
+    // `'mary.kohli'` shows up only on partial inputs.
     expect(computeUserInitials('mary.')).toBe('MA')
     expect(computeUserInitials('.mary')).toBe('MA')
   })
 
   it('returns empty for inputs with no letters', () => {
-    // Docstring contract: "Returns '' when no letters survive".
-    // v2 returned '..', '12', '_' for these inputs.
+    // The avatar circle has no glyph to render for separator-only,
+    // digit-only, or punctuation-only inputs — return `''` so the
+    // caller can fall back to a silhouette.
     expect(computeUserInitials('..')).toBe('')
     expect(computeUserInitials('123')).toBe('')
     expect(computeUserInitials('_')).toBe('')
     expect(computeUserInitials('---')).toBe('')
+  })
+
+  it('drops leading whitespace before computing initials', () => {
+    // Leading whitespace must not leak into the avatar circle as
+    // a pair of blank glyphs — the truthy `'  '` would defeat the
+    // caller's `{initials || <silhouette>}` fallback.
+    expect(computeUserInitials('  alice')).toBe('AL')
+    expect(computeUserInitials('\talice')).toBe('AL')
   })
 
   it('skips digits and punctuation interleaved with letters', () => {
