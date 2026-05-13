@@ -22,8 +22,12 @@ func NewHandler() http.Handler {
 	registerTools(server)
 	registerResources(server)
 
-	return mcp.NewStreamableHTTPHandler(
+	handler := mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
+
+	// go-sdk v1.6 removed the implicit cross-origin protection default;
+	// wrap the handler so a malicious page can't drive the local MCP server.
+	return http.NewCrossOriginProtection().Handler(handler)
 }
