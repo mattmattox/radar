@@ -18,6 +18,12 @@ import (
 // via the dynamic-cache path rather than a typed informer in pkg/k8score.
 // Each entry must have a matching candidate in supportedCRDFallbacks.
 //
+// These kinds are also "optional" from a UI perspective: a false bool means
+// "CRD not installed", not "RBAC denied something Radar expected". When
+// changing this list, update OPTIONAL_RESOURCE_KINDS in
+// packages/k8s-ui/src/types/core.ts so the frontend keeps filtering them
+// out of the limited-access banner.
+//
 // Keep this list small and explicit — if you find yourself adding many
 // entries, the typed/dynamic boundary in this codebase has shifted and the
 // design needs revisiting, not the allowlist.

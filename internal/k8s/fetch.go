@@ -387,7 +387,7 @@ func FetchResourceList(cache *ResourceCache, kind string, namespaces []string) (
 				return ToRuntimeObjects(items), nil
 			},
 		)
-	case "networkpolicies", "netpols":
+	case "networkpolicies", "networkpolicy", "netpols", "netpol":
 		if cache.NetworkPolicies() == nil {
 			return nil, fmt.Errorf("forbidden: networkpolicies")
 		}
@@ -407,7 +407,7 @@ func FetchResourceList(cache *ResourceCache, kind string, namespaces []string) (
 				return ToRuntimeObjects(items), nil
 			},
 		)
-	case "serviceaccounts", "sa":
+	case "serviceaccounts", "serviceaccount", "sa":
 		if cache.ServiceAccounts() == nil {
 			return nil, fmt.Errorf("forbidden: serviceaccounts")
 		}
@@ -427,7 +427,7 @@ func FetchResourceList(cache *ResourceCache, kind string, namespaces []string) (
 				return ToRuntimeObjects(items), nil
 			},
 		)
-	case "limitranges":
+	case "limitranges", "limitrange":
 		if cache.LimitRanges() == nil {
 			return nil, fmt.Errorf("forbidden: limitranges")
 		}
@@ -447,7 +447,7 @@ func FetchResourceList(cache *ResourceCache, kind string, namespaces []string) (
 				return ToRuntimeObjects(items), nil
 			},
 		)
-	case "roles":
+	case "roles", "role":
 		if cache.Roles() == nil {
 			return nil, fmt.Errorf("forbidden: roles")
 		}
@@ -467,7 +467,7 @@ func FetchResourceList(cache *ResourceCache, kind string, namespaces []string) (
 				return ToRuntimeObjects(items), nil
 			},
 		)
-	case "clusterroles":
+	case "clusterroles", "clusterrole":
 		if cache.ClusterRoles() == nil {
 			return nil, fmt.Errorf("forbidden: clusterroles")
 		}
@@ -476,7 +476,7 @@ func FetchResourceList(cache *ResourceCache, kind string, namespaces []string) (
 			return nil, err
 		}
 		return ToRuntimeObjects(items), nil
-	case "rolebindings":
+	case "rolebindings", "rolebinding":
 		if cache.RoleBindings() == nil {
 			return nil, fmt.Errorf("forbidden: rolebindings")
 		}
@@ -496,7 +496,7 @@ func FetchResourceList(cache *ResourceCache, kind string, namespaces []string) (
 				return ToRuntimeObjects(items), nil
 			},
 		)
-	case "clusterrolebindings":
+	case "clusterrolebindings", "clusterrolebinding":
 		if cache.ClusterRoleBindings() == nil {
 			return nil, fmt.Errorf("forbidden: clusterrolebindings")
 		}

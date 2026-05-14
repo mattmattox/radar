@@ -36,6 +36,18 @@ export interface ResourcePermissions {
   verticalPodAutoscalers: boolean
 }
 
+// Keys in ResourcePermissions that represent optional CRDs Radar can monitor
+// when they're installed in the cluster. A `false` here means "CRD not
+// installed (or RBAC denied)" — NOT "Radar is missing data the user expects",
+// so banners about RBAC restrictions should ignore these keys.
+//
+// Keep in sync with dynamicCapabilityKinds in internal/k8s/capabilities_alignment_test.go.
+export const OPTIONAL_RESOURCE_KINDS: ReadonlyArray<keyof ResourcePermissions> = [
+  'gateways',
+  'httpRoutes',
+  'verticalPodAutoscalers',
+]
+
 // Feature capabilities based on RBAC permissions
 export interface Capabilities {
   exec: boolean           // Terminal feature (pods/exec)
