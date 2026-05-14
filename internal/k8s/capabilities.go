@@ -742,8 +742,9 @@ func resolveProbeGVRs(p resourceProbe) []schema.GroupVersionResource {
 //   - If 403/401 and the kind is namespaceable AND a fallback namespace is set,
 //     retry scoped to that namespace.
 //   - Anything still 403/401 → kind is denied.
-//   - Anything that returns a non-auth error (transient, NotFound for a
-//     missing CRD) → optimistically allowed cluster-wide.
+//   - Anything that returns a non-auth error → optimistically allowed
+//     cluster-wide, except dynamic-cache probes use NotFound to mean the
+//     CRD is not installed.
 //
 // This is authoritative because it IS the operation the informer will perform.
 // SelfSubjectAccessReview is one indirection too many — it can disagree with

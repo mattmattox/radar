@@ -5,10 +5,8 @@ metadata:
   name: {{ include "radar.fullname" . }}
   labels:
     {{- include "radar.labels" . | nindent 4 }}
-# The resource list below must stay aligned with ResourcePermissions in
-# internal/k8s/capabilities.go — Radar advertises support for everything that
-# struct declares, and operators expect the chart's default ClusterRole to
-# match the README's "Supported Resources" table.
+# Keep default and opt-in resource rules aligned with ResourcePermissions in
+# internal/k8s/capabilities.go and the README's "Supported Resources" table.
 rules:
   # Core resources (read-only)
   - apiGroups: [""]

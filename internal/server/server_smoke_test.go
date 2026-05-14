@@ -937,10 +937,8 @@ func TestSmokePutConfigInvalidBody(t *testing.T) {
 }
 
 // TestSmokeCapabilitiesShape locks down the JSON contract for
-// /api/capabilities. Issue #704 was caused by the handler hand-mapping
-// a subset of the ResourcePermissions struct and silently dropping 8 of
-// 28 fields. The reflection-based alignment test in internal/k8s asserts
-// the probe writes every field — this test asserts the HTTP layer
+// /api/capabilities. The reflection-based alignment test in internal/k8s
+// asserts the probe writes every field — this test asserts the HTTP layer
 // surfaces every field as a JSON key. A regression that reverts to a
 // hand-mapped block, adds an `omitempty` that hides false values, or
 // changes the field-marshaling path would be caught here.
