@@ -49,6 +49,7 @@ type ResourcePermissions struct {
 	LimitRanges              bool `json:"limitRanges"`
 	Gateways                 bool `json:"gateways"`
 	HTTPRoutes               bool `json:"httpRoutes"`
+	VerticalPodAutoscalers   bool `json:"verticalPodAutoscalers"`
 }
 
 // PermissionCheckResult holds the result of resource access probes.
@@ -556,6 +557,13 @@ type resourceProbe struct {
 	gvr         schema.GroupVersionResource // For dynamic-client probe
 	clusterOnly bool                        // true: cannot be namespace-scoped (nodes, namespaces, PV, storageclasses)
 	field       *bool                       // Pointer into the boolean view on ResourcePermissions
+	// requiresDiscovery: dynamic-cache CRD entries (Gateway/HTTPRoute/VPA).
+	// For these, a NotFound on the list probe means "CRD isn't installed"
+	// and we report the field as false — instead of the optimistic-allow
+	// behavior used for typed kinds (whose GVR always exists). Without this
+	// gate, capabilities.resources would report `gateways: true` on clusters
+	// that don't have Gateway API installed.
+	requiresDiscovery bool
 }
 
 // resourceProbeTargets returns the typed informer kinds we probe access for.
@@ -563,35 +571,39 @@ type resourceProbe struct {
 // the boolean lives in ResourcePermissions and is consumed by the UI snapshot.
 func resourceProbeTargets(perms *ResourcePermissions) []resourceProbe {
 	return []resourceProbe{
-		{k8score.Pods, schema.GroupVersionResource{Version: "v1", Resource: "pods"}, false, &perms.Pods},
-		{k8score.Services, schema.GroupVersionResource{Version: "v1", Resource: "services"}, false, &perms.Services},
-		{k8score.ConfigMaps, schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, false, &perms.ConfigMaps},
-		{k8score.Secrets, schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, false, &perms.Secrets},
-		{k8score.Events, schema.GroupVersionResource{Version: "v1", Resource: "events"}, false, &perms.Events},
-		{k8score.PersistentVolumeClaims, schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"}, false, &perms.PersistentVolumeClaims},
-		{k8score.ServiceAccounts, schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, false, &perms.ServiceAccounts},
-		{k8score.LimitRanges, schema.GroupVersionResource{Version: "v1", Resource: "limitranges"}, false, &perms.LimitRanges},
-		{k8score.Nodes, schema.GroupVersionResource{Version: "v1", Resource: "nodes"}, true, &perms.Nodes},
-		{k8score.Namespaces, schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}, true, &perms.Namespaces},
-		{k8score.PersistentVolumes, schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumes"}, true, &perms.PersistentVolumes},
-		{k8score.Deployments, schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, false, &perms.Deployments},
-		{k8score.DaemonSets, schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "daemonsets"}, false, &perms.DaemonSets},
-		{k8score.StatefulSets, schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "statefulsets"}, false, &perms.StatefulSets},
-		{k8score.ReplicaSets, schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "replicasets"}, false, &perms.ReplicaSets},
-		{k8score.Ingresses, schema.GroupVersionResource{Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"}, false, &perms.Ingresses},
-		{k8score.NetworkPolicies, schema.GroupVersionResource{Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"}, false, &perms.NetworkPolicies},
-		{k8score.Jobs, schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}, false, &perms.Jobs},
-		{k8score.CronJobs, schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "cronjobs"}, false, &perms.CronJobs},
-		{k8score.HorizontalPodAutoscalers, schema.GroupVersionResource{Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"}, false, &perms.HorizontalPodAutoscalers},
-		{k8score.StorageClasses, schema.GroupVersionResource{Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"}, true, &perms.StorageClasses},
-		{k8score.PodDisruptionBudgets, schema.GroupVersionResource{Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"}, false, &perms.PodDisruptionBudgets},
-		{k8score.Roles, schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}, false, &perms.Roles},
-		{k8score.ClusterRoles, schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}, true, &perms.ClusterRoles},
-		{k8score.RoleBindings, schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}, false, &perms.RoleBindings},
-		{k8score.ClusterRoleBindings, schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}, true, &perms.ClusterRoleBindings},
-		// Gateway/HTTPRoute live in the dynamic cache, but the bool surfaces in the UI.
-		{"gateways", schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}, false, &perms.Gateways},
-		{"httproutes", schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"}, false, &perms.HTTPRoutes},
+		{key: k8score.Pods, gvr: schema.GroupVersionResource{Version: "v1", Resource: "pods"}, field: &perms.Pods},
+		{key: k8score.Services, gvr: schema.GroupVersionResource{Version: "v1", Resource: "services"}, field: &perms.Services},
+		{key: k8score.ConfigMaps, gvr: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, field: &perms.ConfigMaps},
+		{key: k8score.Secrets, gvr: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, field: &perms.Secrets},
+		{key: k8score.Events, gvr: schema.GroupVersionResource{Version: "v1", Resource: "events"}, field: &perms.Events},
+		{key: k8score.PersistentVolumeClaims, gvr: schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"}, field: &perms.PersistentVolumeClaims},
+		{key: k8score.ServiceAccounts, gvr: schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}, field: &perms.ServiceAccounts},
+		{key: k8score.LimitRanges, gvr: schema.GroupVersionResource{Version: "v1", Resource: "limitranges"}, field: &perms.LimitRanges},
+		{key: k8score.Nodes, gvr: schema.GroupVersionResource{Version: "v1", Resource: "nodes"}, clusterOnly: true, field: &perms.Nodes},
+		{key: k8score.Namespaces, gvr: schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}, clusterOnly: true, field: &perms.Namespaces},
+		{key: k8score.PersistentVolumes, gvr: schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumes"}, clusterOnly: true, field: &perms.PersistentVolumes},
+		{key: k8score.Deployments, gvr: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, field: &perms.Deployments},
+		{key: k8score.DaemonSets, gvr: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "daemonsets"}, field: &perms.DaemonSets},
+		{key: k8score.StatefulSets, gvr: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "statefulsets"}, field: &perms.StatefulSets},
+		{key: k8score.ReplicaSets, gvr: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "replicasets"}, field: &perms.ReplicaSets},
+		{key: k8score.Ingresses, gvr: schema.GroupVersionResource{Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"}, field: &perms.Ingresses},
+		{key: k8score.NetworkPolicies, gvr: schema.GroupVersionResource{Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"}, field: &perms.NetworkPolicies},
+		{key: k8score.Jobs, gvr: schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}, field: &perms.Jobs},
+		{key: k8score.CronJobs, gvr: schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "cronjobs"}, field: &perms.CronJobs},
+		{key: k8score.HorizontalPodAutoscalers, gvr: schema.GroupVersionResource{Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"}, field: &perms.HorizontalPodAutoscalers},
+		{key: k8score.StorageClasses, gvr: schema.GroupVersionResource{Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"}, clusterOnly: true, field: &perms.StorageClasses},
+		{key: k8score.PodDisruptionBudgets, gvr: schema.GroupVersionResource{Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"}, field: &perms.PodDisruptionBudgets},
+		{key: k8score.Roles, gvr: schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}, field: &perms.Roles},
+		{key: k8score.ClusterRoles, gvr: schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}, clusterOnly: true, field: &perms.ClusterRoles},
+		{key: k8score.RoleBindings, gvr: schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}, field: &perms.RoleBindings},
+		{key: k8score.ClusterRoleBindings, gvr: schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}, clusterOnly: true, field: &perms.ClusterRoleBindings},
+		// Dynamic-cache CRDs — the bool surfaces in the UI even though they're
+		// served via the dynamic informer path, not buildInformerSetups().
+		// requiresDiscovery makes IsNotFound deny instead of optimistically
+		// allow, so we don't claim a CRD is supported when it isn't installed.
+		{key: "gateways", gvr: schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}, field: &perms.Gateways, requiresDiscovery: true},
+		{key: "httproutes", gvr: schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"}, field: &perms.HTTPRoutes, requiresDiscovery: true},
+		{key: "verticalpodautoscalers", gvr: schema.GroupVersionResource{Group: "autoscaling.k8s.io", Version: "v1", Resource: "verticalpodautoscalers"}, field: &perms.VerticalPodAutoscalers, requiresDiscovery: true},
 	}
 }
 
@@ -642,6 +654,22 @@ func probeListAccessWith(ctx context.Context, dyn dynamic.Interface, gvr schema.
 		return false, true, nil
 	}
 	return true, false, err
+}
+
+// applyDiscoveryGate handles probe entries marked requiresDiscovery. A
+// NotFound on the list probe means the CRD isn't installed in the cluster
+// (vs. RBAC denial which surfaces as Forbidden, or a real transient like
+// a 5xx). We deny in that case and clear the transient error so a missing
+// CRD doesn't shorten the cache TTL — it's an expected steady-state, not
+// an API hiccup. For non-dynamic probes the behavior is unchanged.
+func applyDiscoveryGate(allowed bool, transient error, requiresDiscovery bool) (bool, error) {
+	if !requiresDiscovery || transient == nil {
+		return allowed, transient
+	}
+	if apierrors.IsNotFound(transient) {
+		return false, nil
+	}
+	return allowed, transient
 }
 
 // CheckResourcePermissions probes list access for every typed resource and
@@ -754,6 +782,7 @@ func probeResourceAccess(ctx context.Context, dyn dynamic.Interface, scopeNs str
 				// sees Node counts, Namespace lists, and node metrics.
 				if p.clusterOnly {
 					allowed, _, transient := probeListAccessWith(ctx, dyn, p.gvr, "")
+					allowed, transient = applyDiscoveryGate(allowed, transient, p.requiresDiscovery)
 					if transient != nil {
 						hadErrors.Store(true)
 					}
@@ -766,6 +795,7 @@ func probeResourceAccess(ctx context.Context, dyn dynamic.Interface, scopeNs str
 					return
 				}
 				nsAllowed, _, nsTransient := probeListAccessWith(ctx, dyn, p.gvr, scopeNs)
+				nsAllowed, nsTransient = applyDiscoveryGate(nsAllowed, nsTransient, p.requiresDiscovery)
 				if nsTransient != nil {
 					hadErrors.Store(true)
 				}
@@ -776,6 +806,7 @@ func probeResourceAccess(ctx context.Context, dyn dynamic.Interface, scopeNs str
 			}
 
 			allowed, forbidden, transient := probeListAccessWith(ctx, dyn, p.gvr, "")
+			allowed, transient = applyDiscoveryGate(allowed, transient, p.requiresDiscovery)
 			if transient != nil {
 				hadErrors.Store(true)
 			}
@@ -784,10 +815,13 @@ func probeResourceAccess(ctx context.Context, dyn dynamic.Interface, scopeNs str
 				return
 			}
 			// Cluster-wide denied. Cluster-scoped kinds have no fallback.
+			// Dynamic CRDs that were denied via the discovery gate also skip
+			// the fallback — a namespace probe would hit the same NotFound.
 			if !forbidden || p.clusterOnly || scopeNs == "" {
 				return
 			}
 			nsAllowed, _, nsTransient := probeListAccessWith(ctx, dyn, p.gvr, scopeNs)
+			nsAllowed, nsTransient = applyDiscoveryGate(nsAllowed, nsTransient, p.requiresDiscovery)
 			if nsTransient != nil {
 				hadErrors.Store(true)
 			}

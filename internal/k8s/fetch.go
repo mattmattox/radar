@@ -387,6 +387,124 @@ func FetchResourceList(cache *ResourceCache, kind string, namespaces []string) (
 				return ToRuntimeObjects(items), nil
 			},
 		)
+	case "networkpolicies", "netpols":
+		if cache.NetworkPolicies() == nil {
+			return nil, fmt.Errorf("forbidden: networkpolicies")
+		}
+		return listPerNs(
+			func() ([]runtime.Object, error) {
+				items, err := cache.NetworkPolicies().List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+			func(ns string) ([]runtime.Object, error) {
+				items, err := cache.NetworkPolicies().NetworkPolicies(ns).List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+		)
+	case "serviceaccounts", "sa":
+		if cache.ServiceAccounts() == nil {
+			return nil, fmt.Errorf("forbidden: serviceaccounts")
+		}
+		return listPerNs(
+			func() ([]runtime.Object, error) {
+				items, err := cache.ServiceAccounts().List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+			func(ns string) ([]runtime.Object, error) {
+				items, err := cache.ServiceAccounts().ServiceAccounts(ns).List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+		)
+	case "limitranges":
+		if cache.LimitRanges() == nil {
+			return nil, fmt.Errorf("forbidden: limitranges")
+		}
+		return listPerNs(
+			func() ([]runtime.Object, error) {
+				items, err := cache.LimitRanges().List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+			func(ns string) ([]runtime.Object, error) {
+				items, err := cache.LimitRanges().LimitRanges(ns).List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+		)
+	case "roles":
+		if cache.Roles() == nil {
+			return nil, fmt.Errorf("forbidden: roles")
+		}
+		return listPerNs(
+			func() ([]runtime.Object, error) {
+				items, err := cache.Roles().List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+			func(ns string) ([]runtime.Object, error) {
+				items, err := cache.Roles().Roles(ns).List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+		)
+	case "clusterroles":
+		if cache.ClusterRoles() == nil {
+			return nil, fmt.Errorf("forbidden: clusterroles")
+		}
+		items, err := cache.ClusterRoles().List(labels.Everything())
+		if err != nil {
+			return nil, err
+		}
+		return ToRuntimeObjects(items), nil
+	case "rolebindings":
+		if cache.RoleBindings() == nil {
+			return nil, fmt.Errorf("forbidden: rolebindings")
+		}
+		return listPerNs(
+			func() ([]runtime.Object, error) {
+				items, err := cache.RoleBindings().List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+			func(ns string) ([]runtime.Object, error) {
+				items, err := cache.RoleBindings().RoleBindings(ns).List(labels.Everything())
+				if err != nil {
+					return nil, err
+				}
+				return ToRuntimeObjects(items), nil
+			},
+		)
+	case "clusterrolebindings":
+		if cache.ClusterRoleBindings() == nil {
+			return nil, fmt.Errorf("forbidden: clusterrolebindings")
+		}
+		items, err := cache.ClusterRoleBindings().List(labels.Everything())
+		if err != nil {
+			return nil, err
+		}
+		return ToRuntimeObjects(items), nil
 	default:
 		return nil, ErrUnknownKind
 	}
@@ -491,6 +609,41 @@ func FetchResource(cache *ResourceCache, kind, namespace, name string) (runtime.
 			return nil, fmt.Errorf("forbidden: poddisruptionbudgets")
 		}
 		return cache.PodDisruptionBudgets().PodDisruptionBudgets(namespace).Get(name)
+	case "networkpolicies", "networkpolicy", "netpols", "netpol":
+		if cache.NetworkPolicies() == nil {
+			return nil, fmt.Errorf("forbidden: networkpolicies")
+		}
+		return cache.NetworkPolicies().NetworkPolicies(namespace).Get(name)
+	case "serviceaccounts", "serviceaccount", "sa":
+		if cache.ServiceAccounts() == nil {
+			return nil, fmt.Errorf("forbidden: serviceaccounts")
+		}
+		return cache.ServiceAccounts().ServiceAccounts(namespace).Get(name)
+	case "limitranges", "limitrange":
+		if cache.LimitRanges() == nil {
+			return nil, fmt.Errorf("forbidden: limitranges")
+		}
+		return cache.LimitRanges().LimitRanges(namespace).Get(name)
+	case "roles", "role":
+		if cache.Roles() == nil {
+			return nil, fmt.Errorf("forbidden: roles")
+		}
+		return cache.Roles().Roles(namespace).Get(name)
+	case "clusterroles", "clusterrole":
+		if cache.ClusterRoles() == nil {
+			return nil, fmt.Errorf("forbidden: clusterroles")
+		}
+		return cache.ClusterRoles().Get(name)
+	case "rolebindings", "rolebinding":
+		if cache.RoleBindings() == nil {
+			return nil, fmt.Errorf("forbidden: rolebindings")
+		}
+		return cache.RoleBindings().RoleBindings(namespace).Get(name)
+	case "clusterrolebindings", "clusterrolebinding":
+		if cache.ClusterRoleBindings() == nil {
+			return nil, fmt.Errorf("forbidden: clusterrolebindings")
+		}
+		return cache.ClusterRoleBindings().Get(name)
 	default:
 		return nil, ErrUnknownKind
 	}

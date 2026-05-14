@@ -1,6 +1,9 @@
 // Topology types matching the Go backend
 
-// Per-resource-type RBAC permissions (matches backend k8s.ResourcePermissions)
+// Per-resource-type RBAC permissions. Field names MUST match the backend
+// JSON keys exactly — see ResourcePermissions in internal/k8s/capabilities.go.
+// A reflection-based Go test enforces the struct↔probe↔informer alignment;
+// this TS interface is the third leg and is kept in sync by hand.
 export interface ResourcePermissions {
   pods: boolean
   services: boolean
@@ -12,18 +15,25 @@ export interface ResourcePermissions {
   configMaps: boolean
   secrets: boolean
   events: boolean
-  pvcs: boolean
+  persistentVolumeClaims: boolean
   nodes: boolean
   namespaces: boolean
   jobs: boolean
   cronJobs: boolean
-  hpas: boolean
-  gateways: boolean
-  httpRoutes: boolean
+  horizontalPodAutoscalers: boolean
+  persistentVolumes: boolean
+  storageClasses: boolean
+  podDisruptionBudgets: boolean
+  networkPolicies: boolean
+  serviceAccounts: boolean
   roles: boolean
   clusterRoles: boolean
   roleBindings: boolean
   clusterRoleBindings: boolean
+  limitRanges: boolean
+  gateways: boolean
+  httpRoutes: boolean
+  verticalPodAutoscalers: boolean
 }
 
 // Feature capabilities based on RBAC permissions

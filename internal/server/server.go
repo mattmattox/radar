@@ -657,30 +657,19 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Include resource permissions if cache is available
-	if cache := k8s.GetResourceCache(); cache != nil {
-		enabled := cache.GetEnabledResources()
-		caps.Resources = &k8s.ResourcePermissions{
-			Pods:                     enabled["pods"],
-			Services:                 enabled["services"],
-			Deployments:              enabled["deployments"],
-			DaemonSets:               enabled["daemonsets"],
-			StatefulSets:             enabled["statefulsets"],
-			ReplicaSets:              enabled["replicasets"],
-			Ingresses:                enabled["ingresses"],
-			ConfigMaps:               enabled["configmaps"],
-			Secrets:                  enabled["secrets"],
-			Events:                   enabled["events"],
-			PersistentVolumeClaims:   enabled["persistentvolumeclaims"],
-			Nodes:                    enabled["nodes"],
-			Namespaces:               enabled["namespaces"],
-			Jobs:                     enabled["jobs"],
-			CronJobs:                 enabled["cronjobs"],
-			HorizontalPodAutoscalers: enabled["horizontalpodautoscalers"],
-			Roles:                    enabled["roles"],
-			ClusterRoles:             enabled["clusterroles"],
-			RoleBindings:             enabled["rolebindings"],
-			ClusterRoleBindings:      enabled["clusterrolebindings"],
+	// Resource permissions come straight from the cached probe result, which
+	// already populates every field of ResourcePermissions via field pointers
+	// in resourceProbeTargets(). Using GetEnabledResources() instead would
+	// silently drop fields that have no typed informer (Gateway, HTTPRoute,
+	// VerticalPodAutoscaler — served via the dynamic cache) and any newly
+	// added struct field that the hand-mapped block here didn't cover. If
+	// the probe hasn't run yet (cache initialized but probe never invoked),
+	// kick one off so the response isn't blank on startup.
+	if result := k8s.GetCachedPermissionResult(); result != nil {
+		caps.Resources = result.Perms
+	} else if k8s.GetResourceCache() != nil {
+		if result := k8s.CheckResourcePermissions(r.Context()); result != nil {
+			caps.Resources = result.Perms
 		}
 	}
 

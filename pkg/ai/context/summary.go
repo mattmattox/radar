@@ -12,6 +12,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // ResourceSummary is the typed output for Summary-level minification.
@@ -107,10 +108,50 @@ func summarize(obj runtime.Object) (*ResourceSummary, error) {
 	case *corev1.Namespace:
 		s = summarizeNamespace(o)
 	default:
-		return nil, fmt.Errorf("unsupported type for summary: %T", obj)
+		// Generic fallback: any typed K8s object exposes name / namespace /
+		// kind / age via the metav1.Object + runtime.Object interfaces.
+		// Returning a usable summary keeps MCP list_resources working for
+		// kinds we haven't written an explicit summarizer for (PV,
+		// StorageClass, NetworkPolicy, ServiceAccount, LimitRange,
+		// PodDisruptionBudget, VPA, RBAC kinds, …) — better than erroring
+		// out and breaking the whole list. Add an explicit case above when
+		// richer per-kind output is genuinely worth maintaining.
+		s = summarizeGeneric(obj)
 	}
 	applyLifecycleFields(s, obj)
 	return s, nil
+}
+
+// summarizeGeneric builds a minimal ResourceSummary from the metadata any
+// typed K8s object exposes via the metav1.Object interface. Used as the
+// default for kinds without a hand-written summarizer.
+func summarizeGeneric(obj runtime.Object) *ResourceSummary {
+	s := &ResourceSummary{}
+	if kinder, ok := obj.(interface{ GetObjectKind() schema.ObjectKind }); ok {
+		s.Kind = kinder.GetObjectKind().GroupVersionKind().Kind
+	}
+	if s.Kind == "" {
+		// TypeMeta isn't populated on informer-cached objects. Fall back to
+		// the Go type name with the package qualifier stripped (e.g.
+		// "*v1.NetworkPolicy" → "NetworkPolicy").
+		typeName := fmt.Sprintf("%T", obj)
+		if i := strings.LastIndex(typeName, "."); i >= 0 {
+			typeName = typeName[i+1:]
+		}
+		s.Kind = typeName
+	}
+	mo, ok := obj.(interface {
+		GetName() string
+		GetNamespace() string
+		GetCreationTimestamp() metav1.Time
+	})
+	if !ok {
+		return s
+	}
+	s.Name = mo.GetName()
+	s.Namespace = mo.GetNamespace()
+	s.Age = age(mo.GetCreationTimestamp().Time)
+	return s
 }
 
 // applyLifecycleFields populates Terminating + Finalizers on a

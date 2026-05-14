@@ -5,6 +5,10 @@ metadata:
   name: {{ include "radar.fullname" . }}
   labels:
     {{- include "radar.labels" . | nindent 4 }}
+# The resource list below must stay aligned with ResourcePermissions in
+# internal/k8s/capabilities.go — Radar advertises support for everything that
+# struct declares, and operators expect the chart's default ClusterRole to
+# match the README's "Supported Resources" table.
 rules:
   # Core resources (read-only)
   - apiGroups: [""]
@@ -15,6 +19,7 @@ rules:
       - events
       - namespaces
       - nodes
+      - persistentvolumes
       - persistentvolumeclaims
       - serviceaccounts
       - endpoints
@@ -24,6 +29,12 @@ rules:
       - policy
     resources:
       - poddisruptionbudgets
+    verbs: ["get", "list", "watch"]
+
+  # Storage classes (cluster-scoped, separate API group)
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
     verbs: ["get", "list", "watch"]
 
   {{- if .Values.rbac.helm }}
@@ -330,6 +341,11 @@ rules:
   {{- end }}
   {{- if .Values.rbac.crdGroups.velero }}
   - apiGroups: ["velero.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- if .Values.rbac.crdGroups.verticalPodAutoscaler }}
+  - apiGroups: ["autoscaling.k8s.io"]
     resources: ["*"]
     verbs: ["get", "list", "watch"]
   {{- end }}

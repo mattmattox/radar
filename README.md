@@ -312,6 +312,8 @@ No auth by default (local use). See the **[Authentication Guide](docs/authentica
 
 Radar auto-discovers any CRD in your cluster. Popular tools get [dedicated integrations](docs/integrations.md) with topology edges, detail views, and AI summaries.
 
+**Default chart RBAC** covers every core kind listed below — Workloads, Networking (including NetworkPolicies and PodDisruptionBudgets), Configuration, Storage (PersistentVolumes, PersistentVolumeClaims, StorageClasses), Autoscaling (HorizontalPodAutoscalers; VerticalPodAutoscalers via `rbac.crdGroups.verticalPodAutoscaler`), and Cluster (ServiceAccounts, LimitRanges, Nodes, Namespaces, Events). RBAC objects (Roles, ClusterRoles, RoleBindings, ClusterRoleBindings) are opt-in via `rbac.viewRBAC=true`. **CRD-based integrations** (Gateway API, ArgoCD, FluxCD, cert-manager, etc.) need both the CRD installed in your cluster *and* read access granted — most groups are default-on under `rbac.crdGroups.<name>`; check `values.yaml` or add custom rules via `rbac.additionalRules`.
+
 | Category | Resources |
 |----------|-----------|
 | **Workloads** | Deployments, DaemonSets, StatefulSets, ReplicaSets, Pods, Jobs, CronJobs |
