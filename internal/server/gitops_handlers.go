@@ -180,6 +180,156 @@ func (s *Server) handleGitOpsInsights(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, insight)
 }
 
+// managedScanKinds is the set of K8s kinds /api/gitops/managed-resources
+// iterates when discovering resources tagged with Argo's tracking
+// annotation/label.
+//
+// Scope: controller-level kinds Argo CD typically declares directly in
+// manifests (Deployments, Services, ConfigMaps, RBAC, …). Pods and
+// ReplicaSets are deliberately excluded — they're created by their owning
+// workload (Deployment → ReplicaSet → Pod) and don't carry Argo's
+// tracking annotation. Including them would scan thousands of cache
+// entries per request without adding signal.
+//
+// Subtree expansion (showing the Pods owned by a matched Deployment) is
+// a future enhancement that would walk the topology graph rather than the
+// flat annotation index — keep that out of the hot per-request scan.
+//
+// CRDs managed by Argo Apps aren't iterated here. Real-world need would
+// drive adding e.g. cert-manager Certificates, KEDA ScaledObjects, etc.
+type managedScanKind struct {
+	Kind  string
+	Group string
+}
+
+var managedScanKinds = []managedScanKind{
+	// Workloads
+	{Kind: "Deployment", Group: "apps"},
+	{Kind: "StatefulSet", Group: "apps"},
+	{Kind: "DaemonSet", Group: "apps"},
+	{Kind: "Job", Group: "batch"},
+	{Kind: "CronJob", Group: "batch"},
+	// Core
+	{Kind: "Service", Group: ""},
+	{Kind: "ConfigMap", Group: ""},
+	{Kind: "Secret", Group: ""},
+	{Kind: "ServiceAccount", Group: ""},
+	{Kind: "PersistentVolumeClaim", Group: ""},
+	{Kind: "Namespace", Group: ""},
+	// Networking
+	{Kind: "Ingress", Group: "networking.k8s.io"},
+	{Kind: "NetworkPolicy", Group: "networking.k8s.io"},
+	// Autoscaling
+	{Kind: "HorizontalPodAutoscaler", Group: "autoscaling"},
+	// Policy
+	{Kind: "PodDisruptionBudget", Group: "policy"},
+	// RBAC
+	{Kind: "Role", Group: "rbac.authorization.k8s.io"},
+	{Kind: "RoleBinding", Group: "rbac.authorization.k8s.io"},
+	{Kind: "ClusterRole", Group: "rbac.authorization.k8s.io"},
+	{Kind: "ClusterRoleBinding", Group: "rbac.authorization.k8s.io"},
+}
+
+// handleGitOpsManagedResources discovers resources in THIS cluster that are
+// managed by the named Argo Application, returning them as a synthetic
+// ResourceTree the SPA can render with the existing GitOpsTreeGraph
+// component.
+//
+// The endpoint is the destination-side companion to /api/gitops/tree —
+// the latter is controller-side (walks live ownership from the Application
+// CRD outward, only works when controller + workloads share a cluster);
+// this one is destination-side (matches by Argo's tracking annotation,
+// works regardless of where the controller lives). Used by Radar Hub's
+// fleet GitOps detail page to render the workload graph for cross-cluster
+// Argo apps; also useful for single-cluster Radar users connected to a
+// destination cluster who want to see "what's managed here by app X".
+//
+// Query params:
+//   - app       (required): Argo Application name. Resources are matched
+//               when annotation argocd.argoproj.io/tracking-id starts with
+//               "<app>:" OR label app.kubernetes.io/instance=<app>.
+//   - namespace (optional): restrict the synthetic root's display ns +
+//               filter matched resources to this namespace.
+func (s *Server) handleGitOpsManagedResources(w http.ResponseWriter, r *http.Request) {
+	if !s.requireConnected(w) {
+		return
+	}
+	app := strings.TrimSpace(r.URL.Query().Get("app"))
+	if app == "" {
+		s.writeError(w, http.StatusBadRequest, "app query parameter is required")
+		return
+	}
+	nsFilter := strings.TrimSpace(r.URL.Query().Get("namespace"))
+
+	allowedNamespaces := s.getUserNamespaces(r, nil)
+	if noNamespaceAccess(allowedNamespaces) {
+		// Caller has no namespace access — return a tree with just the
+		// synthetic root + a warning. Mirrors handleGitOpsTree's behavior
+		// rather than 403'ing so the SPA can render an honest empty state.
+		empty := gitopstree.BuildManagedTree(app, nsFilter, nil)
+		empty.Warnings = []string{"You do not have access to any namespace; managed resources are filtered out."}
+		s.writeJSON(w, empty)
+		return
+	}
+
+	cache := k8s.GetResourceCache()
+	if cache == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "Resource cache not available")
+		return
+	}
+
+	// allowedNamespaces semantics (mirrors getUserNamespaces' contract):
+	//   nil  → no per-namespace filter applies (caller is admin / auth off)
+	//   []   → fail-closed, no namespace access (handled above via
+	//          noNamespaceAccess)
+	//   list → restrict to these
+	// Build the lookup set only when we have a real allowlist; nil means
+	// "skip the membership check" so namespaced resources don't get
+	// silently filtered when the caller is unrestricted.
+	var allowedSet map[string]struct{}
+	if allowedNamespaces != nil {
+		allowedSet = make(map[string]struct{}, len(allowedNamespaces))
+		for _, ns := range allowedNamespaces {
+			allowedSet[ns] = struct{}{}
+		}
+	}
+
+	matched := make([]*unstructured.Unstructured, 0, 32)
+	for _, mk := range managedScanKinds {
+		// Empty namespace = list across all namespaces from the cache. We
+		// filter to nsFilter + RBAC inline below so we don't need per-ns
+		// queries.
+		objs, err := cache.ListDynamicWithGroup(r.Context(), mk.Kind, "", mk.Group)
+		if err != nil {
+			// One kind missing (e.g. CRD not installed, or a probe denial
+			// on an RBAC-tight cluster) is non-fatal — the rest of the
+			// scan still produces useful output.
+			continue
+		}
+		for _, obj := range objs {
+			ns := obj.GetNamespace()
+			if nsFilter != "" && ns != nsFilter {
+				continue
+			}
+			// Cluster-scoped resources (ns == "") pass the RBAC gate if any
+			// namespace is allowed — the existing canAccessGitOpsRef logic
+			// elsewhere handles cluster-scoped kinds the same way.
+			if ns != "" && allowedSet != nil {
+				if _, ok := allowedSet[ns]; !ok {
+					continue
+				}
+			}
+			if !gitopstree.ArgoTrackingMatches(obj, app) {
+				continue
+			}
+			matched = append(matched, obj)
+		}
+	}
+
+	tree := gitopstree.BuildManagedTree(app, nsFilter, matched)
+	s.writeJSON(w, tree)
+}
+
 func (s *Server) filterGitOpsTreeForUser(r *http.Request, req *gitopsRequest, tree *gitopstree.ResourceTree) *gitopstree.ResourceTree {
 	if tree == nil || auth.UserFromContext(r.Context()) == nil {
 		return tree

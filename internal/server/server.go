@@ -258,6 +258,7 @@ func (s *Server) setupRoutes() {
 			r.Get("/topology", s.handleTopology)
 			r.Get("/gitops/tree/{kind}/{namespace}/{name}", s.handleGitOpsTree)
 			r.Get("/gitops/insights/{kind}/{namespace}/{name}", s.handleGitOpsInsights)
+			r.Get("/gitops/managed-resources", s.handleGitOpsManagedResources)
 			r.Get("/namespaces", s.handleNamespaces)
 			r.Get("/api-resources", s.handleAPIResources)
 			r.Get("/resource-counts", s.handleResourceCounts)
