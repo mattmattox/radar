@@ -180,8 +180,13 @@ func isRouteKind(kindLower string) bool {
 // edge lookups; callers with many GetRelationships calls against the same
 // topology should use GetRelationshipsWithIndex with a shared
 // RelationshipsIndex instead.
+//
+// Prefer GetRelationshipsWithObject when the resource has already been fetched
+// by the caller — the kind/name lookup used inside this entry point is
+// group-blind and can return the wrong typed object for CRDs whose plural
+// collides with a core resource (e.g. Knative Service vs core Service).
 func GetRelationships(kind, namespace, name string, topo *Topology, provider ResourceProvider, dp DynamicProvider) *Relationships {
-	return GetRelationshipsWithIndex(kind, namespace, name, topo, provider, dp, nil)
+	return GetRelationshipsWithObject(kind, namespace, name, nil, topo, provider, dp, nil)
 }
 
 // GetRelationshipsWithIndex is the indexed variant of GetRelationships. When
@@ -190,7 +195,26 @@ func GetRelationships(kind, namespace, name string, topo *Topology, provider Res
 // exactly. Callers that issue many per-resource queries against the same
 // topology (T6 BuildResourceContext, T12 get_neighborhood) should build idx
 // once and reuse it.
+//
+// Prefer GetRelationshipsWithObject when the resource has already been fetched —
+// see the doc on GetRelationships for the kind/group collision rationale.
 func GetRelationshipsWithIndex(kind, namespace, name string, topo *Topology, provider ResourceProvider, dp DynamicProvider, idx *RelationshipsIndex) *Relationships {
+	return GetRelationshipsWithObject(kind, namespace, name, nil, topo, provider, dp, idx)
+}
+
+// GetRelationshipsWithObject is the canonical entry point. When obj is non-nil
+// it is used directly for Pod spec extraction (ServiceAccountName, NodeName)
+// and ManagedBy synthesis, eliminating the group-blind kind/name lookup
+// inside lookupObjectMetadata. Callers that have already fetched the resource
+// — REST GET, MCP get_resource — MUST pass obj here, otherwise CRDs whose
+// plural collides with a core resource (e.g. Knative serving.knative.dev/Service
+// vs core/v1 Service) silently surface the wrong managed-by ref.
+//
+// obj may be any typed K8s object or *unstructured.Unstructured (both satisfy
+// metav1.Object and the *corev1.Pod type assertion remains nil-safe). When
+// obj is nil, behavior matches the pre-refactor path: lookupObjectMetadata
+// is called, with the group-collision risk noted above.
+func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Topology, provider ResourceProvider, dp DynamicProvider, idx *RelationshipsIndex) *Relationships {
 	if topo == nil {
 		return nil
 	}
@@ -399,7 +423,15 @@ func GetRelationshipsWithIndex(kind, namespace, name string, topo *Topology, pro
 
 	// Hygiene fields (T2): ServiceAccount + Node from Pod.Spec, ManagedBy from
 	// labels/annotations on the queried object (or topology owner chain fallback).
-	queriedObj := lookupObjectMetadata(kindLower, namespace, name, provider, dp)
+	//
+	// Use the caller-provided obj when available — it is the authoritative
+	// resource (already disambiguated by group at fetch time) and avoids the
+	// group-blind kind/name lookup. Fall back to lookupObjectMetadata only
+	// when obj is nil (back-compat path).
+	queriedObj := obj
+	if queriedObj == nil {
+		queriedObj = lookupObjectMetadata(kindLower, namespace, name, provider, dp)
+	}
 	if pod, ok := queriedObj.(*corev1.Pod); ok {
 		if sa := pod.Spec.ServiceAccountName; sa != "" {
 			saRef := ResourceRef{Kind: "ServiceAccount", Namespace: namespace, Name: sa}

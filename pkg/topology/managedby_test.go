@@ -248,6 +248,59 @@ func TestSynthesizeManagedBy_CycleSafe(t *testing.T) {
 	}
 }
 
+// TestGetRelationshipsWithObject_KindCollision_DisambiguatesByObject pins the
+// reviewer's blocker on PR #720: a CRD whose plural collides with a core
+// resource (Knative serving.knative.dev/Service vs core/v1 Service) MUST
+// surface ManagedBy from the CRD's annotations, not from a co-named core
+// Service that happens to share the namespace/name. The old kind/name-based
+// lookup picked the core Service (no annotation) and silently dropped the
+// chip; the new caller-passes-obj path uses the authoritative resource.
+func TestGetRelationshipsWithObject_KindCollision_DisambiguatesByObject(t *testing.T) {
+	knativeGVR := schema.GroupVersionResource{Group: "serving.knative.dev", Version: "v1", Resource: "services"}
+	knativeSvc := &unstructured.Unstructured{}
+	knativeSvc.SetGroupVersionKind(schema.GroupVersionKind{Group: "serving.knative.dev", Version: "v1", Kind: "Service"})
+	knativeSvc.SetNamespace("prod")
+	knativeSvc.SetName("api")
+	knativeSvc.SetAnnotations(map[string]string{
+		argoTrackingIDAnnotation: "argocd_storefront:serving.knative.dev/Service:prod/api",
+	})
+
+	// Core Service shares ns/name and has NO managed-by signal. With the
+	// old kind/name-only lookup path this was what lookupTypedMetadata
+	// returned first, masking the Knative annotation.
+	coreSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "api"}}
+	provider := &stubProvider{services: []*corev1.Service{coreSvc}}
+	dp := &stubDP{
+		gvr: map[string]schema.GroupVersionResource{
+			"service":  knativeGVR,
+			"services": knativeGVR,
+		},
+		obj: map[string]*unstructured.Unstructured{"prod/api": knativeSvc},
+	}
+	topo := &Topology{Nodes: []Node{{ID: "service/prod/api", Kind: KindService, Name: "api"}}}
+
+	// New canonical path: caller passes the authoritative CRD object.
+	rel := GetRelationshipsWithObject("Service", "prod", "api", knativeSvc, topo, provider, dp, nil)
+	if rel == nil || len(rel.ManagedBy) != 1 {
+		t.Fatalf("want 1 ManagedBy ref via caller-passed CRD obj, got %+v", rel)
+	}
+	got := rel.ManagedBy[0]
+	if got.Kind != "Application" || got.Namespace != "argocd" || got.Name != "storefront" {
+		t.Errorf("want Argo Application/argocd/storefront from CRD annotation, got %+v", got)
+	}
+
+	// Back-compat path (obj=nil): the fallback hits the core Service first
+	// via lookupTypedMetadata and produces no ManagedBy. This pins the
+	// collision behavior — callers that want correctness MUST migrate to
+	// GetRelationshipsWithObject. If this assertion ever flips, the
+	// fallback path has been made group-aware and the migration note in
+	// the back-compat doc should be revisited.
+	relFallback := GetRelationshipsWithIndex("Service", "prod", "api", topo, provider, dp, nil)
+	if relFallback != nil && len(relFallback.ManagedBy) > 0 {
+		t.Errorf("back-compat path unexpectedly produced ManagedBy from CRD annotation: %+v — fallback should still be group-blind; if this now works, update the doc on GetRelationships", relFallback.ManagedBy)
+	}
+}
+
 // TestGetRelationships_CRD_ManagedByPreserved is the regression for the
 // silent-disappear bug the reviewer flagged on #720: a CRD resource (e.g.
 // cert-manager Certificate) with an ArgoCD tracking-id annotation must still

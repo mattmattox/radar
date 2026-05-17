@@ -16,11 +16,12 @@ import (
 // inspects for Pod hygiene fields and ManagedBy synthesis. Other methods
 // return empty slices so calls fall through cleanly.
 type stubProvider struct {
-	pods []*corev1.Pod
+	pods     []*corev1.Pod
+	services []*corev1.Service
 }
 
-func (s *stubProvider) Pods() ([]*corev1.Pod, error)             { return s.pods, nil }
-func (s *stubProvider) Services() ([]*corev1.Service, error)     { return nil, nil }
+func (s *stubProvider) Pods() ([]*corev1.Pod, error)         { return s.pods, nil }
+func (s *stubProvider) Services() ([]*corev1.Service, error) { return s.services, nil }
 func (s *stubProvider) Deployments() ([]*appsv1.Deployment, error) {
 	return nil, nil
 }
