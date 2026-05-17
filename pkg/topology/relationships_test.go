@@ -18,6 +18,7 @@ import (
 type stubProvider struct {
 	pods     []*corev1.Pod
 	services []*corev1.Service
+	pdbs     []*policyv1.PodDisruptionBudget
 }
 
 func (s *stubProvider) Pods() ([]*corev1.Pod, error)         { return s.pods, nil }
@@ -41,7 +42,7 @@ func (s *stubProvider) HorizontalPodAutoscalers() ([]*autoscalingv2.HorizontalPo
 	return nil, nil
 }
 func (s *stubProvider) PodDisruptionBudgets() ([]*policyv1.PodDisruptionBudget, error) {
-	return nil, nil
+	return s.pdbs, nil
 }
 func (s *stubProvider) NetworkPolicies() ([]*networkingv1.NetworkPolicy, error) { return nil, nil }
 func (s *stubProvider) Nodes() ([]*corev1.Node, error)                          { return nil, nil }

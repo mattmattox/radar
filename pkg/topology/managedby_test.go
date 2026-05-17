@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -245,6 +246,39 @@ func TestSynthesizeManagedBy_CycleSafe(t *testing.T) {
 	// Either ref is acceptable — the test only asserts termination + a non-nil ref.
 	if len(got) != 1 {
 		t.Fatalf("want 1 manager ref under cycle, got %d (%+v)", len(got), got)
+	}
+}
+
+// TestGetRelationships_BackCompat_PDBManagedByPreserved pins the regression
+// Bugbot flagged on the original T2 commit: kinds with ResourceProvider
+// methods but absent from the typed switch (PDB, NetworkPolicy, HPA, PVC, PV,
+// Node) dropped the GitOps chip even though the old client-side
+// detectGitOpsOwner worked on any kind. Production callers now pass obj
+// directly via GetRelationshipsWithObject so this only matters for the
+// back-compat path — but the typed switch should still cover them so the
+// back-compat path matches old-UI parity. PDB is the canonical case since it
+// connects via EdgeProtects (not EdgeManages), so the topology-walk fallback
+// also can't recover the chip.
+func TestGetRelationships_BackCompat_PDBManagedByPreserved(t *testing.T) {
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "prod",
+			Name:      "api-pdb",
+			Annotations: map[string]string{
+				argoTrackingIDAnnotation: "argocd_storefront:policy/PodDisruptionBudget:prod/api-pdb",
+			},
+		},
+	}
+	provider := &stubProvider{pdbs: []*policyv1.PodDisruptionBudget{pdb}}
+	topo := &Topology{Nodes: []Node{{ID: "poddisruptionbudget/prod/api-pdb", Kind: KindPDB, Name: "api-pdb"}}}
+
+	rel := GetRelationships("PodDisruptionBudget", "prod", "api-pdb", topo, provider, nil)
+	if rel == nil || len(rel.ManagedBy) != 1 {
+		t.Fatalf("want 1 ManagedBy ref for PDB with Argo annotation via back-compat path, got %+v", rel)
+	}
+	got := rel.ManagedBy[0]
+	if got.Kind != "Application" || got.Namespace != "argocd" || got.Name != "storefront" {
+		t.Errorf("want Argo Application/argocd/storefront from PDB annotation, got %+v", got)
 	}
 }
 
