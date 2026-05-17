@@ -2,12 +2,16 @@ export { GitOpsStatusBadge, SyncStatusBadge, HealthStatusBadge } from './GitOpsS
 export { SyncCountdown, IntervalDisplay } from './SyncCountdown'
 export { ManagedResourcesList, InventoryCount } from './ManagedResourcesList'
 export { GitOpsActions, SyncButton, SuspendToggle } from './GitOpsActions'
-export { GitOpsTreeGraph } from './tree'
+export { GitOpsTreeGraph, mergeGitOpsTrees } from './tree'
 export { gitOpsFilterSet, hasGitOpsTreeFilters, matchesGitOpsTreeFilters } from './tree'
 export type { GitOpsTreeFilters, GitOpsTreePreset } from './tree'
 export * from './insights'
 export {
   GitOpsTableView,
+  GitOpsFilterSection,
+  GitOpsFacetButton,
+  GitOpsIconToggle,
+  shortClusterName,
   summarizeGitOpsRows,
   normalizeArgoApplication,
   normalizeFluxKustomization,
@@ -26,6 +30,21 @@ export type {
   FleetDestinationStamp,
   FleetDestinationMatch,
 } from './GitOpsTableView'
+export { GitOpsGraphFilterRail, buildTreeFacets, toggleSet } from './GitOpsGraphFilterRail'
+export {
+  formatGitOpsSourceUrl,
+  formatGitOpsDestination,
+  gitOpsInsightChangeKey,
+  parseArgoRollbackID,
+  describeGitOpsTerminating,
+  getGitOpsResourceStatus,
+  getGitOpsTool,
+} from './detail-helpers'
+export { SyncOptionsDialog } from './SyncOptionsDialog'
+export type { SyncOptionsDialogProps } from './SyncOptionsDialog'
+export { RollbackDialog } from './RollbackDialog'
+export type { RollbackDialogProps } from './RollbackDialog'
+export type { GitOpsGraphFilterRailProps, GitOpsTreeFacets } from './GitOpsGraphFilterRail'
 export { GitOpsDetailLayout } from './GitOpsDetailLayout'
 export type {
   GitOpsDetailLayoutProps,

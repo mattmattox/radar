@@ -1,13 +1,26 @@
 import { useState, useEffect } from 'react'
-import { DialogPortal } from '@skyhook-io/k8s-ui'
 import { History, Loader2 } from 'lucide-react'
+
+import { DialogPortal } from '../ui/DialogPortal'
 import { Tooltip } from '../ui/Tooltip'
 
-interface RollbackDialogProps {
+// =============================================================================
+// RollbackDialog — Argo CD Application rollback confirmation. Shared
+// between per-cluster Radar (OSS web/) and Radar Hub's fleet GitOps
+// detail page. Presentational only; caller mints the historyId/revision
+// from the clicked GitOpsHistoryItem and handles the POST to
+// /api/argo/applications/{ns}/{name}/rollback in onConfirm.
+//
+// Defaults are conservative: no prune (avoid surprise deletions of
+// resources added after the target revision), no dry-run (default is to
+// actually roll back). Operators wanting a preview check Dry Run; the
+// result lands in the Activity tab.
+// =============================================================================
+
+export interface RollbackDialogProps {
   open: boolean
-  // Identifies the target history entry. Caller provides the user-visible
-  // revision (mono SHA / tag) and the API id; Argo uses id, the user reads
-  // the revision.
+  // Caller provides the user-visible revision (mono SHA / tag) and the
+  // history id — Argo's API uses the id, the user reads the revision.
   appLabel: string
   revision: string
   historyId?: string
@@ -16,9 +29,6 @@ interface RollbackDialogProps {
   onConfirm: (opts: { prune: boolean; dryRun: boolean }) => void
 }
 
-// Confirms an Argo Application rollback. Defaults are conservative — no
-// prune (avoid surprise deletions), no dry run (just do it). Operators
-// who want to preview check Dry Run; the result lands in Activity.
 export function RollbackDialog({ open, appLabel, revision, historyId, pending, onCancel, onConfirm }: RollbackDialogProps) {
   const [prune, setPrune] = useState(false)
   const [dryRun, setDryRun] = useState(false)

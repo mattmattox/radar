@@ -1,20 +1,31 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { clsx } from 'clsx'
-import { CheckCircle2, CircleAlert, CircleDot, GitBranch, HeartPulse, LayoutGrid, List, Loader2, RefreshCw, Search, Tag, Trash2 } from 'lucide-react'
 import yaml from 'yaml'
 import {
   GitOpsActivityInsightView,
   GitOpsChangesView,
   GitOpsDetailLayout,
+  GitOpsGraphFilterRail,
+  GitOpsTableView as SharedGitOpsTableView,
   GitOpsTreeGraph,
-  HealthStatusBadge,
-  SyncStatusBadge,
-  formatCompactAge,
-  formatRelativeAgeTime,
+  RollbackDialog,
+  SyncOptionsDialog,
+  buildFluxSourceUrlMap,
+  buildTreeFacets,
+  describeGitOpsTerminating,
+  formatGitOpsDestination,
+  formatGitOpsSourceUrl,
+  getGitOpsResourceStatus,
+  getGitOpsTool,
+  gitOpsInsightChangeKey,
   initNavigationMap,
   kindToPlural,
+  normalizeArgoApplication,
+  normalizeFluxHelmRelease,
+  normalizeFluxKustomization,
+  parseArgoRollbackID,
+  toggleSet,
   type APIResource,
   type ArgoActionHandlers,
   type FluxActionHandlers,
@@ -22,17 +33,12 @@ import {
   type GitOpsDetailTab,
   type GitOpsResourceTree,
   type GitOpsInsightRef,
+  type GitOpsRow,
   type GitOpsTreeFilters,
   type GitOpsTreeRef,
   type GitOpsTreePreset,
   type SelectedResource,
 } from '@skyhook-io/k8s-ui'
-import {
-  argoStatusToGitOpsStatus,
-  fluxConditionsToGitOpsStatus,
-  type FluxCondition,
-  type GitOpsStatus,
-} from '@skyhook-io/k8s-ui/types/gitops'
 import { useToast } from '../ui/Toast'
 
 import {
@@ -55,10 +61,7 @@ import {
 import { useAPIResources } from '../../api/apiResources'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
 import { useRegisterShortcut } from '../../hooks/useKeyboardShortcuts'
-import { Tooltip } from '../ui/Tooltip'
 import { CodeViewer } from '../ui/CodeViewer'
-import { SyncOptionsDialog } from './SyncOptionsDialog'
-import { RollbackDialog } from './RollbackDialog'
 import type { GitOpsHistoryItem } from '@skyhook-io/k8s-ui'
 
 const GITOPS_KINDS: APIResource[] = [
@@ -80,44 +83,6 @@ interface ResourceCountsResponse {
   forbidden?: string[]
 }
 
-type GitOpsMode = 'applications' | 'sources' | 'projects' | 'alerts'
-type GitOpsViewMode = 'table' | 'tiles'
-type SortKey = 'name' | 'health' | 'sync' | 'lastSync' | 'project'
-
-interface GitOpsRow {
-  id: string
-  mode: GitOpsMode
-  tool: 'argo' | 'flux'
-  kindName: string
-  kind: string
-  group: string
-  name: string
-  namespace: string
-  project: string
-  labels: Record<string, string>
-  sync: string
-  health: string
-  suspended: boolean
-  repository: string
-  targetRevision: string
-  path: string
-  chart: string
-  destination: string
-  destinationNamespace: string
-  createdAt: string
-  lastSync: string
-  autoSync: boolean
-  // True when metadata.deletionTimestamp is set. Drives the small
-  // [Terminating] indicator on the row + on the detail page header,
-  // so users can spot zombie resources without having to drill in.
-  terminating: boolean
-  // RFC3339 timestamp from metadata.deletionTimestamp. Used in the
-  // fleet's Last Sync column to render "Pending {N}{unit} ago" instead of the
-  // stale last-reconcile time when the row is Terminating.
-  terminationStartedAt?: string
-  raw: any
-}
-
 interface GitOpsViewProps {
   namespaces: string[]
   onOpenResource: (resource: SelectedResource) => void
@@ -133,7 +98,6 @@ export function GitOpsView({ namespaces, onOpenResource }: GitOpsViewProps) {
 
 function GitOpsTableView({ namespaces }: { namespaces: string[] }) {
   const navigate = useNavigate()
-  const searchInputRef = useRef<HTMLInputElement>(null)
   const namespacesParam = namespaces.join(',')
   const { data: apiResources, isLoading: apiResourcesLoading } = useAPIResources()
 
@@ -141,38 +105,9 @@ function GitOpsTableView({ namespaces }: { namespaces: string[] }) {
     initNavigationMap([...(apiResources ?? []), ...GITOPS_KINDS])
   }, [apiResources])
 
-  const [mode, setMode] = useState<GitOpsMode>('applications')
-  const [viewMode, setViewMode] = useState<GitOpsViewMode>('table')
-  const [search, setSearch] = useState('')
-  const [syncFilters, setSyncFilters] = useState<Set<string>>(new Set())
-  const [healthFilters, setHealthFilters] = useState<Set<string>>(new Set())
-  const [projectFilters, setProjectFilters] = useState<Set<string>>(new Set())
-  const [namespaceFilters, setNamespaceFilters] = useState<Set<string>>(new Set())
-  const [labelFilters, setLabelFilters] = useState<Set<string>>(new Set())
-  const [showLabelsDropdown, setShowLabelsDropdown] = useState(false)
-  const [labelSearch, setLabelSearch] = useState('')
-  const [automationFilter, setAutomationFilter] = useState<'all' | 'auto' | 'manual' | 'suspended'>('all')
-  // Lifecycle filter: surface zombies (terminating but stuck) and let the
-  // user filter them in/out. Default is 'all' so the fleet doesn't hide
-  // problem resources by accident; 'terminating' focuses to investigate
-  // stuck cleanups; 'active' hides them when the user wants to ignore
-  // resources that are on their way out.
-  const [lifecycleFilter, setLifecycleFilter] = useState<'all' | 'terminating' | 'active'>('all')
-  const [sortKey, setSortKey] = useState<SortKey>('health')
-
-  useRegisterShortcut({
-    id: 'gitops-focus-search',
-    keys: '/',
-    category: 'GitOps',
-    description: 'Focus GitOps search',
-    scope: 'gitops',
-    handler: (event) => {
-      event.preventDefault()
-      searchInputRef.current?.focus()
-    },
-    allowInInputs: false,
-  })
-
+  // Counts come from radar's /api/resource-counts, kind-filtered to the
+  // GitOps set. The extracted GitOpsTableView reads them for the
+  // Scope-section mode tabs + the empty-state check.
   const countsQuery = useQuery({
     queryKey: ['gitops-resource-counts', namespacesParam],
     queryFn: async () => {
@@ -184,20 +119,17 @@ function GitOpsTableView({ namespaces }: { namespaces: string[] }) {
     refetchInterval: 60_000,
   })
 
-  const applicationQuery = useQuery({
-    queryKey: ['gitops-applications-main', namespaces, apiResources?.length ?? 0],
+  // Row-producing fetch: Applications + Kustomizations + HelmReleases,
+  // plus the Flux source CRs (GitRepository / HelmRepository /
+  // OCIRepository / Bucket) for sourceRef→URL resolution. We skip per-
+  // kind requests when the cluster doesn't have the CRD installed; the
+  // capability map comes from useAPIResources.
+  const rowsQuery = useQuery({
+    queryKey: ['gitops-rows-main', namespaces, apiResources?.length ?? 0],
     queryFn: async () => {
       const hasApplications = hasAPIResource(apiResources, 'applications', 'argoproj.io')
       const hasKustomizations = hasAPIResource(apiResources, 'kustomizations', 'kustomize.toolkit.fluxcd.io')
       const hasHelmReleases = hasAPIResource(apiResources, 'helmreleases', 'helm.toolkit.fluxcd.io')
-      // Flux source CRs carry the actual URL. Reconcilers (Kustomization,
-      // HelmRelease) only reference the source by name. We list sources
-      // alongside the reconcilers and build one lookup map so the fleet's
-      // Source column can render the URL (e.g. github.com/owner/repo)
-      // instead of the opaque CR name (e.g. "GitRepository podinfo").
-      // Listing the sources cluster-wide is cheap — they're cached by the
-      // dynamic informer and there are few per cluster — but skip the
-      // request entirely when no Flux CRDs are installed.
       const hasFluxSources = hasKustomizations || hasHelmReleases
       const hasGitRepos = hasFluxSources && hasAPIResource(apiResources, 'gitrepositories', 'source.toolkit.fluxcd.io')
       const hasHelmRepos = hasFluxSources && hasAPIResource(apiResources, 'helmrepositories', 'source.toolkit.fluxcd.io')
@@ -224,833 +156,23 @@ function GitOpsTableView({ namespaces }: { namespaces: string[] }) {
     refetchInterval: 120_000,
   })
 
-  const gitopsCounts = useMemo(() => {
-    const counts = countsQuery.data?.counts ?? {}
-    const out: Record<string, number> = {}
-    for (const k of GITOPS_KINDS) {
-      out[k.group ? `${k.group}/${k.kind}` : k.name] = counts[`${k.group}/${k.kind}`] ?? counts[k.name] ?? 0
-    }
-    return out
-  }, [countsQuery.data])
-
-  const totalGitOps = Object.values(gitopsCounts).reduce((sum, n) => sum + n, 0)
-  const allRows = applicationQuery.data ?? []
-  const statusSummary = summarizeGitOpsRows(allRows)
-
-  const modeCounts = {
-    applications: allRows.length,
-    sources: (gitopsCounts['source.toolkit.fluxcd.io/GitRepository'] ?? 0) + (gitopsCounts['source.toolkit.fluxcd.io/OCIRepository'] ?? 0) + (gitopsCounts['source.toolkit.fluxcd.io/HelmRepository'] ?? 0),
-    projects: gitopsCounts['argoproj.io/AppProject'] ?? 0,
-    alerts: gitopsCounts['notification.toolkit.fluxcd.io/Alert'] ?? 0,
-  }
-
-  const projects = useMemo(() => countValues(allRows.map((row) => row.project).filter(Boolean)), [allRows])
-  const rowNamespaces = useMemo(() => countValues(allRows.map((row) => row.namespace || '(cluster)').filter(Boolean)), [allRows])
-  const syncCounts = useMemo(() => countMap(allRows.map((row) => row.sync)), [allRows])
-  const healthCounts = useMemo(() => countMap(allRows.map((row) => row.health)), [allRows])
-  const labels = useMemo(() => countLabels(allRows), [allRows])
-  const filteredRows = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    const activeLabels = [...labelFilters].map((pair) => {
-      const [key, ...rest] = pair.split('=')
-      return { key, value: rest.join('=') }
-    }).filter((label) => label.key && label.value)
-    const rows = allRows.filter((row) => {
-      if (mode !== 'applications') return false
-      if (q && ![
-        row.name,
-        row.namespace,
-        row.project,
-        row.repository,
-        row.path,
-        row.chart,
-        row.destination,
-        row.targetRevision,
-        row.kind,
-      ].some((value) => value.toLowerCase().includes(q))) return false
-      if (syncFilters.size > 0 && !syncFilters.has(row.sync)) return false
-      if (healthFilters.size > 0 && !healthFilters.has(row.health)) return false
-      if (projectFilters.size > 0 && !projectFilters.has(row.project || '(none)')) return false
-      if (namespaceFilters.size > 0 && !namespaceFilters.has(row.namespace || '(cluster)')) return false
-      if (activeLabels.length > 0 && !activeLabels.every(({ key, value }) => row.labels[key] === value)) return false
-      if (automationFilter === 'auto' && !row.autoSync) return false
-      if (automationFilter === 'manual' && row.autoSync) return false
-      if (automationFilter === 'suspended' && !row.suspended) return false
-      if (lifecycleFilter === 'terminating' && !row.terminating) return false
-      if (lifecycleFilter === 'active' && row.terminating) return false
-      return true
-    })
-    return [...rows].sort((a, b) => compareRows(a, b, sortKey))
-  }, [allRows, automationFilter, healthFilters, labelFilters, lifecycleFilter, mode, namespaceFilters, projectFilters, search, sortKey, syncFilters])
-
-  const terminatingCount = useMemo(() => allRows.filter((row) => row.terminating).length, [allRows])
-
-  function openRow(row: GitOpsRow) {
-    const ns = row.namespace || '_'
-    const params = new URLSearchParams()
-    params.set('apiGroup', row.group)
-    navigate({ pathname: gitOpsDetailPath(row.kindName, ns, row.name), search: params.toString() })
-  }
-
-  function refetch() {
-    applicationQuery.refetch()
-  }
-
-  const isInitialLoading = apiResourcesLoading || countsQuery.isLoading || applicationQuery.isLoading
-
-  if (totalGitOps === 0 && applicationQuery.isFetched && countsQuery.isFetched && !isInitialLoading) {
-    return (
-      <div className="flex h-full min-h-0 flex-1 items-center justify-center bg-theme-base p-4">
-        <div className="rounded-lg border border-theme-border bg-theme-surface p-8 text-center">
-          <GitBranch className="mx-auto h-8 w-8 text-theme-text-tertiary" />
-          <h2 className="mt-3 text-base font-semibold text-theme-text-primary">No GitOps resources detected</h2>
-          <p className="mt-1 text-sm text-theme-text-secondary">
-            Radar did not find ArgoCD Applications or FluxCD resources in this cluster.
-          </p>
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className="flex h-full min-w-0 flex-1 overflow-hidden bg-theme-base max-lg:flex-col">
-      <GitOpsFilterSidebar
-        mode={mode}
-        onModeChange={setMode}
-        modeCounts={modeCounts}
-        syncCounts={syncCounts}
-        syncFilters={syncFilters}
-        onToggleSync={(value) => toggleSet(syncFilters, setSyncFilters, value)}
-        healthCounts={healthCounts}
-        healthFilters={healthFilters}
-        onToggleHealth={(value) => toggleSet(healthFilters, setHealthFilters, value)}
-        automationFilter={automationFilter}
-        onAutomationFilterChange={setAutomationFilter}
-        lifecycleFilter={lifecycleFilter}
-        onLifecycleFilterChange={setLifecycleFilter}
-        terminatingCount={terminatingCount}
-        projects={projects}
-        projectFilters={projectFilters}
-        onToggleProject={(value) => toggleSet(projectFilters, setProjectFilters, value)}
-        namespaces={rowNamespaces}
-        namespaceFilters={namespaceFilters}
-        onToggleNamespace={(value) => toggleSet(namespaceFilters, setNamespaceFilters, value)}
-        onClear={() => {
-          setSearch('')
-          setSyncFilters(new Set())
-          setHealthFilters(new Set())
-          setProjectFilters(new Set())
-          setNamespaceFilters(new Set())
-          setLabelFilters(new Set())
-          setAutomationFilter('all')
-          setLifecycleFilter('all')
-        }}
-      />
-
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 border-b border-theme-border bg-theme-base px-4 py-3">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="min-w-0">
-              <h1 className="text-lg font-semibold text-theme-text-primary">GitOps</h1>
-              <p className="truncate text-sm text-theme-text-secondary">
-                Applications and reconciliations with source, destination, sync, and health state.
-              </p>
-            </div>
-            <div className="flex shrink-0 flex-wrap justify-end gap-2">
-              <SummaryTile label="Applications" value={allRows.length} />
-              <SummaryTile label="Out of sync" value={statusSummary.outOfSync} tone="warning" />
-              <SummaryTile label="Degraded" value={statusSummary.degraded} tone="error" />
-              <SummaryTile label="Suspended" value={statusSummary.suspended} tone="warning" />
-              <SummaryTile label="Reconciling" value={statusSummary.reconciling} tone="info" />
-            </div>
-          </div>
-        </div>
-
-        <div className="shrink-0 border-b border-theme-border bg-theme-surface/70 px-4 py-3">
-          <StatusDistribution rows={filteredRows} />
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <div className="relative w-full max-w-md">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-theme-text-tertiary" />
-              <input
-                ref={searchInputRef}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search applications, repos, paths..."
-                className="h-8 w-full rounded-md border border-theme-border bg-theme-base pl-8 pr-3 text-sm text-theme-text-primary placeholder:text-theme-text-tertiary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-              />
-            </div>
-            {/* Surface the filter denominator so users know whether they're
-                seeing all rows, a search-narrowed slice, or a sidebar-filtered
-                slice. The KPI tiles count the unfiltered universe; this caption
-                counts the visible result set. */}
-            {filteredRows.length !== allRows.length && (
-              <span className="text-[11px] text-theme-text-tertiary">
-                Showing {filteredRows.length} of {allRows.length}
-              </span>
-            )}
-            <select
-              value={sortKey}
-              onChange={(e) => setSortKey(e.target.value as SortKey)}
-              className="h-8 rounded-md border border-theme-border bg-theme-base px-2 text-xs text-theme-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-            >
-              <option value="health">Sort: health</option>
-              <option value="sync">Sort: sync</option>
-              <option value="lastSync">Sort: last sync</option>
-              <option value="project">Sort: project</option>
-              <option value="name">Sort: name</option>
-            </select>
-            {labels.length > 0 && (
-              <LabelsDropdown
-                labels={labels}
-                activeLabels={labelFilters}
-                onToggle={(value) => toggleSet(labelFilters, setLabelFilters, value)}
-                onClear={() => setLabelFilters(new Set())}
-                open={showLabelsDropdown}
-                onOpenChange={(open) => {
-                  setShowLabelsDropdown(open)
-                  if (open) setLabelSearch('')
-                }}
-                search={labelSearch}
-                onSearchChange={setLabelSearch}
-              />
-            )}
-            <div className="flex overflow-hidden rounded-md border border-theme-border">
-              <IconToggle active={viewMode === 'table'} label="Table" icon={List} onClick={() => setViewMode('table')} />
-              <IconToggle active={viewMode === 'tiles'} label="Tiles" icon={LayoutGrid} onClick={() => setViewMode('tiles')} />
-            </div>
-            <Tooltip content="Refresh GitOps resources">
-              <button
-                type="button"
-                onClick={refetch}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-theme-border bg-theme-base text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${applicationQuery.isFetching ? 'animate-spin' : ''}`} />
-              </button>
-            </Tooltip>
-          </div>
-        </div>
-
-        <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-theme-base">
-          {mode !== 'applications' ? (
-            <div className="flex h-full items-center justify-center text-sm text-theme-text-secondary">
-              {modeLabel(mode)} view is queued behind the application list.
-            </div>
-          ) : applicationQuery.isLoading ? (
-            <div className="flex h-full items-center justify-center text-sm text-theme-text-secondary">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading GitOps applications...
-            </div>
-          ) : applicationQuery.error ? (
-            <div className="p-4 text-sm text-red-500">Failed to load GitOps applications: {(applicationQuery.error as Error).message}</div>
-          ) : filteredRows.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-theme-text-secondary">
-              No applications match the current filters.
-            </div>
-          ) : viewMode === 'tiles' ? (
-            <GitOpsTiles rows={filteredRows} onOpen={openRow} />
-          ) : (
-            <GitOpsTable rows={filteredRows} onOpen={openRow} />
-          )}
-        </div>
-      </div>
-    </div>
+    <SharedGitOpsTableView
+      rows={rowsQuery.data ?? []}
+      loading={apiResourcesLoading || countsQuery.isLoading || rowsQuery.isLoading}
+      error={(rowsQuery.error as Error | null) ?? null}
+      counts={countsQuery.data?.counts ?? {}}
+      onRefresh={() => rowsQuery.refetch()}
+      onRowClick={(row) => {
+        const ns = row.namespace || '_'
+        const params = new URLSearchParams()
+        params.set('apiGroup', row.group)
+        navigate({ pathname: gitOpsDetailPath(row.kindName, ns, row.name), search: params.toString() })
+      }}
+      searchHotkey
+    />
   )
 }
-
-function GitOpsFilterSidebar({
-  mode,
-  onModeChange,
-  modeCounts,
-  syncCounts,
-  syncFilters,
-  onToggleSync,
-  healthCounts,
-  healthFilters,
-  onToggleHealth,
-  automationFilter,
-  onAutomationFilterChange,
-  lifecycleFilter,
-  onLifecycleFilterChange,
-  terminatingCount,
-  projects,
-  projectFilters,
-  onToggleProject,
-  namespaces,
-  namespaceFilters,
-  onToggleNamespace,
-  onClear,
-}: {
-  mode: GitOpsMode
-  onModeChange: (mode: GitOpsMode) => void
-  modeCounts: Record<GitOpsMode, number>
-  syncCounts: Map<string, number>
-  syncFilters: Set<string>
-  onToggleSync: (value: string) => void
-  healthCounts: Map<string, number>
-  healthFilters: Set<string>
-  onToggleHealth: (value: string) => void
-  automationFilter: 'all' | 'auto' | 'manual' | 'suspended'
-  onAutomationFilterChange: (value: 'all' | 'auto' | 'manual' | 'suspended') => void
-  lifecycleFilter: 'all' | 'terminating' | 'active'
-  onLifecycleFilterChange: (value: 'all' | 'terminating' | 'active') => void
-  terminatingCount: number
-  projects: Array<{ name: string; count: number }>
-  projectFilters: Set<string>
-  onToggleProject: (value: string) => void
-  namespaces: Array<{ name: string; count: number }>
-  namespaceFilters: Set<string>
-  onToggleNamespace: (value: string) => void
-  onClear: () => void
-}) {
-  return (
-    <aside className="flex w-72 shrink-0 flex-col overflow-hidden border-r border-theme-border bg-theme-surface/90 max-lg:max-h-72 max-lg:w-full max-lg:border-b max-lg:border-r-0">
-      <div className="flex items-center justify-between border-b border-theme-border px-3 py-2">
-        <span className="text-sm font-medium text-theme-text-secondary">GitOps Filters</span>
-        <button type="button" onClick={onClear} className="text-[10px] font-medium text-blue-500 hover:text-blue-400">
-          Clear
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto">
-        {/* Sources/Projects/Alerts modes are placeholder surfaces that route to
-            a "queued behind the application list" pane — confusing to expose
-            in the primary nav while they're not built. Restore here once the
-            corresponding views ship. */}
-        <FilterSection icon={GitBranch} title="Scope">
-          <div className="grid grid-cols-2 gap-1">
-            {(['applications'] as GitOpsMode[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => onModeChange(item)}
-                className={`rounded-md px-2 py-1.5 text-left text-[11px] transition-colors ${
-                  mode === item
-                    ? 'bg-skyhook-500 text-white'
-                    : 'bg-theme-elevated text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary'
-                }`}
-              >
-                <div className="font-medium">{modeLabel(item)}</div>
-                <div className={mode === item ? 'text-white/70' : 'text-theme-text-tertiary'}>{modeCounts[item]}</div>
-              </button>
-            ))}
-          </div>
-        </FilterSection>
-
-        <FilterSection icon={CheckCircle2} title="Sync">
-          <FacetButton label="Synced" count={syncCounts.get('Synced') ?? 0} active={syncFilters.has('Synced')} tone="success" onClick={() => onToggleSync('Synced')} />
-          <FacetButton label="OutOfSync" count={syncCounts.get('OutOfSync') ?? 0} active={syncFilters.has('OutOfSync')} tone="warning" onClick={() => onToggleSync('OutOfSync')} />
-          <FacetButton label="Reconciling" count={syncCounts.get('Reconciling') ?? 0} active={syncFilters.has('Reconciling')} tone="info" onClick={() => onToggleSync('Reconciling')} />
-          <FacetButton label="Unknown" count={syncCounts.get('Unknown') ?? 0} active={syncFilters.has('Unknown')} onClick={() => onToggleSync('Unknown')} />
-        </FilterSection>
-
-        <FilterSection icon={HeartPulse} title="Health">
-          <FacetButton label="Healthy" count={healthCounts.get('Healthy') ?? 0} active={healthFilters.has('Healthy')} tone="success" onClick={() => onToggleHealth('Healthy')} />
-          <FacetButton label="Progressing" count={healthCounts.get('Progressing') ?? 0} active={healthFilters.has('Progressing')} tone="info" onClick={() => onToggleHealth('Progressing')} />
-          <FacetButton label="Degraded" count={healthCounts.get('Degraded') ?? 0} active={healthFilters.has('Degraded')} tone="error" onClick={() => onToggleHealth('Degraded')} />
-          <FacetButton label="Suspended" count={healthCounts.get('Suspended') ?? 0} active={healthFilters.has('Suspended')} tone="warning" onClick={() => onToggleHealth('Suspended')} />
-          <FacetButton label="Unknown" count={healthCounts.get('Unknown') ?? 0} active={healthFilters.has('Unknown')} onClick={() => onToggleHealth('Unknown')} />
-        </FilterSection>
-
-        <FilterSection icon={CircleDot} title="Automation">
-          <div className="grid grid-cols-2 gap-1">
-            {([
-              ['all', 'All'],
-              ['auto', 'Auto-sync'],
-              ['manual', 'Manual'],
-              ['suspended', 'Suspended'],
-            ] as const).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => onAutomationFilterChange(value)}
-                className={`rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors ${
-                  automationFilter === value
-                    ? 'bg-skyhook-500 text-white'
-                    : 'bg-theme-elevated text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </FilterSection>
-
-        {terminatingCount > 0 && (
-          <FilterSection icon={Trash2} title="Lifecycle">
-            <div className="grid grid-cols-3 gap-1">
-              {([
-                ['all', 'All'],
-                ['active', 'Active'],
-                ['terminating', `Terminating (${terminatingCount})`],
-              ] as const).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => onLifecycleFilterChange(value)}
-                  className={`rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors ${
-                    lifecycleFilter === value
-                      ? value === 'terminating'
-                        // Distinct tone for the Terminating mode — orange
-                        // mirrors the [Term] chip + insight Issue color, so
-                        // the active state visually links to its consequence.
-                        ? 'bg-orange-500 text-white'
-                        : 'bg-skyhook-500 text-white'
-                      : 'bg-theme-elevated text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </FilterSection>
-        )}
-
-        <FilterSection icon={CircleAlert} title="Projects">
-          {projects.slice(0, 10).map((project) => (
-            <FacetButton
-              key={project.name}
-              label={project.name || '(none)'}
-              count={project.count}
-              active={projectFilters.has(project.name || '(none)')}
-              onClick={() => onToggleProject(project.name || '(none)')}
-            />
-          ))}
-        </FilterSection>
-
-        <FilterSection icon={List} title="Namespaces">
-          {namespaces.slice(0, 12).map((namespace) => (
-            <FacetButton
-              key={namespace.name}
-              label={namespace.name}
-              count={namespace.count}
-              active={namespaceFilters.has(namespace.name)}
-              onClick={() => onToggleNamespace(namespace.name)}
-            />
-          ))}
-        </FilterSection>
-      </div>
-    </aside>
-  )
-}
-
-function FilterSection({ icon: Icon, title, children }: { icon: ComponentType<{ className?: string }>; title: string; children: ReactNode }) {
-  return (
-    <section className="border-b border-theme-border px-3 py-2">
-      <div className="mb-1.5 flex items-center gap-2">
-        <Icon className="h-3.5 w-3.5 text-theme-text-tertiary" />
-        <span className="text-[10px] font-medium uppercase tracking-wider text-theme-text-tertiary">{title}</span>
-      </div>
-      <div className="space-y-0.5">{children}</div>
-    </section>
-  )
-}
-
-function FacetButton({
-  label,
-  count,
-  active,
-  tone = 'neutral',
-  onClick,
-}: {
-  label: string
-  count: number
-  active: boolean
-  tone?: 'neutral' | 'success' | 'warning' | 'error' | 'info'
-  onClick: () => void
-}) {
-  const dot = {
-    neutral: 'bg-theme-text-tertiary',
-    success: 'bg-emerald-500',
-    warning: 'bg-amber-500',
-    error: 'bg-red-500',
-    info: 'bg-sky-500',
-  }[tone]
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[11px] transition-colors ${
-        active ? 'bg-blue-500/15 text-blue-500' : 'text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary'
-      }`}
-    >
-      <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
-      <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
-      {count > 0 && <span className="tabular-nums text-theme-text-tertiary">{count}</span>}
-    </button>
-  )
-}
-
-function IconToggle({ active, label, icon: Icon, onClick }: { active: boolean; label: string; icon: ComponentType<{ className?: string }>; onClick: () => void }) {
-  return (
-    <Tooltip content={label}>
-      <button
-        type="button"
-        onClick={onClick}
-        className={`inline-flex h-8 w-8 items-center justify-center transition-colors ${
-          active ? 'bg-skyhook-500 text-white' : 'bg-theme-base text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary'
-        }`}
-      >
-        <Icon className="h-3.5 w-3.5" />
-      </button>
-    </Tooltip>
-  )
-}
-
-function LabelsDropdown({
-  labels,
-  activeLabels,
-  onToggle,
-  onClear,
-  open,
-  onOpenChange,
-  search,
-  onSearchChange,
-}: {
-  labels: Array<{ name: string; count: number }>
-  activeLabels: Set<string>
-  onToggle: (value: string) => void
-  onClear: () => void
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  search: string
-  onSearchChange: (value: string) => void
-}) {
-  const filtered = search.trim()
-    ? labels.filter((label) => label.name.toLowerCase().includes(search.trim().toLowerCase()))
-    : labels
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => onOpenChange(!open)}
-        className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors ${
-          activeLabels.size > 0
-            ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
-            : 'border-theme-border bg-theme-base text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary'
-        }`}
-      >
-        <Tag className="h-3.5 w-3.5" />
-        Labels
-        {activeLabels.size > 0 && (
-          <span className="rounded bg-emerald-500/20 px-1 text-[10px] tabular-nums">{activeLabels.size}</span>
-        )}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-80 overflow-hidden rounded-lg border border-theme-border bg-theme-surface shadow-xl">
-          <div className="border-b border-theme-border p-2">
-            <div className="mb-2 text-xs text-theme-text-secondary">
-              Selected labels are combined with <span className="font-semibold text-theme-text-primary">AND</span>.
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-theme-text-tertiary" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => onSearchChange(e.target.value)}
-                  placeholder="Search labels..."
-                  autoFocus
-                  className="h-7 w-full rounded border border-theme-border bg-theme-elevated pl-7 pr-2 text-xs text-theme-text-primary placeholder:text-theme-text-tertiary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-                />
-              </div>
-              {activeLabels.size > 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onClear()
-                    onOpenChange(false)
-                  }}
-                  className="shrink-0 rounded px-1 py-0.5 text-xs text-theme-text-tertiary hover:text-theme-text-primary"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="max-h-72 overflow-y-auto py-1">
-            {filtered.map((label) => {
-              const active = activeLabels.has(label.name)
-              return (
-                <button
-                  key={label.name}
-                  type="button"
-                  onClick={() => onToggle(label.name)}
-                  className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
-                    active
-                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
-                      : 'text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary'
-                  }`}
-                >
-                  <Tooltip content={label.name} delay={400} wrapperClassName="min-w-0 flex-1">
-                    <span className="block w-full truncate">{label.name}</span>
-                  </Tooltip>
-                  <span className="shrink-0 tabular-nums text-theme-text-tertiary">({label.count})</span>
-                </button>
-              )
-            })}
-            {filtered.length === 0 && (
-              <div className="px-3 py-2 text-xs text-theme-text-tertiary">No labels match.</div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function StatusDistribution({ rows }: { rows: GitOpsRow[] }) {
-  const summary = summarizeGitOpsRows(rows)
-  const total = rows.length || 1
-  const segments = [
-    { key: 'healthy', value: summary.healthy, className: 'bg-emerald-500' },
-    { key: 'progressing', value: summary.progressing, className: 'bg-sky-500' },
-    { key: 'degraded', value: summary.degraded, className: 'bg-red-500' },
-    { key: 'outOfSync', value: summary.outOfSync, className: 'bg-amber-500' },
-    { key: 'unknown', value: Math.max(0, rows.length - summary.healthy - summary.progressing - summary.degraded), className: 'bg-theme-text-tertiary/40' },
-  ].filter((segment) => segment.value > 0)
-  return (
-    <div className="h-2 overflow-hidden rounded-full bg-theme-elevated">
-      <div className="flex h-full w-full">
-        {segments.map((segment) => (
-          <div
-            key={segment.key}
-            className={segment.className}
-            style={{ width: `${Math.max(1, (segment.value / total) * 100)}%` }}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function GitOpsTable({ rows, onOpen }: { rows: GitOpsRow[]; onOpen: (row: GitOpsRow) => void }) {
-  return (
-    <table className="w-full min-w-[1040px] table-fixed border-separate border-spacing-0 text-sm">
-      <thead className="sticky top-0 z-10 bg-theme-surface">
-        <tr className="text-left text-[11px] uppercase tracking-wide text-theme-text-tertiary">
-          <TableHead className="w-[24%]">Application</TableHead>
-          <TableHead className="w-[9%]">Project</TableHead>
-          <TableHead className="w-[9%]">Sync</TableHead>
-          <TableHead className="w-[9%]">Health</TableHead>
-          <TableHead className="w-[22%]">Source</TableHead>
-          <TableHead className="w-[15%]">Destination</TableHead>
-          <TableHead className="w-[12%]">Last Sync</TableHead>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr
-            key={row.id}
-            onClick={() => onOpen(row)}
-            // Subtle row-level fade for Terminating to reinforce the
-            // "this is on its way out" reading; the orange status stripe
-            // + chip are the primary lifecycle indicators, this is just
-            // weight tuning so a row of 5 zombies doesn't shout the same
-            // visual weight as 5 active applications.
-            className={clsx(
-              'cursor-pointer border-b border-theme-border bg-theme-base hover:bg-theme-hover',
-              row.terminating && 'opacity-70',
-            )}
-          >
-            <TableCell>
-              <div className="flex min-w-0 items-center gap-2">
-                <span className={`h-8 w-1 shrink-0 rounded-full ${statusStripe(row)}`} />
-                {/* Terminating chip moves to the leftmost slot (before the
-                    name) so it's the first thing the eye lands on when
-                    scanning. Previously it sat after the name where it
-                    competed with status badges for attention. */}
-                {row.terminating && (
-                  <Tooltip content="Pending deletion — finalizers still running">
-                    <span className="inline-flex shrink-0 items-center gap-1 rounded border border-orange-500/40 bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-400">
-                      <Trash2 className="h-3 w-3" />
-                      Terminating
-                    </span>
-                  </Tooltip>
-                )}
-                <div className="min-w-0">
-                  <div className="truncate font-medium text-theme-text-primary">{row.name}</div>
-                  <div className="truncate text-xs text-theme-text-tertiary">{row.tool === 'argo' ? 'ArgoCD' : 'FluxCD'} {row.kind}</div>
-                </div>
-              </div>
-            </TableCell>
-            <TableCell>{row.project || '-'}</TableCell>
-            {/* Sync / Health cells: when row is Terminating, the controller
-                isn't reconciling and the badges reflect frozen pre-deletion
-                state. Replace with a muted dash so the row reads as "no
-                live status — see Terminating chip for the actual state". */}
-            <TableCell>
-              {row.terminating
-                ? <span className="text-[11px] text-theme-text-tertiary">—</span>
-                : <SyncStatusBadge sync={row.sync as any} suspended={row.suspended} />}
-            </TableCell>
-            <TableCell>
-              {row.terminating
-                ? <span className="text-[11px] text-theme-text-tertiary">—</span>
-                : <HealthStatusBadge health={row.health as any} />}
-            </TableCell>
-            <TableCell>
-              <div className="truncate text-theme-text-primary">{row.repository || row.chart || '-'}</div>
-              <div className="truncate text-xs text-theme-text-tertiary">{[row.targetRevision, row.path || row.chart].filter(Boolean).join(' · ') || '-'}</div>
-            </TableCell>
-            <TableCell>
-              <div className="truncate text-theme-text-primary">{row.destination || '-'}</div>
-              <div className="truncate text-xs text-theme-text-tertiary">{row.destinationNamespace || row.namespace || '-'}</div>
-            </TableCell>
-            {/* Last Sync column: for Terminating rows, "33d ago" is stale.
-                Show the deletion-pending duration instead, so the time
-                column answers the *current* operational question. */}
-            <TableCell>
-              {row.terminating
-                ? <span className="text-orange-400/80">Pending {formatRelative(row.terminationStartedAt ?? '') || 'now'}</span>
-                : formatRelative(row.lastSync || row.createdAt)}
-            </TableCell>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-function GitOpsTiles({ rows, onOpen }: { rows: GitOpsRow[]; onOpen: (row: GitOpsRow) => void }) {
-  return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3 p-4">
-      {rows.map((row) => (
-        <GitOpsTile key={row.id} row={row} onOpen={onOpen} />
-      ))}
-    </div>
-  )
-}
-
-// Tier hierarchy: name (primary scan target) > sync/health badges > source +
-// revision + recency (operational answers) > cluster + namespace + project
-// (footer metadata). Critically: never truncate the name. Spacing rhythm 4/8/12
-// to make hierarchy felt, not just sized.
-function GitOpsTile({ row, onOpen }: { row: GitOpsRow; onOpen: (row: GitOpsRow) => void }) {
-  const source = compactRepoSource(row.repository || row.chart, row.path || row.chart)
-  const revision = row.targetRevision || ''
-  const lastSyncRaw = row.lastSync || row.createdAt
-  const recencyClass = recencyTone(lastSyncRaw)
-  const dest = row.destination ? compactClusterURL(row.destination) : ''
-  const ns = row.destinationNamespace || row.namespace
-  return (
-    <button
-      type="button"
-      onClick={() => onOpen(row)}
-      className={clsx(
-        'group relative flex min-w-0 flex-col overflow-hidden rounded-md border border-theme-border bg-theme-surface text-left shadow-theme-sm transition-all hover:border-theme-text-tertiary/40 hover:shadow-theme-md',
-        row.terminating && 'opacity-80',
-      )}
-    >
-      {/* Top accent strip — sync-state color, sole color above the badge row */}
-      <div className={clsx('h-1 w-full', statusStripe(row))} />
-      <div className="flex flex-1 flex-col gap-3 px-4 pb-4 pt-3">
-        {/* Tier 1 — name. Wrap up to 2 lines, then break-words to avoid clipping. */}
-        <div className="line-clamp-2 break-all text-[15px] font-semibold leading-tight text-theme-text-primary">
-          {row.name}
-        </div>
-        {/* Tier 2 — lifecycle dominates when Terminating; otherwise sync + health.
-            Suppressing sync/health for Terminating tiles avoids the same
-            stale-state contradiction we removed from the detail title row. */}
-        <div className="flex flex-wrap gap-1.5">
-          {row.terminating ? (
-            <span className="badge border border-orange-500/40 bg-orange-500/15 text-orange-400" title="Pending deletion — finalizers still running">
-              <Trash2 className="h-3 w-3" />
-              Terminating
-            </span>
-          ) : (
-            <>
-              <SyncStatusBadge sync={row.sync as any} suspended={row.suspended} />
-              <HealthStatusBadge health={row.health as any} />
-            </>
-          )}
-        </div>
-        {/* Tier 3 — source / revision / recency. The operational answers. */}
-        <div className="flex flex-col gap-1 text-[12px]">
-          {source && (
-            <div className="truncate text-theme-text-secondary">{source}</div>
-          )}
-          {revision && (
-            <div className="truncate font-mono text-[11px] text-theme-text-tertiary">{shortRevision(revision)}</div>
-          )}
-          {row.terminating ? (
-            <div className="font-medium text-orange-400/80">Pending {formatRelative(row.terminationStartedAt ?? '') || 'now'}</div>
-          ) : (
-            lastSyncRaw && <div className={clsx('font-medium', recencyClass)}>{formatRelative(lastSyncRaw)}</div>
-          )}
-        </div>
-        {/* Tier 4 — footer chips. Quiet, but reachable. */}
-        {(dest || ns || row.project) && (
-          <div className="mt-auto flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-theme-border/60 pt-3 text-[11px] text-theme-text-tertiary">
-            {dest && <span className="truncate" title={row.destination}>{dest}</span>}
-            {dest && ns && <span aria-hidden>·</span>}
-            {ns && <span className="truncate">{ns}</span>}
-            {row.project && row.project !== 'default' && (
-              <>
-                <span aria-hidden>·</span>
-                <span className="truncate">{row.project}</span>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    </button>
-  )
-}
-
-// Render the source as `org/repo · path` instead of full URL. Keep `.git`
-// off, drop scheme + host. Falls back to whatever's there if it doesn't
-// parse as a github-style URL — Helm chart repos and bare hostnames just
-// pass through.
-function compactRepoSource(repo: string, path: string): string {
-  if (!repo) return ''
-  let head = repo.replace(/^https?:\/\//, '').replace(/\.git$/, '')
-  // Strip well-known SaaS hosts so the org/repo part dominates
-  head = head.replace(/^(github\.com|gitlab\.com|bitbucket\.org)\//, '')
-  return path ? `${head} · ${path}` : head
-}
-
-// Drop common Kubernetes service URL prefixes so cluster destinations show
-// as a recognizable label, not a verbose service URL the user has to parse.
-function compactClusterURL(dest: string): string {
-  return dest
-    .replace(/^https?:\/\//, '')
-    .replace(/^kubernetes\.default\.svc(:\d+)?\/?$/, 'in-cluster')
-}
-
-function shortRevision(rev: string): string {
-  // Already short? Pass through (tags, branch names like "HEAD", short SHAs)
-  if (rev.length <= 12) return rev
-  // Long SHA → 7 chars (git default short)
-  if (/^[0-9a-f]{12,}$/i.test(rev)) return rev.slice(0, 7)
-  return rev
-}
-
-// Color the relative time so a quick glance answers "fresh / stale / old".
-// Thresholds intentionally generous: <10m green, <1d default, >7d amber.
-// Most production apps reconcile within minutes; >7d signals drift or a
-// disabled sync controller.
-function recencyTone(value: string): string {
-  if (!value) return 'text-theme-text-tertiary'
-  const time = Date.parse(value)
-  if (!Number.isFinite(time)) return 'text-theme-text-tertiary'
-  const diffMs = Date.now() - time
-  if (diffMs < 10 * 60_000) return 'text-emerald-600 dark:text-emerald-400'
-  if (diffMs > 7 * 24 * 60 * 60_000) return 'text-amber-600 dark:text-amber-400'
-  return 'text-theme-text-secondary'
-}
-
-function TableHead({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <th className={`border-b border-theme-border px-3 py-2 font-medium ${className}`}>{children}</th>
-}
-
-function TableCell({ children }: { children: ReactNode }) {
-  return <td className="border-b border-theme-border px-3 py-2 align-middle text-theme-text-secondary">{children}</td>
-}
-
-// Three top-level views per detail page:
-//   topology — the resource tree, with an internal graph/table toggle since
-//              both views share the same filter rail and dataset
-//   changes  — drift between desired and live state
-//   activity — current operation, history, diagnosis
-type GitOpsAppView = 'topology' | 'changes' | 'activity'
 
 function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
   const location = useLocation()
@@ -1083,8 +205,8 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
   const resourceQ = useResource<any>(kind, namespace, name, group)
   const treeQ = useGitOpsTree(kind, namespace, name, group, namespaces)
   const insightsQ = useGitOpsInsights(kind, namespace, name, group, namespaces)
-  const status = resourceQ.data ? getGitOpsStatus(kind, resourceQ.data) : null
-  const tool = getTool(kind, group)
+  const status = resourceQ.data ? getGitOpsResourceStatus(kind, resourceQ.data) : null
+  const tool = getGitOpsTool(kind, group)
   // Argo "auto-sync ON" is determined by spec.syncPolicy.automated being set,
   // not by health.status === Suspended (which is Argo's CronJob-style suspend).
   // The toggle button reads from this so the label flips correctly when an
@@ -1111,10 +233,10 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
   // Terminate) intentionally remain enabled — see the corresponding
   // carve-out in pkg/gitops/operations.go.
   const terminating = !!insightsQ.data?.summary?.terminating
-  const terminatingDescriptions = describeTerminating(insightsQ.data?.summary)
+  const terminatingDescriptions = describeGitOpsTerminating(insightsQ.data?.summary)
   const terminatingChipTooltip = terminatingDescriptions.chipTooltip
   const terminatingActionTooltip = terminatingDescriptions.actionDisabledTooltip
-  const [appView, setAppView] = useState<GitOpsAppView>('topology')
+  const [appView, setAppView] = useState<GitOpsDetailTab>('topology')
   // When the user clicks an actionable issue alert ("OutOfSync — NodePool
   // default is out of sync · View →"), we navigate to Changes and focus
   // that resource. The ref is stringified to a stable key so GitOpsChangesView
@@ -1259,10 +381,10 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
   // open OSS dialogs, talk to OSS Toast, hit OSS keyboard registry).
   const detail: GitOpsDetailMetadata = {
     project: detailRow?.project,
-    repository: detailRow?.repository ? formatSourceRepo(detailRow.repository) : undefined,
+    repository: detailRow?.repository ? formatGitOpsSourceUrl(detailRow.repository) : undefined,
     path: detailRow?.path || undefined,
     chart: detailRow?.chart || undefined,
-    destination: formatDestination(detailRow?.destination, detailRow?.destinationNamespace),
+    destination: formatGitOpsDestination(detailRow?.destination, detailRow?.destinationNamespace),
     autoSyncMode: insightsQ.data?.summary?.autoSyncMode,
   }
 
@@ -1318,7 +440,7 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
         const ref = issue.refs?.[0]
         if (!ref) return
         setAppView('changes')
-        setChangesFocusKey(insightChangeKey(ref))
+        setChangesFocusKey(gitOpsInsightChangeKey(ref))
         // Window the highlight: 4s is long enough to find the row visually
         // but short enough that it doesn't linger if the user navigates
         // away and back.
@@ -1374,7 +496,7 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
       isFluxWorkload={isFluxWorkload}
       argo={argoHandlers}
       flux={fluxHandlers}
-      activeTab={appView as GitOpsDetailTab}
+      activeTab={appView}
       onTabChange={(tab) => setAppView(tab)}
       fullscreen={graphFullscreen}
       onToggleFullscreen={() => setGraphFullscreen(!graphFullscreen)}
@@ -1418,7 +540,7 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
               insight={insightsQ.data}
               error={insightsQ.error as Error | null}
               onRollback={isArgoApp ? (item) => {
-                if (parseRollbackID(item.id) == null) return
+                if (parseArgoRollbackID(item.id) == null) return
                 setRollbackTarget(item)
               } : undefined}
             />
@@ -1495,7 +617,7 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
             pending={argoRollback.isPending}
             onCancel={() => setRollbackTarget(null)}
             onConfirm={(opts) => {
-              const id = parseRollbackID(rollbackTarget?.id)
+              const id = parseArgoRollbackID(rollbackTarget?.id)
               if (id == null) {
                 showError('Rollback target became invalid', 'The history entry changed while the dialog was open. Reselect a target and try again.')
                 setRollbackTarget(null)
@@ -1511,15 +633,6 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
     </GitOpsDetailLayout>
   )
 }
-// formatSourceRepo drops the protocol prefix from a Git source URL so the
-// row reads as "github.com/org/repo" instead of the redundant
-// "https://github.com/org/repo". Leaves non-https URLs alone so SSH-style
-// origins (`git@github.com:org/repo`) and HTTP-only on-prem mirrors still
-// render as the user wrote them.
-function formatSourceRepo(repo: string): string {
-  return repo.replace(/^https?:\/\//, '')
-}
-
 type HelmValuesSource = 'flux' | 'argo-object' | 'argo-string' | 'argo-parameters'
 interface HelmValuesData {
   yaml: string
@@ -1586,140 +699,22 @@ function tryParseYaml(value: string): unknown {
   }
 }
 
-// formatDestination collapses the canonical in-cluster API server URL
-// ("https://kubernetes.default.svc" or the variant Argo writes when the
-// destination is the same cluster the controller runs in) to the friendlier
-// "in-cluster". Other server values pass through unchanged. The namespace
-// is appended with an explicit "Namespace:" qualifier so the relationship
-// reads unambiguously — bare `/ ns` could be mistaken for a sub-path.
-function formatDestination(server: string | undefined, namespace: string | undefined): string {
-  let host = (server || '').trim()
-  if (host === '' || host === 'https://kubernetes.default.svc' || host === 'in-cluster') {
-    host = 'in-cluster'
-  } else {
-    host = host.replace(/^https?:\/\//, '')
-  }
-  return namespace ? `${host}, Namespace: ${namespace}` : host
-}
-
 // AppFact + ViewButton + ActionButton moved into
 // @skyhook-io/k8s-ui's GitOpsDetailLayout (shared with hub-web's fleet
 // detail page). The OSS wrapper above mounts the layout instead of
 // rendering its own header chrome.
 
-function GitOpsGraphFilterRail({
-  facets,
-  preset,
-  onPresetChange,
-  search,
-  onSearchChange,
-  kinds,
-  onToggleKind,
-  sync,
-  onToggleSync,
-  health,
-  onToggleHealth,
-  namespaces,
-  onToggleNamespace,
-  roles,
-  onToggleRole,
-}: {
-  facets: ReturnType<typeof buildTreeFacets>
-  preset: GitOpsTreePreset
-  onPresetChange: (preset: GitOpsTreePreset) => void
-  search: string
-  onSearchChange: (value: string) => void
-  kinds: Set<string>
-  onToggleKind: (value: string) => void
-  sync: Set<string>
-  onToggleSync: (value: string) => void
-  health: Set<string>
-  onToggleHealth: (value: string) => void
-  namespaces: Set<string>
-  onToggleNamespace: (value: string) => void
-  roles: Set<string>
-  onToggleRole: (value: string) => void
-}) {
-  return (
-    <aside className="min-h-0 overflow-y-auto bg-theme-surface/90 max-lg:h-48 max-lg:max-h-48">
-      <div className="border-b border-theme-border px-3 py-3">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-theme-text-tertiary" />
-          <input
-            value={search}
-            onChange={(event) => onSearchChange(event.target.value)}
-            placeholder="Filter resources..."
-            className="h-8 w-full rounded-md border border-theme-border bg-theme-base pl-8 pr-3 text-sm text-theme-text-primary placeholder:text-theme-text-tertiary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-          />
-        </div>
-      </div>
-      <FilterSection icon={GitBranch} title="Graph">
-        <div className="grid grid-cols-2 gap-1">
-          {(['compact', 'workloads', 'app', 'full'] as GitOpsTreePreset[]).map((value) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => onPresetChange(value)}
-              className={`rounded-md px-2 py-1.5 text-left text-[11px] font-medium transition-colors ${
-                preset === value
-                  ? 'bg-skyhook-500 text-white'
-                  : 'bg-theme-elevated text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary'
-              }`}
-            >
-              {value === 'app' ? 'Declared' : value[0].toUpperCase() + value.slice(1)}
-            </button>
-          ))}
-        </div>
-      </FilterSection>
-      <FilterSection icon={List} title="Kinds">
-        {facets.kinds.slice(0, 14).map((item) => (
-          <FacetButton key={item.name} label={item.name} count={item.count} active={kinds.has(item.name)} onClick={() => onToggleKind(item.name)} />
-        ))}
-      </FilterSection>
-      <FilterSection icon={CheckCircle2} title="Sync">
-        {facets.sync.map((item) => (
-          <FacetButton key={item.name} label={item.name} count={item.count} active={sync.has(item.name)} tone={syncTone(item.name)} onClick={() => onToggleSync(item.name)} />
-        ))}
-      </FilterSection>
-      <FilterSection icon={HeartPulse} title="Health">
-        {facets.health.map((item) => (
-          <FacetButton key={item.name} label={item.name} count={item.count} active={health.has(item.name)} tone={healthTone(item.name)} onClick={() => onToggleHealth(item.name)} />
-        ))}
-      </FilterSection>
-      <FilterSection icon={CircleDot} title="Role">
-        {facets.roles.map((item) => (
-          <FacetButton key={item.name} label={roleLabel(item.name)} count={item.count} active={roles.has(item.name)} onClick={() => onToggleRole(item.name)} />
-        ))}
-      </FilterSection>
-      <FilterSection icon={LayoutGrid} title="Namespaces">
-        {facets.namespaces.slice(0, 12).map((item) => (
-          <FacetButton key={item.name} label={item.name} count={item.count} active={namespaces.has(item.name)} onClick={() => onToggleNamespace(item.name)} />
-        ))}
-      </FilterSection>
-    </aside>
-  )
-}
 
-function buildTreeFacets(tree: GitOpsResourceTree | null) {
-  const nodes = tree?.nodes ?? []
-  return {
-    kinds: countValues(nodes.filter((node) => node.role !== 'group').map((node) => node.ref.kind).filter(Boolean)),
-    sync: countValues(nodes.map((node) => node.sync || 'Unknown')),
-    health: countValues(nodes.map((node) => node.health || 'Unknown')),
-    namespaces: countValues(nodes.map((node) => node.ref.namespace || '(cluster)')),
-    roles: countValues(nodes.map((node) => node.role)),
-  }
-}
 
 function normalizeDetailResource(kind: string, group: string, resource: any): GitOpsRow | null {
   if (kind === 'applications') return normalizeArgoApplication(resource)
   if (kind === 'kustomizations') return normalizeFluxKustomization(resource)
   if (kind === 'helmreleases') return normalizeFluxHelmRelease(resource)
-  const status = getGitOpsStatus(kind, resource)
+  const status = getGitOpsResourceStatus(kind, resource)
   return {
     id: `${group}/${kind}/${resource.metadata?.namespace ?? ''}/${resource.metadata?.name ?? ''}`,
     mode: 'applications',
-    tool: getTool(kind, group),
+    tool: getGitOpsTool(kind, group),
     kindName: kind,
     kind: resource.kind ?? kind,
     group,
@@ -1745,29 +740,6 @@ function normalizeDetailResource(kind: string, group: string, resource: any): Gi
   }
 }
 
-function syncTone(value: string): 'neutral' | 'success' | 'warning' | 'error' | 'info' {
-  if (value === 'Synced') return 'success'
-  if (value === 'OutOfSync') return 'warning'
-  if (value === 'Reconciling') return 'info'
-  return 'neutral'
-}
-
-function healthTone(value: string): 'neutral' | 'success' | 'warning' | 'error' | 'info' {
-  if (value === 'Healthy') return 'success'
-  if (value === 'Degraded' || value === 'Missing') return 'error'
-  if (value === 'Progressing') return 'info'
-  if (value === 'Suspended') return 'warning'
-  return 'neutral'
-}
-
-function roleLabel(value: string) {
-  return {
-    root: 'Root',
-    declared: 'Declared',
-    generated: 'Generated',
-    group: 'Groups',
-  }[value] ?? value
-}
 
 function gitOpsDetailPath(kind: string, namespace: string, name: string): string {
   return `/gitops/detail/${encodeURIComponent(kind)}/${encodeURIComponent(namespace || '_')}/${encodeURIComponent(name)}`
@@ -1816,146 +788,6 @@ async function fetchResourceList(kind: string, group: string, namespacesParam: s
   return res.json()
 }
 
-function normalizeArgoApplication(resource: any): GitOpsRow {
-  const status = getGitOpsStatus('applications', resource)
-  const source = resource.spec?.source ?? resource.spec?.sources?.[0] ?? {}
-  const destination = resource.spec?.destination ?? {}
-  return {
-    id: `argoproj.io/applications/${resource.metadata?.namespace ?? ''}/${resource.metadata?.name ?? ''}`,
-    mode: 'applications',
-    tool: 'argo',
-    kindName: 'applications',
-    kind: 'Application',
-    group: 'argoproj.io',
-    name: resource.metadata?.name ?? '',
-    namespace: resource.metadata?.namespace ?? '',
-    project: resource.spec?.project ?? 'default',
-    labels: resource.metadata?.labels ?? {},
-    sync: status?.sync ?? resource.status?.sync?.status ?? 'Unknown',
-    health: status?.health ?? resource.status?.health?.status ?? 'Unknown',
-    suspended: status?.suspended ?? false,
-    repository: source.repoURL ?? '',
-    targetRevision: source.targetRevision ?? resource.status?.sync?.revision ?? '',
-    path: source.path ?? '',
-    chart: source.chart ?? '',
-    destination: destination.name ?? destination.server ?? '',
-    destinationNamespace: destination.namespace ?? '',
-    createdAt: resource.metadata?.creationTimestamp ?? '',
-    lastSync: resource.status?.operationState?.finishedAt ?? resource.status?.reconciledAt ?? '',
-    autoSync: Boolean(resource.spec?.syncPolicy?.automated),
-    terminating: isTerminating(resource),
-    terminationStartedAt: terminationStartedAt(resource),
-    raw: resource,
-  }
-}
-
-function normalizeFluxKustomization(resource: any, fluxSourceUrls?: Map<string, string>): GitOpsRow {
-  const status = getGitOpsStatus('kustomizations', resource)
-  const sourceRef = resource.spec?.sourceRef ?? {}
-  const resolvedRepo = resolveFluxSourceRepo(sourceRef, resource.metadata?.namespace, fluxSourceUrls)
-  return {
-    id: `kustomize.toolkit.fluxcd.io/kustomizations/${resource.metadata?.namespace ?? ''}/${resource.metadata?.name ?? ''}`,
-    mode: 'applications',
-    tool: 'flux',
-    kindName: 'kustomizations',
-    kind: 'Kustomization',
-    group: 'kustomize.toolkit.fluxcd.io',
-    name: resource.metadata?.name ?? '',
-    namespace: resource.metadata?.namespace ?? '',
-    project: resource.metadata?.labels?.['kustomize.toolkit.fluxcd.io/name'] ?? resource.metadata?.namespace ?? '',
-    labels: resource.metadata?.labels ?? {},
-    sync: status?.sync ?? 'Unknown',
-    health: resource.spec?.suspend ? 'Suspended' : (status?.health ?? 'Unknown'),
-    suspended: resource.spec?.suspend === true,
-    repository: resolvedRepo,
-    targetRevision: resource.status?.lastAppliedRevision ?? resource.status?.lastAttemptedRevision ?? '',
-    path: resource.spec?.path ?? '',
-    chart: '',
-    destination: resource.spec?.kubeConfig?.secretRef?.name ? `kubeconfig/${resource.spec.kubeConfig.secretRef.name}` : 'in-cluster',
-    destinationNamespace: resource.spec?.targetNamespace ?? resource.metadata?.namespace ?? '',
-    createdAt: resource.metadata?.creationTimestamp ?? '',
-    lastSync: newestConditionTime(resource),
-    autoSync: !resource.spec?.suspend,
-    terminating: isTerminating(resource),
-    terminationStartedAt: terminationStartedAt(resource),
-    raw: resource,
-  }
-}
-
-function normalizeFluxHelmRelease(resource: any, fluxSourceUrls?: Map<string, string>): GitOpsRow {
-  const status = getGitOpsStatus('helmreleases', resource)
-  const chartSpec = resource.spec?.chart?.spec ?? {}
-  const sourceRef = chartSpec.sourceRef ?? {}
-  const resolvedRepo = resolveFluxSourceRepo(sourceRef, resource.metadata?.namespace, fluxSourceUrls)
-  return {
-    id: `helm.toolkit.fluxcd.io/helmreleases/${resource.metadata?.namespace ?? ''}/${resource.metadata?.name ?? ''}`,
-    mode: 'applications',
-    tool: 'flux',
-    kindName: 'helmreleases',
-    kind: 'HelmRelease',
-    group: 'helm.toolkit.fluxcd.io',
-    name: resource.metadata?.name ?? '',
-    namespace: resource.metadata?.namespace ?? '',
-    project: resource.metadata?.labels?.['helm.toolkit.fluxcd.io/name'] ?? resource.metadata?.namespace ?? '',
-    labels: resource.metadata?.labels ?? {},
-    sync: status?.sync ?? 'Unknown',
-    health: resource.spec?.suspend ? 'Suspended' : (status?.health ?? 'Unknown'),
-    suspended: resource.spec?.suspend === true,
-    repository: resolvedRepo,
-    targetRevision: chartSpec.version ?? resource.status?.lastAttemptedRevision ?? '',
-    path: '',
-    chart: chartSpec.chart ?? '',
-    destination: resource.spec?.kubeConfig?.secretRef?.name ? `kubeconfig/${resource.spec.kubeConfig.secretRef.name}` : 'in-cluster',
-    destinationNamespace: resource.spec?.targetNamespace ?? resource.metadata?.namespace ?? '',
-    createdAt: resource.metadata?.creationTimestamp ?? '',
-    lastSync: newestConditionTime(resource),
-    autoSync: !resource.spec?.suspend,
-    terminating: isTerminating(resource),
-    terminationStartedAt: terminationStartedAt(resource),
-    raw: resource,
-  }
-}
-
-// buildFluxSourceUrlMap indexes Flux source CRs (GitRepository, HelmRepository,
-// OCIRepository, Bucket) by "<kind>/<namespace>/<name>" so reconciler row
-// normalization can resolve `spec.sourceRef` to the source's actual URL.
-// Without this, the fleet "Source" column reads "GitRepository podinfo"
-// (the CR's name) — same name as could appear elsewhere; useless for the
-// "where does this app live?" scan. Argo Application rows already show the
-// URL directly because Argo bakes it into the Application spec.
-function buildFluxSourceUrlMap(sources: any[]): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const s of sources) {
-    const kind = s?.kind
-    const name = s?.metadata?.name
-    const namespace = s?.metadata?.namespace
-    const url = s?.spec?.url
-    if (!kind || !name || !namespace || !url) continue
-    out.set(`${kind}/${namespace}/${name}`, url)
-  }
-  return out
-}
-
-// resolveFluxSourceRepo returns the source's URL when the source is in cache
-// and we can resolve it. Falls back to the legacy "Kind name" string so we
-// never show worse information than before. defaultNamespace handles the
-// common case where sourceRef.namespace is omitted (defaults to the
-// reconciler's own namespace per Flux convention).
-function resolveFluxSourceRepo(sourceRef: any, defaultNamespace: string | undefined, urlMap: Map<string, string> | undefined): string {
-  const legacy = [sourceRef?.kind, sourceRef?.namespace ? `${sourceRef.namespace}/` : '', sourceRef?.name].filter(Boolean).join(' ')
-  if (!urlMap || !sourceRef?.kind || !sourceRef?.name) return legacy
-  const ns = sourceRef.namespace || defaultNamespace || ''
-  if (!ns) return legacy
-  const url = urlMap.get(`${sourceRef.kind}/${ns}/${sourceRef.name}`)
-  return url || legacy
-}
-
-// isTerminating reads metadata.deletionTimestamp from a raw K8s object.
-// Truthy when the resource has been marked for deletion (the controller
-// is processing finalizers, or finalizers are stuck and the resource is
-// a zombie). The fleet view paints a small Terminating indicator on
-// these rows; the detail view drives the [Terminating] chip + action
-// disabling off the same signal via the insights summary.
 function isTerminating(resource: any): boolean {
   return Boolean(resource?.metadata?.deletionTimestamp)
 }
@@ -1976,188 +808,6 @@ function newestConditionTime(resource: any): string {
   return times[times.length - 1] ?? ''
 }
 
-function toggleSet(set: Set<string>, setter: (next: Set<string>) => void, value: string) {
-  const next = new Set(set)
-  if (next.has(value)) next.delete(value)
-  else next.add(value)
-  setter(next)
-}
-
-function countValues(values: string[]) {
-  const counts = new Map<string, number>()
-  for (const value of values) {
-    const key = value || '(none)'
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-  return [...counts.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-}
-
-function countMap(values: string[]) {
-  const counts = new Map<string, number>()
-  for (const value of values) {
-    counts.set(value || 'Unknown', (counts.get(value || 'Unknown') ?? 0) + 1)
-  }
-  return counts
-}
-
-function countLabels(rows: GitOpsRow[]) {
-  const counts = new Map<string, number>()
-  for (const row of rows) {
-    for (const [key, value] of Object.entries(row.labels)) {
-      if (!value) continue
-      if (key.includes('pod-template-hash') || key.includes('controller-revision-hash')) continue
-      const pair = `${key}=${value}`
-      counts.set(pair, (counts.get(pair) ?? 0) + 1)
-    }
-  }
-  return [...counts.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-    .slice(0, 30)
-}
-
-function compareRows(a: GitOpsRow, b: GitOpsRow, sortKey: SortKey) {
-  if (sortKey === 'health') return urgencyRank(a) - urgencyRank(b) || a.name.localeCompare(b.name)
-  if (sortKey === 'sync') return syncRank(a.sync) - syncRank(b.sync) || a.name.localeCompare(b.name)
-  if (sortKey === 'lastSync') return (Date.parse(b.lastSync || b.createdAt) || 0) - (Date.parse(a.lastSync || a.createdAt) || 0)
-  if (sortKey === 'project') return a.project.localeCompare(b.project) || a.name.localeCompare(b.name)
-  return a.name.localeCompare(b.name)
-}
-
-// urgencyRank groups rows by what the operator should do about them, not by
-// the raw sync/health labels. The key insight: an OutOfSync app with
-// auto-sync ON is healing itself — it sorts after an OutOfSync app with no
-// auto-sync (which won't heal). Suspended sorts near the bottom because it's
-// intentionally non-green, not a problem to fix.
-//
-// Tiers:
-//   0. Truly broken — Terminating, Degraded, Missing. Won't self-heal.
-//   1. OutOfSync with no auto-sync. Drifted and stuck waiting for a human.
-//   2. OutOfSync with auto-sync on. Healing in progress.
-//   3. Progressing / Reconciling. Mid-rollout.
-//   4. Unknown / other. Indeterminate state.
-//   5. Suspended. Intentional non-green; bottom of the urgent half.
-//   6. Synced + Healthy. Calm steady state.
-function urgencyRank(row: GitOpsRow): number {
-  if (row.terminating) return 0
-  if (row.health === 'Degraded' || row.health === 'Missing') return 0
-  if (row.sync === 'OutOfSync' && !row.autoSync) return 1
-  if (row.sync === 'OutOfSync') return 2
-  if (row.health === 'Progressing' || row.sync === 'Reconciling') return 3
-  if (row.suspended || row.health === 'Suspended') return 5
-  if (row.health === 'Healthy' && row.sync === 'Synced') return 6
-  return 4
-}
-
-function syncRank(sync: string) {
-  return { OutOfSync: 0, Reconciling: 1, Unknown: 2, Synced: 3 }[sync] ?? 2
-}
-
-function modeLabel(mode: GitOpsMode) {
-  return {
-    applications: 'Applications',
-    sources: 'Sources',
-    projects: 'Projects',
-    alerts: 'Alerts',
-  }[mode]
-}
-
-function statusStripe(row: GitOpsRow) {
-  // Lifecycle dominates: a Terminating resource paints orange regardless of
-  // its (now stale) sync/health values. Without this guard, a row with
-  // sync=OutOfSync + terminating=true paints amber and reads as "needs
-  // sync attention" — but the resource is being deleted, so sync is moot.
-  if (row.terminating) return 'bg-orange-500'
-  if (row.health === 'Degraded') return 'bg-red-500'
-  if (row.health === 'Progressing' || row.sync === 'Reconciling') return 'bg-sky-500'
-  if (row.sync === 'OutOfSync') return 'bg-amber-500'
-  if (row.health === 'Healthy' && row.sync === 'Synced') return 'bg-emerald-500'
-  return 'bg-theme-text-tertiary'
-}
-
-// insightChangeKey produces the same key shape that GitOpsChangesView uses
-// for its row keys, so we can pinpoint which row to scroll/highlight when
-// the user clicks an alert. Keep in sync with the row key in
-// GitOpsChangesView (kind/namespace/name; group is intentionally omitted
-// because issue refs may not carry it).
-function insightChangeKey(ref: { kind: string; namespace?: string; name: string }): string {
-  return `${ref.kind}/${ref.namespace || ''}/${ref.name}`
-}
-
-function formatRelative(value: string) {
-  return formatRelativeAgeTime(value)
-}
-
-function SummaryTile({ label, value, tone = 'neutral' }: { label: string; value: number; tone?: 'neutral' | 'warning' | 'error' | 'info' }) {
-  const toneClass = {
-    neutral: 'text-theme-text-primary',
-    warning: 'text-amber-600 dark:text-amber-300',
-    error: 'text-red-600 dark:text-red-300',
-    info: 'text-sky-600 dark:text-sky-300',
-  }[tone]
-  return (
-    <div className="rounded-md border border-theme-border bg-theme-base px-3 py-2">
-      <div className={`text-sm font-semibold ${toneClass}`}>{value}</div>
-      <div className="text-xs text-theme-text-tertiary">{label}</div>
-    </div>
-  )
-}
-
-// ActionButton moved into @skyhook-io/k8s-ui's GitOpsDetailLayout.
-
-// describeTerminating produces two complementary strings:
-//   - chipTooltip: full context for the Terminating chip's hover (finalizers
-//     + age + why disabled). Wraps gracefully in the tooltip's max-w-xs
-//     layout so multiple sentences are fine.
-//   - actionDisabledTooltip: one tight sentence for disabled action buttons
-//     so the tooltip stays small and anchored near the button. The full
-//     explanation already lives in the lifecycle banner above; the
-//     button tooltip just needs to say "you can't do this right now,
-//     here's why in one line".
-//
-// Examples:
-//   chipTooltip: "Pending deletion 21d ago. Finalizers: finalizers.fluxcd.io.
-//                 Mutating actions are disabled until cleanup completes."
-//   actionDisabledTooltip: "Disabled — resource is pending deletion (21d)"
-function describeTerminating(summary?: { terminationStartedAt?: string; finalizers?: string[] }): {
-  chipTooltip: string
-  actionDisabledTooltip: string
-} {
-  const ageText = formatRelativeAge(summary?.terminationStartedAt)
-  const ageSuffix = ageText ? ` ${ageText} ago` : ''
-  const finalizers = summary?.finalizers ?? []
-  const finSuffix = finalizers.length > 0 ? ` Finalizers: ${finalizers.join(', ')}.` : ''
-  const ageInline = ageText ? ` (${ageText})` : ''
-  return {
-    chipTooltip: `Pending deletion${ageSuffix}.${finSuffix} Mutating actions are disabled until cleanup completes.`,
-    actionDisabledTooltip: `Disabled — resource is pending deletion${ageInline}`,
-  }
-}
-
-// formatRelativeAge — small inline relative-time formatter. Tier
-// breakpoints kept in sync with pkg/gitops/insights/insights.go::formatAgeShort
-// and pkg/audit/checks.go::formatDurationShort so UI, lifecycle Issue
-// messages, and audit findings agree on units. Adding a new tier (e.g.
-// "weeks") in one and not the others would let the same duration render
-// differently across surfaces. Returns "" when the input can't be parsed;
-// callers should treat empty as "no timestamp" and skip the age suffix
-// gracefully.
-function formatRelativeAge(rfc3339?: string): string {
-  return formatCompactAge(rfc3339)
-}
-
-// Parse an Argo HistoryItem.id into the int64 the rollback API needs.
-// Returns null when the id is missing, non-numeric (Flux condition rows
-// reuse the slot for condition.type), or non-positive. Number("") is 0
-// which passes Number.isFinite — guard with > 0 explicitly.
-function parseRollbackID(id: string | undefined): number | null {
-  if (!id) return null
-  const n = Number(id)
-  if (!Number.isFinite(n) || n <= 0) return null
-  return n
-}
 
 // Inline counts for the topology toolbar — answers "how many resources, how
 // many of them are healthy / drifted" at a glance, without making the user
@@ -2184,27 +834,4 @@ function TopologyCounts({ tree }: { tree: GitOpsResourceTree }) {
   )
 }
 
-function summarizeGitOpsRows(rows: GitOpsRow[]) {
-  return rows.reduce((summary, row) => {
-    if (row.sync === 'OutOfSync') summary.outOfSync++
-    if (row.health === 'Degraded') summary.degraded++
-    if (row.health === 'Healthy') summary.healthy++
-    if (row.health === 'Progressing') summary.progressing++
-    if (row.suspended) summary.suspended++
-    if (row.sync === 'Reconciling' || row.health === 'Progressing') summary.reconciling++
-    return summary
-  }, { outOfSync: 0, degraded: 0, healthy: 0, progressing: 0, suspended: 0, reconciling: 0 })
-}
 
-function getGitOpsStatus(kind: string, resource: any): GitOpsStatus | null {
-  if (kind === 'applications') {
-    return argoStatusToGitOpsStatus(resource.status ?? {})
-  }
-  const conditions = (resource.status?.conditions ?? []) as FluxCondition[]
-  return fluxConditionsToGitOpsStatus(conditions, resource.spec?.suspend === true)
-}
-
-function getTool(kind: string, group?: string): 'argo' | 'flux' {
-  if (group === 'argoproj.io' || kind === 'applications' || kind === 'applicationsets' || kind === 'appprojects') return 'argo'
-  return 'flux'
-}

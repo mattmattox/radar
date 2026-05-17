@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { clsx } from 'clsx'
 import {
+  AlertTriangle,
   CheckCircle2,
   CircleAlert,
   CircleDot,
@@ -134,8 +135,18 @@ export interface GitOpsTableViewProps {
   // Row click — caller routes to its own detail page.
   onRowClick: (row: GitOpsRow) => void
 
-  // Optional cross-cluster surfaces (Hub-only)
+  // Optional cross-cluster surfaces (Hub-only). Leading columns prepend,
+  // trailing columns append. Most fleet info (controller cluster, deploy
+  // destination) lives inline in the Application + Destination cells via
+  // `row._cluster` / `row._destination`; these props are extension hooks
+  // for future fleet-only columns that don't fit those cells.
   extraLeadingColumns?: GitOpsExtraColumn[]
+  extraTrailingColumns?: GitOpsExtraColumn[]
+  // Called when the user clicks the destination cluster chip in the
+  // Destination cell. Fleet-only; OSS leaves undefined. Caller routes to
+  // the destination cluster's workloads view (filtered by the Argo
+  // instance label) — the chip itself stops row-click propagation.
+  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp) => void
   crossClusterCount?: number
   destinationFilter?: DestinationFilter
   onDestinationFilterChange?: (next: DestinationFilter) => void
@@ -163,6 +174,8 @@ export function GitOpsTableView({
   onRefresh,
   onRowClick,
   extraLeadingColumns,
+  extraTrailingColumns,
+  onDestinationClick,
   crossClusterCount,
   destinationFilter,
   onDestinationFilterChange,
@@ -421,8 +434,8 @@ export function GitOpsTableView({
               </div>
             )}
             <div className="flex shrink-0 items-center gap-0 overflow-hidden rounded-md border border-theme-border">
-              <IconToggle active={viewMode === 'table'} label="Table view" icon={List} onClick={() => setViewMode('table')} />
-              <IconToggle active={viewMode === 'tiles'} label="Tiles view" icon={LayoutGrid} onClick={() => setViewMode('tiles')} />
+              <GitOpsIconToggle active={viewMode === 'table'} label="Table view" icon={List} onClick={() => setViewMode('table')} />
+              <GitOpsIconToggle active={viewMode === 'tiles'} label="Tiles view" icon={LayoutGrid} onClick={() => setViewMode('tiles')} />
             </div>
             {onRefresh && (
               <Tooltip content="Refresh GitOps resources">
@@ -454,9 +467,9 @@ export function GitOpsTableView({
               No applications match the current filters.
             </div>
           ) : viewMode === 'tiles' ? (
-            <GitOpsTiles rows={filteredRows} onOpen={onRowClick} extraLeadingColumns={extraLeadingColumns} mode={mode} />
+            <GitOpsTiles rows={filteredRows} onOpen={onRowClick} extraLeadingColumns={extraLeadingColumns} extraTrailingColumns={extraTrailingColumns} mode={mode} />
           ) : (
-            <GitOpsTable rows={filteredRows} onOpen={onRowClick} extraLeadingColumns={extraLeadingColumns} mode={mode} />
+            <GitOpsTable rows={filteredRows} onOpen={onRowClick} onDestinationClick={onDestinationClick} extraLeadingColumns={extraLeadingColumns} extraTrailingColumns={extraTrailingColumns} mode={mode} />
           )}
         </div>
       </div>
@@ -523,7 +536,7 @@ function GitOpsFilterSidebar({
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        <FilterSection icon={GitBranch} title="Scope">
+        <GitOpsFilterSection icon={GitBranch} title="Scope">
           <div className="grid grid-cols-2 gap-1">
             {(['applications'] as GitOpsMode[]).map((item) => (
               <button
@@ -541,24 +554,24 @@ function GitOpsFilterSidebar({
               </button>
             ))}
           </div>
-        </FilterSection>
+        </GitOpsFilterSection>
 
-        <FilterSection icon={CheckCircle2} title="Sync">
-          <FacetButton label="Synced" count={syncCounts.get('Synced') ?? 0} active={syncFilters.has('Synced')} tone="success" onClick={() => onToggleSync('Synced')} />
-          <FacetButton label="OutOfSync" count={syncCounts.get('OutOfSync') ?? 0} active={syncFilters.has('OutOfSync')} tone="warning" onClick={() => onToggleSync('OutOfSync')} />
-          <FacetButton label="Reconciling" count={syncCounts.get('Reconciling') ?? 0} active={syncFilters.has('Reconciling')} tone="info" onClick={() => onToggleSync('Reconciling')} />
-          <FacetButton label="Unknown" count={syncCounts.get('Unknown') ?? 0} active={syncFilters.has('Unknown')} onClick={() => onToggleSync('Unknown')} />
-        </FilterSection>
+        <GitOpsFilterSection icon={CheckCircle2} title="Sync">
+          <GitOpsFacetButton label="Synced" count={syncCounts.get('Synced') ?? 0} active={syncFilters.has('Synced')} tone="success" onClick={() => onToggleSync('Synced')} />
+          <GitOpsFacetButton label="OutOfSync" count={syncCounts.get('OutOfSync') ?? 0} active={syncFilters.has('OutOfSync')} tone="warning" onClick={() => onToggleSync('OutOfSync')} />
+          <GitOpsFacetButton label="Reconciling" count={syncCounts.get('Reconciling') ?? 0} active={syncFilters.has('Reconciling')} tone="info" onClick={() => onToggleSync('Reconciling')} />
+          <GitOpsFacetButton label="Unknown" count={syncCounts.get('Unknown') ?? 0} active={syncFilters.has('Unknown')} onClick={() => onToggleSync('Unknown')} />
+        </GitOpsFilterSection>
 
-        <FilterSection icon={HeartPulse} title="Health">
-          <FacetButton label="Healthy" count={healthCounts.get('Healthy') ?? 0} active={healthFilters.has('Healthy')} tone="success" onClick={() => onToggleHealth('Healthy')} />
-          <FacetButton label="Progressing" count={healthCounts.get('Progressing') ?? 0} active={healthFilters.has('Progressing')} tone="info" onClick={() => onToggleHealth('Progressing')} />
-          <FacetButton label="Degraded" count={healthCounts.get('Degraded') ?? 0} active={healthFilters.has('Degraded')} tone="error" onClick={() => onToggleHealth('Degraded')} />
-          <FacetButton label="Suspended" count={healthCounts.get('Suspended') ?? 0} active={healthFilters.has('Suspended')} tone="warning" onClick={() => onToggleHealth('Suspended')} />
-          <FacetButton label="Unknown" count={healthCounts.get('Unknown') ?? 0} active={healthFilters.has('Unknown')} onClick={() => onToggleHealth('Unknown')} />
-        </FilterSection>
+        <GitOpsFilterSection icon={HeartPulse} title="Health">
+          <GitOpsFacetButton label="Healthy" count={healthCounts.get('Healthy') ?? 0} active={healthFilters.has('Healthy')} tone="success" onClick={() => onToggleHealth('Healthy')} />
+          <GitOpsFacetButton label="Progressing" count={healthCounts.get('Progressing') ?? 0} active={healthFilters.has('Progressing')} tone="info" onClick={() => onToggleHealth('Progressing')} />
+          <GitOpsFacetButton label="Degraded" count={healthCounts.get('Degraded') ?? 0} active={healthFilters.has('Degraded')} tone="error" onClick={() => onToggleHealth('Degraded')} />
+          <GitOpsFacetButton label="Suspended" count={healthCounts.get('Suspended') ?? 0} active={healthFilters.has('Suspended')} tone="warning" onClick={() => onToggleHealth('Suspended')} />
+          <GitOpsFacetButton label="Unknown" count={healthCounts.get('Unknown') ?? 0} active={healthFilters.has('Unknown')} onClick={() => onToggleHealth('Unknown')} />
+        </GitOpsFilterSection>
 
-        <FilterSection icon={CircleDot} title="Automation">
+        <GitOpsFilterSection icon={CircleDot} title="Automation">
           <div className="grid grid-cols-2 gap-1">
             {([
               ['all', 'All'],
@@ -580,10 +593,10 @@ function GitOpsFilterSidebar({
               </button>
             ))}
           </div>
-        </FilterSection>
+        </GitOpsFilterSection>
 
         {terminatingCount > 0 && (
-          <FilterSection icon={Trash2} title="Lifecycle">
+          <GitOpsFilterSection icon={Trash2} title="Lifecycle">
             <div className="grid grid-cols-3 gap-1">
               {([
                 ['all', 'All'],
@@ -606,12 +619,12 @@ function GitOpsFilterSidebar({
                 </button>
               ))}
             </div>
-          </FilterSection>
+          </GitOpsFilterSection>
         )}
 
-        <FilterSection icon={CircleAlert} title="Projects">
+        <GitOpsFilterSection icon={CircleAlert} title="Projects">
           {projects.slice(0, 10).map((project) => (
-            <FacetButton
+            <GitOpsFacetButton
               key={project.name}
               label={project.name || '(none)'}
               count={project.count}
@@ -619,11 +632,11 @@ function GitOpsFilterSidebar({
               onClick={() => onToggleProject(project.name || '(none)')}
             />
           ))}
-        </FilterSection>
+        </GitOpsFilterSection>
 
-        <FilterSection icon={List} title="Namespaces">
+        <GitOpsFilterSection icon={List} title="Namespaces">
           {namespaces.slice(0, 12).map((namespace) => (
-            <FacetButton
+            <GitOpsFacetButton
               key={namespace.name}
               label={namespace.name}
               count={namespace.count}
@@ -631,13 +644,18 @@ function GitOpsFilterSidebar({
               onClick={() => onToggleNamespace(namespace.name)}
             />
           ))}
-        </FilterSection>
+        </GitOpsFilterSection>
       </div>
     </aside>
   )
 }
 
-function FilterSection({ icon: Icon, title, children }: { icon: ComponentType<{ className?: string }>; title: string; children: ReactNode }) {
+// Exported so consumers can build their own GitOps-flavored filter rails
+// (e.g. OSS's GitOpsGraphFilterRail in the detail view's Topology tab,
+// or hub-web's destination filter sub-bar) without re-implementing the
+// section/facet/toggle primitives. The styles stay in lockstep with the
+// main table's filter sidebar — change once, both surfaces follow.
+export function GitOpsFilterSection({ icon: Icon, title, children }: { icon: ComponentType<{ className?: string }>; title: string; children: ReactNode }) {
   return (
     <section className="border-b border-theme-border px-3 py-2">
       <div className="mb-1.5 flex items-center gap-2">
@@ -649,7 +667,9 @@ function FilterSection({ icon: Icon, title, children }: { icon: ComponentType<{ 
   )
 }
 
-function FacetButton({
+// Exported alongside GitOpsFilterSection — same reuse motivation. OSS's
+// GitOpsGraphFilterRail (detail view Topology tab) imports it.
+export function GitOpsFacetButton({
   label,
   count,
   active,
@@ -684,7 +704,9 @@ function FacetButton({
   )
 }
 
-function IconToggle({ active, label, icon: Icon, onClick }: { active: boolean; label: string; icon: ComponentType<{ className?: string }>; onClick: () => void }) {
+// Exported alongside GitOpsFilterSection / GitOpsFacetButton for the same
+// reuse story.
+export function GitOpsIconToggle({ active, label, icon: Icon, onClick }: { active: boolean; label: string; icon: ComponentType<{ className?: string }>; onClick: () => void }) {
   return (
     <Tooltip content={label}>
       <button
@@ -830,22 +852,29 @@ function StatusDistribution({ rows }: { rows: GitOpsRow[] }) {
 function GitOpsTable({
   rows,
   onOpen,
+  onDestinationClick,
   extraLeadingColumns,
+  extraTrailingColumns,
   mode,
 }: {
   rows: GitOpsRow[]
   onOpen: (row: GitOpsRow) => void
+  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp) => void
   extraLeadingColumns?: GitOpsExtraColumn[]
+  extraTrailingColumns?: GitOpsExtraColumn[]
   mode: GitOpsMode
 }) {
-  const visibleExtras = (extraLeadingColumns ?? []).filter(
+  const visibleLeading = (extraLeadingColumns ?? []).filter(
+    (c) => !c.visibleForMode || c.visibleForMode === mode,
+  )
+  const visibleTrailing = (extraTrailingColumns ?? []).filter(
     (c) => !c.visibleForMode || c.visibleForMode === mode,
   )
   return (
     <table className="w-full min-w-[1040px] table-fixed border-separate border-spacing-0 text-sm">
       <thead className="sticky top-0 z-10 bg-theme-surface">
         <tr className="text-left text-[11px] uppercase tracking-wide text-theme-text-tertiary">
-          {visibleExtras.map((c) => (
+          {visibleLeading.map((c) => (
             <TableHead key={c.key} className={c.width ?? 'w-[12%]'}>{c.label}</TableHead>
           ))}
           <TableHead className="w-[22%]">Application</TableHead>
@@ -855,6 +884,9 @@ function GitOpsTable({
           <TableHead className="w-[20%]">Source</TableHead>
           <TableHead className="w-[14%]">Destination</TableHead>
           <TableHead className="w-[10%]">Last Sync</TableHead>
+          {visibleTrailing.map((c) => (
+            <TableHead key={c.key} className={c.width ?? 'w-[12%]'}>{c.label}</TableHead>
+          ))}
         </tr>
       </thead>
       <tbody>
@@ -867,7 +899,7 @@ function GitOpsTable({
               row.terminating && 'opacity-70',
             )}
           >
-            {visibleExtras.map((c) => (
+            {visibleLeading.map((c) => (
               <TableCell key={c.key}>{c.render(row)}</TableCell>
             ))}
             <TableCell>
@@ -883,7 +915,14 @@ function GitOpsTable({
                 )}
                 <div className="min-w-0">
                   <div className="truncate font-medium text-theme-text-primary">{row.name}</div>
-                  <div className="truncate text-xs text-theme-text-tertiary">{row.tool === 'argo' ? 'ArgoCD' : 'FluxCD'} {row.kind}</div>
+                  <div className="truncate text-xs text-theme-text-tertiary">
+                    {row.tool === 'argo' ? 'ArgoCD' : 'FluxCD'} {row.kind}
+                    {row._cluster && (
+                      <span title={row._cluster.name !== shortClusterName(row._cluster.name) ? row._cluster.name : undefined}>
+                        {' · '}{shortClusterName(row._cluster.name)}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             </TableCell>
@@ -903,7 +942,7 @@ function GitOpsTable({
               <div className="truncate text-xs text-theme-text-tertiary">{[row.targetRevision, row.path || row.chart].filter(Boolean).join(' · ') || '-'}</div>
             </TableCell>
             <TableCell>
-              <div className="truncate text-theme-text-primary">{row.destination || '-'}</div>
+              <DestinationCell row={row} onDestinationClick={onDestinationClick} />
               <div className="truncate text-xs text-theme-text-tertiary">{row.destinationNamespace || row.namespace || '-'}</div>
             </TableCell>
             <TableCell>
@@ -911,6 +950,9 @@ function GitOpsTable({
                 ? <span className="text-orange-400/80">Pending {formatRelativeAge(row.terminationStartedAt ?? '') || 'now'}</span>
                 : formatRelativeAge(row.lastSync || row.createdAt)}
             </TableCell>
+            {visibleTrailing.map((c) => (
+              <TableCell key={c.key}>{c.render(row)}</TableCell>
+            ))}
           </tr>
         ))}
       </tbody>
@@ -922,17 +964,24 @@ function GitOpsTiles({
   rows,
   onOpen,
   extraLeadingColumns,
+  extraTrailingColumns,
   mode,
 }: {
   rows: GitOpsRow[]
   onOpen: (row: GitOpsRow) => void
   extraLeadingColumns?: GitOpsExtraColumn[]
+  extraTrailingColumns?: GitOpsExtraColumn[]
   mode: GitOpsMode
 }) {
+  // Tile view collapses leading + trailing into one "extras" row at the
+  // top of each tile — the table's lead/trail distinction is positional
+  // but the tile is a card without that geometry, so we present them as
+  // labeled metadata together (leading first, then trailing).
+  const combined = [...(extraLeadingColumns ?? []), ...(extraTrailingColumns ?? [])]
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3 p-4">
       {rows.map((row) => (
-        <GitOpsTile key={row.id} row={row} onOpen={onOpen} extraLeadingColumns={extraLeadingColumns} mode={mode} />
+        <GitOpsTile key={row.id} row={row} onOpen={onOpen} extraLeadingColumns={combined} mode={mode} />
       ))}
     </div>
   )
@@ -1045,8 +1094,93 @@ function TableHead({ children, className = '' }: { children: ReactNode; classNam
   return <th className={`border-b border-theme-border px-3 py-2 font-medium ${className}`}>{children}</th>
 }
 
+// DestinationCell renders line 1 of the Destination column. Three modes:
+//   - No fleet stamp (single-cluster OSS): show the raw `row.destination`
+//     string from the Argo/Flux spec (typically `https://kubernetes.default.svc`
+//     for in-cluster, or a public LB URL for hub-spoke).
+//   - Fleet stamp with `in_cluster` or no destination match (Flux rows):
+//     show muted "same cluster" — the workload lives where the controller
+//     lives.
+//   - Fleet stamp with `inferred` match: clickable chip with the
+//     destination cluster's Radar-known name. Click stops row propagation
+//     and calls `onDestinationClick` (caller routes to the destination
+//     cluster's workloads view).
+//   - Fleet stamp with `unmatched`: amber chip with the raw Argo
+//     destination name + warning icon — signals the destination isn't a
+//     Radar-connected cluster (onboarding hook).
+function DestinationCell({
+  row,
+  onDestinationClick,
+}: {
+  row: GitOpsRow
+  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp) => void
+}) {
+  const dest = row._destination
+  // Non-fleet (OSS) path — show the raw destination string.
+  if (!dest) {
+    return <div className="block truncate text-theme-text-primary">{row.destination || '-'}</div>
+  }
+  if (dest.match === 'in_cluster') {
+    return <span className="block truncate text-theme-text-tertiary">same cluster</span>
+  }
+  if (dest.match === 'inferred' && dest.cluster_id && dest.cluster_name) {
+    const handleClick = (e: React.MouseEvent) => {
+      e.stopPropagation()
+      onDestinationClick?.(row, dest)
+    }
+    const short = shortClusterName(dest.cluster_name)
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        className="block max-w-full truncate rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-xs font-medium text-sky-600 hover:bg-sky-500/20 dark:text-sky-300"
+        title={`Open workloads in ${dest.cluster_name}`}
+      >
+        {short}
+      </button>
+    )
+  }
+  const rawLabel = dest.raw_name || dest.raw_server || 'unknown'
+  return (
+    <span
+      className="flex min-w-0 items-center gap-1 text-xs text-amber-600 dark:text-amber-300"
+      title={`Not a Radar-connected cluster. Connect ${rawLabel} to see workloads.`}
+    >
+      <AlertTriangle className="h-3 w-3 shrink-0" />
+      <span className="block truncate">{shortClusterName(rawLabel)}</span>
+    </span>
+  )
+}
+
+// shortClusterName strips kubectl-context-style prefixes so cluster
+// chips show the human-recognizable suffix instead of the full provider
+// id. Operators recognize `management-cluster` instantly;
+// `gke_koalabackend_me-west1-a_management-cluster` is ~40 chars of noise.
+// Patterns handled:
+//   - GKE:  `gke_<project>_<region>_<name>` → last underscore segment
+//   - EKS:  `arn:aws:eks:<region>:<acct>:cluster/<name>` → after final `/`
+//   - User-named (kind, k3d, plain): returned as-is.
+// Callers should keep the full name in the `title=` for hover.
+export function shortClusterName(full: string): string {
+  if (full.startsWith('gke_')) {
+    const parts = full.split('_')
+    return parts[parts.length - 1] || full
+  }
+  if (full.startsWith('arn:aws:eks:')) {
+    const slash = full.lastIndexOf('/')
+    return slash >= 0 ? full.slice(slash + 1) : full
+  }
+  return full
+}
+
 function TableCell({ children }: { children: ReactNode }) {
-  return <td className="border-b border-theme-border px-3 py-2 align-middle text-theme-text-secondary">{children}</td>
+  // overflow-hidden is the belt to inner `truncate`'s suspenders — in a
+  // table-fixed layout, a long unbroken token (kubectl-context cluster
+  // names, OCI repo URLs) will visually bleed into the next column unless
+  // the cell itself clips. Callers should still use `block truncate` on
+  // single-line content for the ellipsis; this prevents the cosmetic
+  // disaster when they forget.
+  return <td className="overflow-hidden border-b border-theme-border px-3 py-2 align-middle text-theme-text-secondary">{children}</td>
 }
 
 // =============================================================================
