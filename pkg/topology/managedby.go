@@ -41,8 +41,14 @@ const (
 // owner references via the topology graph. If obj is nil, only the topology
 // owner walk runs.
 //
+// idx is the topology inverted edges index. When non-nil, the owner walk
+// uses it for O(depth) lookup; when nil, the walk falls back to scanning
+// topo.Edges (O(E) per call). High-fanout callers (T6/T89/T12 list/search
+// enrichment) MUST pass a shared index — without it, the per-row managed-by
+// path is O(N × E).
+//
 // Returns nil when no meaningful manager is detectable.
-func SynthesizeManagedBy(obj metav1.Object, kind, namespace, name string, topo *Topology, dp DynamicProvider) []ResourceRef {
+func SynthesizeManagedBy(obj metav1.Object, kind, namespace, name string, topo *Topology, dp DynamicProvider, idx *RelationshipsIndex) []ResourceRef {
 	if ref := detectManagedByFromMeta(obj); ref != nil {
 		// detectManagedByFromMeta hand-sets Group for GitOps/Flux managers; do
 		// NOT call enrichRef here — it would overwrite the deliberate group
@@ -51,7 +57,7 @@ func SynthesizeManagedBy(obj metav1.Object, kind, namespace, name string, topo *
 		// native Helm.
 		return []ResourceRef{*ref}
 	}
-	if top := walkTopmostOwner(kind, namespace, name, topo, dp); top != nil {
+	if top := walkTopmostOwner(kind, namespace, name, topo, dp, idx); top != nil {
 		return []ResourceRef{*top}
 	}
 	return nil
@@ -149,29 +155,52 @@ func parseArgoTrackingID(value string) (namespace, name string, ok bool) {
 // until no further owner exists, returning the topmost ancestor's ResourceRef.
 // Returns nil when the queried resource has no owner in the topology. Cycle-
 // safe: stops at the first revisit.
-func walkTopmostOwner(kind, namespace, name string, topo *Topology, dp DynamicProvider) *ResourceRef {
+//
+// When idx is non-nil, each step is an O(in-degree) hop via the inverted edge
+// index, making the whole walk O(depth × avg-in-degree). When idx is nil, the
+// function falls back to scanning topo.Edges once to build a transient owners
+// map (O(E)) — fine for single-resource calls, but high-fanout callers
+// (list/search enrichment) MUST pass a shared index to avoid O(N × E).
+func walkTopmostOwner(kind, namespace, name string, topo *Topology, dp DynamicProvider, idx *RelationshipsIndex) *ResourceRef {
 	if topo == nil {
 		return nil
 	}
-	// target -> source for EdgeManages edges. Multiple owners are rare in
-	// practice (K8s allows multiple ownerReferences but only one controller);
+
+	// Owner lookup for the current node: returns the source ID of the first
+	// EdgeManages edge pointing at it, or "" if none. Multiple owners are
+	// rare (K8s allows multiple ownerReferences but only one controller);
 	// the first wins, matching ownerReferences[].controller==true semantics.
-	owners := make(map[string]string, len(topo.Edges))
-	for _, e := range topo.Edges {
-		if e.Type != EdgeManages {
-			continue
+	var ownerOf func(target string) string
+	if idx != nil {
+		ownerOf = func(target string) string {
+			incoming, _ := idx.EdgesFor(target)
+			for _, e := range incoming {
+				if e.Type == EdgeManages {
+					return e.Source
+				}
+			}
+			return ""
 		}
-		if _, exists := owners[e.Target]; !exists {
-			owners[e.Target] = e.Source
+	} else {
+		// Fallback: one-time O(E) scan to build target->source map.
+		owners := make(map[string]string, len(topo.Edges))
+		for _, e := range topo.Edges {
+			if e.Type != EdgeManages {
+				continue
+			}
+			if _, exists := owners[e.Target]; !exists {
+				owners[e.Target] = e.Source
+			}
 		}
+		ownerOf = func(target string) string { return owners[target] }
 	}
 
 	visited := make(map[string]bool)
 	cur := buildNodeID(kind, namespace, name, dp)
 	var topRef *ResourceRef
 	for {
-		next, ok := owners[cur]
-		if !ok {
+		next := ownerOf(cur)
+		if next == "" {
 			break
 		}
 		if visited[next] {

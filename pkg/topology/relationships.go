@@ -399,7 +399,7 @@ func GetRelationshipsWithIndex(kind, namespace, name string, topo *Topology, pro
 
 	// Hygiene fields (T2): ServiceAccount + Node from Pod.Spec, ManagedBy from
 	// labels/annotations on the queried object (or topology owner chain fallback).
-	queriedObj := lookupObjectMetadata(kindLower, namespace, name, provider)
+	queriedObj := lookupObjectMetadata(kindLower, namespace, name, provider, dp)
 	if pod, ok := queriedObj.(*corev1.Pod); ok {
 		if sa := pod.Spec.ServiceAccountName; sa != "" {
 			saRef := ResourceRef{Kind: "ServiceAccount", Namespace: namespace, Name: sa}
@@ -416,7 +416,7 @@ func GetRelationshipsWithIndex(kind, namespace, name string, topo *Topology, pro
 	if m, ok := queriedObj.(metav1.Object); ok {
 		managedByMeta = m
 	}
-	if mb := SynthesizeManagedBy(managedByMeta, kind, namespace, name, topo, dp); len(mb) > 0 {
+	if mb := SynthesizeManagedBy(managedByMeta, kind, namespace, name, topo, dp, idx); len(mb) > 0 {
 		rel.ManagedBy = mb
 	}
 
@@ -433,15 +433,37 @@ func GetRelationshipsWithIndex(kind, namespace, name string, topo *Topology, pro
 	return rel
 }
 
-// lookupObjectMetadata returns the typed K8s object for kind/namespace/name
-// from provider, or nil if not found. Used to source labels/annotations for
+// lookupObjectMetadata returns the typed K8s object (or *unstructured.Unstructured
+// for CRDs) for kind/namespace/name. Used to source labels/annotations for
 // ManagedBy synthesis and Pod spec fields (ServiceAccountName, NodeName).
-// Only supports the typed kinds available on ResourceProvider — CRDs and
-// kinds without a provider method return nil and skip synthesis.
-func lookupObjectMetadata(kindLower, namespace, name string, provider ResourceProvider) any {
-	if provider == nil {
-		return nil
+//
+// Typed-resource lookups go through the ResourceProvider's accessor methods
+// (Pods, Deployments, …). For CRDs and any kind without a provider method,
+// falls back to the DynamicProvider so GitOps annotations on managed CRs
+// (HelmRelease, ExternalSecret, Certificate, etc.) still drive the chip —
+// without the fallback, the UI's chip would silently disappear for any
+// resource kind not in the typed switch below.
+func lookupObjectMetadata(kindLower, namespace, name string, provider ResourceProvider, dp DynamicProvider) any {
+	if provider != nil {
+		if obj := lookupTypedMetadata(kindLower, namespace, name, provider); obj != nil {
+			return obj
+		}
 	}
+	// Fallback for CRDs and any kind not in the typed switch. dp.Get
+	// returns a *unstructured.Unstructured, which satisfies metav1.Object.
+	if dp != nil {
+		if gvr, ok := dp.GetGVR(kindLower); ok {
+			if u, err := dp.Get(gvr, namespace, name); err == nil && u != nil {
+				return u
+			}
+		}
+	}
+	return nil
+}
+
+// lookupTypedMetadata is the original typed-resource switch. Split out from
+// lookupObjectMetadata so the CRD fallback path is clearly the second tier.
+func lookupTypedMetadata(kindLower, namespace, name string, provider ResourceProvider) any {
 	switch kindLower {
 	case "pod", "pods":
 		pods, _ := provider.Pods()
