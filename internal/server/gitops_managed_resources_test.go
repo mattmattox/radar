@@ -2,69 +2,66 @@ package server
 
 import "testing"
 
-// TestNamespaceAllowedForManagedResources pins the nil-vs-populated
-// semantics of the allowed-namespace check used by
-// handleGitOpsManagedResources. The handler reads
-// `allowedNamespaces := s.getUserNamespaces(r, nil)` which returns:
+// TestManagedScanDenyList pins the deny-list contents that
+// handleGitOpsManagedResources uses to filter the dynamic discovery
+// output. Verifying the list shape here (rather than via an
+// integration test that mocks discovery) keeps the contract obvious:
+// adding or removing a Kind is a single-file change with an explicit
+// regression check.
 //
-//   nil  → admin / auth disabled — every namespace passes
-//   []   → fail-closed (handled by the noNamespaceAccess() check
-//          UPSTREAM of this filter, which returns an empty tree + warning
-//          before any list call fires)
-//   list → restrict to these namespaces
+// The list answers "which Kinds does Argo NEVER stamp with the tracking
+// annotation, so they'd never match anyway and just slow down the scan?"
+// Two categories:
+//   1. Descendants — owned by Argo-managed resources, walked from owners
+//      by the tree builder (Pod, ReplicaSet, ControllerRevision,
+//      Endpoints, EndpointSlice).
+//   2. Platform-internal noise — never user-managed (Event, Lease,
+//      FlowSchema, PriorityLevelConfiguration, TokenRequest, the *Review
+//      subject-action stubs, Binding).
 //
-// The original handler implementation built `allowedSet` from the slice
-// unconditionally — meaning `nil` was converted to an empty map, the
-// "ns in set" check then rejected EVERY namespaced resource, and the
-// admin/auth-off path returned 0 declared resources against a cluster
-// that obviously had them. This test pins the fix.
-func TestNamespaceAllowedForManagedResources(t *testing.T) {
-	t.Run("nil set: every namespace passes (admin or auth-off)", func(t *testing.T) {
-		if !namespaceAllowedForManagedResources("prod", nil) {
-			t.Errorf("nil set should allow ns=prod but didn't")
+// NOT a security boundary — filterGitOpsTreeForUser is what gates what
+// each caller sees per-resource.
+func TestManagedScanDenyList(t *testing.T) {
+	// Owned-by-managed-resource kinds we never want to scan directly.
+	descendants := []string{
+		"Pod", "ReplicaSet", "ControllerRevision",
+		"Endpoints", "EndpointSlice",
+	}
+	for _, k := range descendants {
+		if !managedScanDenyList[k] {
+			t.Errorf("descendant kind %q must be in managedScanDenyList", k)
 		}
-		if !namespaceAllowedForManagedResources("staging", nil) {
-			t.Errorf("nil set should allow ns=staging but didn't")
-		}
-		if !namespaceAllowedForManagedResources("", nil) {
-			t.Errorf("nil set should allow cluster-scoped (ns='') but didn't")
-		}
-	})
+	}
 
-	t.Run("populated set: only members allowed; non-members denied", func(t *testing.T) {
-		set := map[string]struct{}{"prod": {}}
-		if !namespaceAllowedForManagedResources("prod", set) {
-			t.Errorf("populated set with ns=prod should allow prod resource")
+	// Platform-internal noise.
+	noise := []string{
+		"Event", "Lease",
+		"FlowSchema", "PriorityLevelConfiguration",
+		"TokenRequest", "TokenReview",
+		"SubjectAccessReview", "SelfSubjectAccessReview",
+		"LocalSubjectAccessReview", "SelfSubjectRulesReview",
+		"Binding",
+	}
+	for _, k := range noise {
+		if !managedScanDenyList[k] {
+			t.Errorf("platform-noise kind %q must be in managedScanDenyList", k)
 		}
-		if namespaceAllowedForManagedResources("staging", set) {
-			t.Errorf("populated set with ns=prod must NOT allow staging resource")
-		}
-	})
+	}
 
-	t.Run("cluster-scoped resources pass any populated set", func(t *testing.T) {
-		// Cluster-scoped resources (Namespace, ClusterRole, ClusterRoleBinding,
-		// CustomResourceDefinition) have ns="" and must pass any allowedSet
-		// regardless of contents — mirrors canAccessGitOpsRef's existing
-		// behavior for cluster-scoped kinds (the caller has cluster-level
-		// list permission OR they wouldn't have reached this code path).
-		set := map[string]struct{}{"prod": {}}
-		if !namespaceAllowedForManagedResources("", set) {
-			t.Errorf("cluster-scoped resource (ns='') should pass any populated set")
+	// Things that ARE user-managed and must NOT be in the deny-list.
+	// Regression-prone: a future "let's expand the deny-list" PR could
+	// accidentally hide common workload kinds. This pins the contract.
+	mustNotDeny := []string{
+		"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob",
+		"Service", "ConfigMap", "Secret",
+		"Ingress", "HTTPRoute",
+		"Certificate", "ClusterIssuer",
+		"Rollout", "Application", "AppProject",
+		"ClusterRole", "ClusterRoleBinding", "Namespace",
+	}
+	for _, k := range mustNotDeny {
+		if managedScanDenyList[k] {
+			t.Errorf("user-managed kind %q must NOT be in managedScanDenyList (would hide it from the fleet detail tree)", k)
 		}
-	})
-
-	t.Run("empty set: nothing namespaced passes (defense in depth)", func(t *testing.T) {
-		// This case shouldn't actually be reachable in the handler — the
-		// noNamespaceAccess check at the top of handleGitOpsManagedResources
-		// short-circuits with an empty tree + warning before any list runs.
-		// Test it anyway because the helper has no upstream guarantee
-		// and a future caller might hand an empty set.
-		set := map[string]struct{}{}
-		if namespaceAllowedForManagedResources("prod", set) {
-			t.Errorf("empty set must deny namespaced resource")
-		}
-		if !namespaceAllowedForManagedResources("", set) {
-			t.Errorf("empty set should still allow cluster-scoped resource")
-		}
-	})
+	}
 }

@@ -33,9 +33,12 @@ func dial(ctx context.Context, cfg Config) (*yamux.Session, error) {
 	// Validate before send — the value comes from a ConfigMap on the
 	// cluster, and a corrupted ConfigMap shouldn't be able to inject
 	// header smuggling. Reject silently on bad shape; hub falls back
-	// to name-based correlation.
-	if u, err := validateAPIServerURL(cfg.APIServerURL); err == nil && u != "" {
-		headers.Set("X-Radar-API-Server-URL", u)
+	// to name-based correlation. Local var named `apiURL` (not `u`)
+	// because the outer `u` is the *url.URL we dial through — a future
+	// edit near these lines reusing `u` would otherwise reference the
+	// wrong variable.
+	if apiURL, err := validateAPIServerURL(cfg.APIServerURL); err == nil && apiURL != "" {
+		headers.Set("X-Radar-API-Server-URL", apiURL)
 	}
 
 	dialer := *websocket.DefaultDialer

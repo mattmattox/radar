@@ -18,12 +18,8 @@ import {
 
 import { HealthStatusBadge, SyncStatusBadge } from './GitOpsStatusBadge'
 import { Tooltip } from '../ui/Tooltip'
-import {
-  argoStatusToGitOpsStatus,
-  fluxConditionsToGitOpsStatus,
-  type FluxCondition,
-  type GitOpsStatus,
-} from '../../types/gitops'
+import { getGitOpsResourceStatus } from './detail-helpers'
+import { parseContextName } from '../../utils/context-name'
 
 // =============================================================================
 // GitOpsTableView — the canonical GitOps fleet list (Argo + Flux).
@@ -266,7 +262,11 @@ export function GitOpsTableView({
       if (destinationFilter && destinationFilter !== 'all') {
         const match = row._destination?.match
         if (destinationFilter === 'this-cluster' && match !== 'in_cluster') return false
-        if (destinationFilter === 'cross-cluster' && match !== 'inferred') return false
+        // Cross-cluster covers BOTH match modes that point at a different
+        // hub-connected cluster: 'exact' (URL match, high confidence) and
+        // 'inferred' (name match, medium). Forgetting 'exact' here would
+        // hide the very rows the URL-correlation work was meant to surface.
+        if (destinationFilter === 'cross-cluster' && match !== 'exact' && match !== 'inferred') return false
         if (destinationFilter === 'unmatched' && match !== 'unmatched') return false
       }
       return true
@@ -817,13 +817,18 @@ function LabelsDropdown({
 }
 
 function StatusDistribution({ rows }: { rows: GitOpsRow[] }) {
+  // Single dimension: health. Earlier this mixed health (healthy /
+  // progressing / degraded) with sync (outOfSync) which double-counted
+  // rows that were both (e.g. Synced + Degraded → 2 segment increments
+  // → total > rows.length → flex distorts proportions). Use health for
+  // the bar — sync state is visible elsewhere (the OutOfSync summary
+  // tile, the Sync column, the filter rail).
   const summary = summarizeGitOpsRows(rows)
   const total = rows.length || 1
   const segments = [
     { key: 'healthy', value: summary.healthy, className: 'bg-emerald-500' },
     { key: 'progressing', value: summary.progressing, className: 'bg-sky-500' },
     { key: 'degraded', value: summary.degraded, className: 'bg-red-500' },
-    { key: 'outOfSync', value: summary.outOfSync, className: 'bg-amber-500' },
     { key: 'unknown', value: Math.max(0, rows.length - summary.healthy - summary.progressing - summary.degraded), className: 'bg-theme-text-tertiary/40' },
   ].filter((segment) => segment.value > 0)
   return (
@@ -1108,24 +1113,14 @@ function DestinationCell({
 // chips show the human-recognizable suffix instead of the full provider
 // id. Operators recognize `management-cluster` instantly;
 // `gke_koalabackend_me-west1-a_management-cluster` is ~40 chars of noise.
-// Patterns handled:
-//   - GKE:  `gke_<project>_<region>_<name>` → last underscore segment
-//   - EKS:  `arn:aws:eks:<region>:<acct>:cluster/<name>` → after final `/`
-//   - User-named (kind, k3d, plain): returned as-is.
-// Callers should keep the full name in the `title=` for hover.
+//
+// Delegates to parseContextName (utils/context-name.ts), which already
+// covers GKE / EKS ARN / AKS provider formats with a CodeQL-clean
+// linear-time regex. Falls back to the raw input when the parser can't
+// extract a cluster name (kind, k3d, user-named) — keeps the chip from
+// rendering blank for malformed inputs.
 export function shortClusterName(full: string): string {
-  if (full.startsWith('gke_')) {
-    const parts = full.split('_')
-    return parts[parts.length - 1] || full
-  }
-  if (full.startsWith('arn:aws:eks:')) {
-    const slash = full.lastIndexOf('/')
-    // `slash >= 0 && full.slice(slash + 1)` → empty when the slash is
-    // the last char (malformed ARN like `cluster/`). Fall back to the
-    // full input so the chip never renders blank.
-    return (slash >= 0 ? full.slice(slash + 1) : '') || full
-  }
-  return full
+  return parseContextName(full).clusterName || full
 }
 
 function TableCell({ children }: { children: ReactNode }) {
@@ -1305,7 +1300,7 @@ function formatRelativeAge(rfc3339: string): string {
 // =============================================================================
 
 export function normalizeArgoApplication(resource: any): GitOpsRow {
-  const status = getGitOpsStatus('applications', resource)
+  const status = getGitOpsResourceStatus('applications', resource)
   const dest = resource.spec?.destination?.server ?? resource.spec?.destination?.name ?? ''
   const argoLastSync = resource.status?.operationState?.finishedAt ?? resource.status?.history?.[resource.status.history.length - 1]?.deployedAt
   return {
@@ -1340,7 +1335,7 @@ export function normalizeArgoApplication(resource: any): GitOpsRow {
 }
 
 export function normalizeFluxKustomization(resource: any, fluxSourceUrls?: Map<string, string>): GitOpsRow {
-  const status = getGitOpsStatus('kustomizations', resource)
+  const status = getGitOpsResourceStatus('kustomizations', resource)
   const sourceName = resource.spec?.sourceRef?.name ?? ''
   const sourceKind = resource.spec?.sourceRef?.kind ?? ''
   const repository = fluxSourceUrls?.get(`${sourceKind}/${resource.metadata?.namespace ?? ''}/${sourceName}`) ?? sourceName
@@ -1376,7 +1371,7 @@ export function normalizeFluxKustomization(resource: any, fluxSourceUrls?: Map<s
 }
 
 export function normalizeFluxHelmRelease(resource: any, fluxSourceUrls?: Map<string, string>): GitOpsRow {
-  const status = getGitOpsStatus('helmreleases', resource)
+  const status = getGitOpsResourceStatus('helmreleases', resource)
   const chartSpec = resource.spec?.chart?.spec ?? {}
   const sourceName = chartSpec.sourceRef?.name ?? ''
   const sourceKind = chartSpec.sourceRef?.kind ?? ''
@@ -1445,10 +1440,3 @@ function newestConditionTime(resource: any): string {
   return times[times.length - 1] ?? ''
 }
 
-function getGitOpsStatus(kind: string, resource: any): GitOpsStatus | null {
-  if (kind === 'applications') {
-    return argoStatusToGitOpsStatus(resource.status ?? {})
-  }
-  const conditions = (resource.status?.conditions ?? []) as FluxCondition[]
-  return fluxConditionsToGitOpsStatus(conditions, resource.spec?.suspend === true)
-}

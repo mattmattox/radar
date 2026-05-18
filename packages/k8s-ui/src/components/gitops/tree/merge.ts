@@ -30,10 +30,38 @@ import type { GitOpsResourceTree, GitOpsTreeEdge, GitOpsTreeNode, GitOpsTreeRef 
 // Destination's synthetic root is dropped; its non-root nodes that have
 // no controller match are added with prefixed IDs to avoid ID collisions
 // with the controller's node ids.
+//
+// Each output node carries an explicit `data._source` field set to
+// `'controller'` or `'destination'`, which downstream consumers
+// (Radar Hub's fleet detail page) use to route resource-viewer clicks
+// to the correct cluster. The `dest:` ID prefix is preserved for graph
+// rendering (duplicate IDs would break edge resolution) but NOT used as
+// the routing signal — that's the explicit `data._source` field. This
+// separation keeps a future ID-format change from silently breaking
+// cross-cluster navigation.
 // =============================================================================
+
+// MergedNodeSource is the value of `node.data._source` after merge.
+// Reading it from `data` (the documented extension point on
+// GitOpsTreeNode) keeps the canonical type stable while giving
+// consumers an explicit, type-checkable routing signal.
+export type MergedNodeSource = 'controller' | 'destination'
+
+// Key in node.data for the source tag. Exported so consumers don't
+// hard-code the string; if it ever changes, both sides update together.
+export const MERGED_NODE_SOURCE_KEY = '_source' as const
 
 function refKey(ref: GitOpsTreeRef): string {
   return `${ref.group ?? ''}/${ref.kind}/${ref.namespace ?? ''}/${ref.name}`
+}
+
+// withSource returns a shallow copy of `node` whose data field carries
+// the given source tag. Other data keys pass through unchanged.
+function withSource(node: GitOpsTreeNode, source: MergedNodeSource): GitOpsTreeNode {
+  return {
+    ...node,
+    data: { ...(node.data ?? {}), [MERGED_NODE_SOURCE_KEY]: source },
+  }
 }
 
 export function mergeGitOpsTrees(
@@ -53,15 +81,19 @@ export function mergeGitOpsTrees(
   // its live health, info, and topologyStatus onto the controller node.
   // Argo's per-resource sync state stays controller-side — it's
   // Argo-internal and the destination informer doesn't compute it.
+  // Every controller node is tagged with _source='controller' for
+  // resource-viewer routing.
   const nodes: GitOpsTreeNode[] = controller.nodes.map((n) => {
     const dest = destByKey.get(refKey(n.ref))
-    if (!dest) return n
-    return {
-      ...n,
-      health: dest.health ?? n.health,
-      info: dest.info ?? n.info,
-      topologyStatus: dest.topologyStatus ?? n.topologyStatus,
-    }
+    const merged = dest
+      ? {
+          ...n,
+          health: dest.health ?? n.health,
+          info: dest.info ?? n.info,
+          topologyStatus: dest.topologyStatus ?? n.topologyStatus,
+        }
+      : n
+    return withSource(merged, 'controller')
   })
 
   // Pass 2: any destination node WITHOUT a controller match is a descendant
@@ -82,7 +114,11 @@ export function mergeGitOpsTrees(
     } else {
       const newId = `dest:${n.id}`
       destIdRemap.set(n.id, newId)
-      destOnly.push({ ...n, id: newId })
+      // dest: ID prefix is the collision-avoidance mechanism (graph
+      // rendering breaks on duplicate IDs); _source='destination' is
+      // the routing signal consumers actually read. Two distinct
+      // concerns, two distinct fields.
+      destOnly.push(withSource({ ...n, id: newId }, 'destination'))
     }
   }
 

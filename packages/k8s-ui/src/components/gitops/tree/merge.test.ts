@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest'
 
-import { mergeGitOpsTrees } from './merge'
+import { mergeGitOpsTrees, MERGED_NODE_SOURCE_KEY } from './merge'
 import type { GitOpsResourceTree, GitOpsTreeNode } from '../../../types'
 
 // Helper: build a controller-side tree node. IDs follow the controller
@@ -197,5 +197,41 @@ describe('mergeGitOpsTrees', () => {
     }
     const merged = mergeGitOpsTrees(controller, destination)
     expect(merged.summary).toBeUndefined()
+  })
+
+  // Routing signal: every node carries `data._source` so consumers
+  // (Radar Hub's fleet detail page) can route resource-viewer clicks
+  // to the correct cluster without depending on the `dest:` ID prefix
+  // string convention. A future change to the ID format must NOT break
+  // routing — this test pins that separation.
+  test('every output node carries data._source for routing', () => {
+    const controller: GitOpsResourceTree = {
+      root: ctrlNode('app', 'Application', 'app', 'argocd', { role: 'root' }),
+      nodes: [
+        ctrlNode('app', 'Application', 'app', 'argocd', { role: 'root' }),
+        ctrlNode('dep', 'Deployment', 'web', 'prod'),
+      ],
+      edges: [],
+    }
+    const destination: GitOpsResourceTree = {
+      root: destNode('dr', 'Application', 'app', 'argocd', { role: 'root' }),
+      nodes: [
+        destNode('dr', 'Application', 'app', 'argocd', { role: 'root' }),
+        destNode('dep', 'Deployment', 'web', 'prod'), // matches controller node
+        destNode('pod', 'Pod', 'web-xyz', 'prod'),    // destination-only
+      ],
+      edges: [],
+    }
+    const merged = mergeGitOpsTrees(controller, destination)
+    for (const n of merged.nodes) {
+      const source = (n.data ?? {})[MERGED_NODE_SOURCE_KEY]
+      expect(source).toBeDefined()
+    }
+    const app = merged.nodes.find((n) => n.ref.kind === 'Application')
+    const dep = merged.nodes.find((n) => n.ref.kind === 'Deployment')
+    const pod = merged.nodes.find((n) => n.ref.kind === 'Pod')
+    expect(app?.data?.[MERGED_NODE_SOURCE_KEY]).toBe('controller')
+    expect(dep?.data?.[MERGED_NODE_SOURCE_KEY]).toBe('controller') // matched: controller wins
+    expect(pod?.data?.[MERGED_NODE_SOURCE_KEY]).toBe('destination')
   })
 })
