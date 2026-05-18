@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,27 +41,58 @@ func DiscoverAPIServerURL(ctx context.Context, client kubernetes.Interface) stri
 	if !ok || kubeconfig == "" {
 		return ""
 	}
-	// clientcmd.Load parses the embedded kubeconfig YAML; we read the
-	// `clusters[0].cluster.server` field, which kubeadm writes as the
-	// canonical external API server URL.
+	// clientcmd.Load parses the embedded kubeconfig YAML; we want the
+	// canonical external API server URL that kubeadm writes for THIS
+	// cluster (the one the agent is running in).
 	cfg, err := clientcmd.Load([]byte(kubeconfig))
 	if err != nil {
 		return ""
 	}
-	for _, cluster := range cfg.Clusters {
+	// Prefer the cluster CurrentContext points at — for kubeadm-generated
+	// cluster-info, CurrentContext is set and resolves unambiguously. If
+	// that path doesn't yield a valid URL, fall back to picking from the
+	// remaining clusters in sorted-key order (rare: federated kubeadm
+	// configs with multiple cluster entries). Iterating cfg.Clusters
+	// directly was non-deterministic — different invocations could return
+	// different URLs on a multi-cluster kubeconfig, flaking hub correlation.
+	if cfg.CurrentContext != "" {
+		if ctx := cfg.Contexts[cfg.CurrentContext]; ctx != nil && ctx.Cluster != "" {
+			if cluster := cfg.Clusters[ctx.Cluster]; cluster != nil {
+				if u := validClusterServer(cluster.Server); u != "" {
+					return u
+				}
+			}
+		}
+	}
+	keys := make([]string, 0, len(cfg.Clusters))
+	for k := range cfg.Clusters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		cluster := cfg.Clusters[k]
 		if cluster == nil {
 			continue
 		}
-		server := strings.TrimSpace(cluster.Server)
-		// Validate shape — reject anything that doesn't look like an http(s)
-		// URL. The hub validates again, but trimming garbage here keeps
-		// the wire clean.
-		if server == "" || (!strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://")) {
-			continue
+		if u := validClusterServer(cluster.Server); u != "" {
+			return u
 		}
-		return server
 	}
 	return ""
+}
+
+// validClusterServer returns the trimmed server URL when it has an
+// http(s) scheme, else empty. Keeps the wire clean — the hub validates
+// again, but pruning garbage here avoids sending obvious junk.
+func validClusterServer(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if !strings.HasPrefix(s, "https://") && !strings.HasPrefix(s, "http://") {
+		return ""
+	}
+	return s
 }
 
 // validateAPIServerURL is a defensive header-value check. We send what

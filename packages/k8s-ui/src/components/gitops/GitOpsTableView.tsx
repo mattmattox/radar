@@ -1302,7 +1302,12 @@ function formatRelativeAge(rfc3339: string): string {
 export function normalizeArgoApplication(resource: any): GitOpsRow {
   const status = getGitOpsResourceStatus('applications', resource)
   const dest = resource.spec?.destination?.server ?? resource.spec?.destination?.name ?? ''
-  const argoLastSync = resource.status?.operationState?.finishedAt ?? resource.status?.history?.[resource.status.history.length - 1]?.deployedAt
+  // history?.length on the SAME optional-chain so a missing history
+  // doesn't crash on `.length`. Argo populates status before history
+  // on freshly-created Applications (between create and first sync),
+  // so this isn't theoretical.
+  const argoHistory = resource.status?.history
+  const argoLastSync = resource.status?.operationState?.finishedAt ?? (argoHistory && argoHistory.length > 0 ? argoHistory[argoHistory.length - 1]?.deployedAt : undefined)
   return {
     id: `argo/applications/${resource.metadata?.namespace ?? ''}/${resource.metadata?.name ?? ''}`,
     mode: 'applications',
