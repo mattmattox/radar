@@ -117,6 +117,13 @@ For each changed renderer/component:
 7. **Check the browser console** for errors: `mcp__playwright__browser_console_messages`
 8. **Check dark mode** if color/styling changes were made (toggle in settings)
 
+### Common gotchas
+- **Empty list / "Resource not found" on drawer?** Check the namespace switcher in the header — it persists across URL navigation and intersects every read. URL `?namespaces=X` does NOT override it. Either change the active namespace via the switcher or set it to All before navigating.
+- **Drawer doesn't open on row click?** Click the name cell (`td`), not the row (`tr`). Row-level clicks aren't wired to navigation. In Playwright: find the `td` whose `textContent.trim() === '<name>'` and click that.
+- **Screenshots fail with "outside allowed roots"?** Playwright MCP's write root is tied to the harness session's cwd, not Radar's repo. If you're testing Radar in a different workspace than the one Claude was launched in, save screenshots under the launch cwd's `.playwright-mcp/` instead of Radar's.
+- **`scripts/*-demo.sh up` switches kubectl context silently.** Both `crossplane-demo.sh` and `gitops-demo.sh` call `kubectl config use-context kind-...` mid-run. Run `kubectl config current-context` after these scripts to confirm where you are.
+- **Don't run two demo clusters at once.** Two kind control planes on one Docker daemon can deadlock; the older one may stop responding without warning. Bring one down before the other up, or use Radar's in-app context switch to retarget the running binary instead of starting a second cluster.
+
 ### What to look for
 
 - Sections render with data (not empty/undefined/null)

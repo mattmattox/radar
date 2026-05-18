@@ -475,6 +475,29 @@ func (d *DynamicResourceCache) enqueueDynamicChange(kind string, gvr schema.Grou
 // Read methods
 // ---------------------------------------------------------------------------
 
+// WatchedGVRs returns the GVRs that already have a started informer. Callers
+// that want to enumerate "what dynamic resources is the cache currently
+// observing?" should use this — never iterate every CRD from API discovery
+// and call List() on each, which spins up a new persistent informer per GVR
+// and grows unbounded on clusters with many CRDs (Upbound AWS alone ships
+// ~1000 kinds).
+//
+// Result is a snapshot; callers must not assume the set is stable across
+// calls. Synced and unsynced informers are both included — callers that
+// need only ready data should additionally call WaitForSync.
+func (d *DynamicResourceCache) WatchedGVRs() []schema.GroupVersionResource {
+	if d == nil {
+		return nil
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make([]schema.GroupVersionResource, 0, len(d.informers))
+	for gvr := range d.informers {
+		out = append(out, gvr)
+	}
+	return out
+}
+
 // Count returns the number of resources for a given GVR, optionally filtered by namespaces.
 // Unlike List(), this avoids allocating a result slice and skips StripUnstructuredFields.
 func (d *DynamicResourceCache) Count(gvr schema.GroupVersionResource, namespaces []string) (int, error) {

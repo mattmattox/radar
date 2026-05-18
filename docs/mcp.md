@@ -176,6 +176,7 @@ Add to `~/.gemini/settings.json`:
 | `list_helm_releases` | List all Helm releases with status and health | `namespace` (optional) |
 | `get_helm_release` | Detailed Helm release info with optional values, history, and manifest diff | `namespace` (required), `name` (required), `include` (optional: `values,history,diff`), `diff_revision_1` (required when `include=diff`) / `diff_revision_2` (optional) |
 | `get_workload_logs` | Aggregated, AI-filtered logs from all pods of a workload (Deployment, StatefulSet, DaemonSet) | `kind` (required), `namespace` (required), `name` (required), `container` (optional), `tail_lines` (optional, default 100 per pod) |
+| `get_subject_permissions` | Effective RBAC permissions of a ServiceAccount / User / Group: bindings (each with `inheritedFromGroup` set when applicable), deduplicated flat rule list, and (for SAs) the Pods running as it. Use to answer "is this SA over-privileged?" or "what's the blast radius if this Pod is compromised?" | `kind` (required: `ServiceAccount`, `User`, or `Group`), `namespace` (required for ServiceAccount; omit for User/Group), `name` (required) |
 
 ### Write Tools
 

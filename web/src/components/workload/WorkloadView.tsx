@@ -35,6 +35,11 @@ import { PodRenderer } from '../resources/renderers/PodRenderer'
 import { NodeRenderer } from '../resources/renderers/NodeRenderer'
 import { ServiceRenderer } from '../resources/renderers/ServiceRenderer'
 import { WorkloadRenderer } from '../resources/renderers/WorkloadRenderer'
+import { CompositeRenderer } from '../resources/CompositeRenderer'
+import { ServiceAccountRenderer } from '../resources/renderers/ServiceAccountRenderer'
+import { RoleRenderer } from '../resources/renderers/RoleRenderer'
+import { RoleBindingRenderer } from '../resources/renderers/RoleBindingRenderer'
+import { NamespaceRenderer } from '../resources/renderers/NamespaceRenderer'
 import { CreateResourceDialog } from '../shared/CreateResourceDialog'
 import { cleanYamlForDuplicate } from '../../utils/skeleton-yaml'
 import { useDesktopDownload } from '../../hooks/useDesktopDownload'
@@ -43,7 +48,11 @@ type TabType = 'overview' | 'timeline' | 'logs' | 'metrics' | 'yaml'
 
 // Stable reference — web renderer wrappers inject platform hooks internally
 const rendererOverrides: RendererOverrides = {
-  PodRenderer, NodeRenderer, ServiceRenderer, WorkloadRenderer,
+  PodRenderer, NodeRenderer, ServiceRenderer, WorkloadRenderer, CompositeRenderer,
+  ServiceAccountRenderer,
+  RoleRenderer,
+  RoleBindingRenderer,
+  NamespaceRenderer,
 }
 
 // ============================================================================

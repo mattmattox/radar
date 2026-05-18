@@ -230,6 +230,25 @@ var supportedCRDFallbacks = []supportedCRDResource{
 	{Group: "aquasecurity.github.io", Versions: []string{"v1alpha1"}, Resource: "clustersbomreports", Kind: "ClusterSbomReport", Namespaced: false},
 	{Group: "aquasecurity.github.io", Versions: []string{"v1alpha1"}, Resource: "infraassessmentreports", Kind: "InfraAssessmentReport", Namespaced: true},
 	{Group: "aquasecurity.github.io", Versions: []string{"v1alpha1"}, Resource: "clusterinfraassessmentreports", Kind: "ClusterInfraAssessmentReport", Namespaced: false},
+	// Crossplane core (apiextensions = XRDs/Compositions; pkg = Provider/Function/Configuration).
+	// Managed Resources (Bucket, Database, etc.) and XRs from XRDs are intentionally NOT warmed —
+	// the kind set is unbounded per provider/XRD, so they're picked up lazily on first list.
+	{Group: "apiextensions.crossplane.io", Versions: []string{"v1", "v2", "v1beta1"}, Resource: "compositeresourcedefinitions", Kind: "CompositeResourceDefinition", Namespaced: false},
+	{Group: "apiextensions.crossplane.io", Versions: []string{"v1", "v2"}, Resource: "compositions", Kind: "Composition", Namespaced: false},
+	{Group: "apiextensions.crossplane.io", Versions: []string{"v1", "v2"}, Resource: "compositionrevisions", Kind: "CompositionRevision", Namespaced: false},
+	{Group: "apiextensions.crossplane.io", Versions: []string{"v1beta1"}, Resource: "environmentconfigs", Kind: "EnvironmentConfig", Namespaced: false},
+	{Group: "pkg.crossplane.io", Versions: []string{"v1", "v1beta1"}, Resource: "providers", Kind: "Provider", Namespaced: false},
+	{Group: "pkg.crossplane.io", Versions: []string{"v1", "v1beta1"}, Resource: "providerrevisions", Kind: "ProviderRevision", Namespaced: false},
+	{Group: "pkg.crossplane.io", Versions: []string{"v1", "v1beta1"}, Resource: "functions", Kind: "Function", Namespaced: false},
+	{Group: "pkg.crossplane.io", Versions: []string{"v1"}, Resource: "functionrevisions", Kind: "FunctionRevision", Namespaced: false},
+	{Group: "pkg.crossplane.io", Versions: []string{"v1"}, Resource: "configurations", Kind: "Configuration", Namespaced: false},
+	{Group: "pkg.crossplane.io", Versions: []string{"v1beta1"}, Resource: "deploymentruntimeconfigs", Kind: "DeploymentRuntimeConfig", Namespaced: false},
+	// provider-kubernetes (no cloud creds needed, ideal for demo clusters)
+	{Group: "kubernetes.crossplane.io", Versions: []string{"v1alpha2", "v1alpha1"}, Resource: "providerconfigs", Kind: "ProviderConfig", Namespaced: false},
+	{Group: "kubernetes.crossplane.io", Versions: []string{"v1alpha2", "v1alpha1"}, Resource: "objects", Kind: "Object", Namespaced: false},
+	// provider-helm
+	{Group: "helm.crossplane.io", Versions: []string{"v1beta1"}, Resource: "providerconfigs", Kind: "ProviderConfig", Namespaced: false},
+	{Group: "helm.crossplane.io", Versions: []string{"v1beta1"}, Resource: "releases", Kind: "Release", Namespaced: false},
 	// Kyverno admission/policy CRDs. Watching Policy/ClusterPolicy directly
 	// is what flips the conditional PolicyReport warmup (see policy_reports.go) —
 	// presence of these in discovery is the signal that the cluster runs Kyverno.

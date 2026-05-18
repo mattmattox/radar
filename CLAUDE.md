@@ -138,6 +138,7 @@ Use `/visual-test` command for the full workflow (cluster check, Playwright MCP,
 - Nodes: `/api/nodes/{name}/...` (cordon, uncordon, drain, debug)
 - Audit: `/api/audit`, `/api/audit/resource/{kind}/{ns}/{name}`, `/api/settings/audit` (GET/PUT)
 - CAPI: `/api/capi/clusters/{ns}/{name}/kubeconfig` (GET), `/api/capi/clusters/{ns}/{name}/connect` (POST)
+- RBAC reverse-lookup: `/api/rbac/subject/{kind}/{namespace}/{name}` (ServiceAccount) and `/api/rbac/subject/{kind}/{name}` (User/Group) return direct + group-inherited bindings + flattened effective rules. SA subjects also get a `usedByPods` list (Pods whose `spec.serviceAccountName` matches — closes the loop on the SA detail page). `/api/rbac/role/{kind}/{namespace}/{name}` (use `_` for ClusterRole's empty namespace) returns the inverse — bindings that reference the role + their subjects. `/api/rbac/namespace/{namespace}` returns RoleBindings in the namespace + ClusterRoleBindings with at least one SA subject in it + a ServiceAccount count (backs the NamespaceRenderer's RBAC section; group-only ClusterRoleBindings like `system:authenticated` grants are deliberately excluded — they'd appear in every namespace and would be noise). `/api/rbac/whoami?namespace=...` is a pass-through of `SelfSubjectRulesReview` for the current user. Backed by `pkg/rbac/` (pure index + 5s TTL memo); endpoints gate on `list rolebindings` AND `list clusterrolebindings` (403 when either is denied — silent partial views would mislead operators).
 
 ## Key Patterns
 
@@ -182,6 +183,14 @@ WebSocket pod exec: `internal/server/exec.go` — xterm.js terminal, container/s
 ### Timeline + resource relationships
 
 Timeline (`pkg/timeline/`): in-memory or SQLite (`--timeline-storage`), default 10k-event ring, groupable by owner / app label / namespace. Resource relationships (`pkg/topology/relationships.go`): computed at query time — parent/children/deployment-grandparent/config/network/scalers/policies/storage — used for both detail views and topology edges.
+
+### RBAC Visibility
+
+`pkg/rbac/` is a pure package over typed `rbacv1` listers — no K8s API calls, no internal/ imports. `BuildIndex` produces `BindingsBySubject` + `BindingsByRole` maps; `EffectiveRules(subject)` flattens direct + implicit-group bindings (`system:authenticated`, `system:serviceaccounts`, `system:serviceaccounts:<ns>` — included only for ServiceAccount subjects) with provenance preserved. Flat rule output capped at `MaxFlatRules` (500); response sets `truncated: true`. 5s `rbac.Memoizer` absorbs the SA/Pod-detail fetch burst; `finalizePostContextSwitch` calls `Invalidate()` so a kubeconfig context switch doesn't serve the previous cluster's RBAC for up to 5s. No mutation invalidation today — read-only MVP.
+
+Renderers (`ServiceAccountRenderer`, `RoleRenderer`, `RoleBindingRenderer`, `PodRenderer`, `WorkloadRenderer`, `NamespaceRenderer`) accept optional `rbacData` / `rbacRoleData` / `roleRules` props and render the reverse-lookup sections only when the host wires the fetch. Host wrappers in `web/src/components/resources/renderers/` use `useRBACSubject` / `useRBACRole` / `useRBACNamespace`. Library consumers (Radar Hub) that skip the fetch get the original sections; nothing breaks.
+
+Pod **Permissions** is the differentiator — frames the SA's grant as blast radius. Workload detail ships the same surface framed at the workload level. Detection lives in `packages/k8s-ui/src/utils/rbac-blast-radius.ts` (`detectBlastRadius` + `rulePermissivenessScore` + `RBAC_BLAST_*` verb-set constants), extracted from the two renderers so they can't drift; 12 unit tests pin the triggers. Triggers: verb wildcards, cluster-admin bindings, `escalate`/`bind`/`impersonate`, cluster-wide `create pods`. Resource-only wildcards deliberately do NOT trigger — they fire on every authenticated SA. Theme-aware badge classes for RBAC display live in `packages/k8s-ui/src/utils/rbac-badges.ts` — hand-rolled `bg-*-500/20 text-*-400` strings wash out in light mode.
 
 ### AI Context Minification
 
@@ -231,6 +240,8 @@ Centralized `@layer components` classes in `theme/components.css` (Tailwind util
 **Adding or modifying a CRD integration? Read [docs/INTEGRATION_GUIDE.md](docs/INTEGRATION_GUIDE.md) first** — full checklist with collision gotchas. Renderers live in `packages/k8s-ui/src/components/resources/renderers/` (100+ components, 20+ integrations); register in that folder's `index.ts` plus `shared/ResourceRendererDispatch.tsx` (KNOWN_KINDS, render line, `getResourceStatus()`). Use `AlertBanner` / `ProblemAlerts` / `ConditionsSection` for problem surfaces and `LabelSelectorDisplay` for selectors — never hand-roll. Sections default to `defaultExpanded={true}` unless empty/low-priority.
 
 **Kind collision rule:** When a CRD kind shadows core (Knative Service vs core Service) or two CRDs share a kind (CNPG Cluster vs CAPI Cluster), guard THREE places in `ResourceRendererDispatch.tsx`: the renderer line, `getResourceStatus()`, and action buttons (Port Forward, etc.). Use `data?.apiVersion?.includes('group.name')`. Missing any one produces dual-render bugs.
+
+**Crossplane renderers are spec-shape detected, not kind-enumerated.** Managed Resources / Composites / Claims have unbounded plurals (one CRD per provider service), so dispatch uses `isManagedResource(data)` / `isComposite(data)` / `isClaim(data)` from `resource-utils-crossplane.ts` as fall-throughs. `Provider` / `ProviderConfig` / `Composition` / `CompositionRevision` / `XRD` / `Function` / `Configuration` are kind-dispatched. v1↔v2 path handling lives entirely in the resource-utils accessors (try `spec.crossplane.x` first, fall back to `spec.x`). `CompositeRenderer` accepts a `composedRefStatuses` Map injected by the host wrapper (`web/src/components/resources/CompositeRenderer.tsx`) that fans out React Query lookups for each `resourceRefs` entry — each composed-resource row gets a live status badge that way.
 
 ## Tech stack + server config
 

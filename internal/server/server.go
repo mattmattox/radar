@@ -42,6 +42,7 @@ import (
 	"github.com/skyhook-io/radar/internal/timeline"
 	"github.com/skyhook-io/radar/internal/updater"
 	"github.com/skyhook-io/radar/internal/version"
+	"github.com/skyhook-io/radar/pkg/rbac"
 	topology "github.com/skyhook-io/radar/pkg/topology"
 )
 
@@ -78,6 +79,13 @@ type Server struct {
 	// (page-load tree+insights, in-flight 2s polling, dashboard widgets)
 	// without user-visible staleness — controllers reconcile far slower.
 	topoMemo *topology.Memoizer
+
+	// Short-TTL cache for the RBAC reverse-lookup index. A SA detail
+	// page fires multiple /api/rbac/* calls in quick succession (subject
+	// lookup + role lookup for each linked role); cache absorbs the
+	// burst. Index is a pure projection of four cached listers — TTL has
+	// no semantic effect.
+	rbacMemo *rbac.Memoizer
 }
 
 // Config holds server configuration
@@ -107,6 +115,7 @@ func New(cfg Config) *Server {
 		effectiveConfig: cfg.EffectiveConfig,
 		authConfig:      cfg.AuthConfig,
 		topoMemo:        topology.NewMemoizer(5 * time.Second),
+		rbacMemo:        rbac.NewMemoizer(5 * time.Second),
 	}
 
 	// Register a single context-switch callback so every PerformContextSwitch
@@ -259,6 +268,18 @@ func (s *Server) setupRoutes() {
 			r.Get("/gitops/tree/{kind}/{namespace}/{name}", s.handleGitOpsTree)
 			r.Get("/gitops/insights/{kind}/{namespace}/{name}", s.handleGitOpsInsights)
 			r.Get("/gitops/managed-resources", s.handleGitOpsManagedResources)
+
+			// RBAC reverse-lookup endpoints. Two shapes for /subject:
+			// ServiceAccount carries a namespace (3 segments after kind);
+			// User and Group are cluster-wide (2 segments). chi disambiguates
+			// by segment count. /role uses "_" as a sentinel for ClusterRole's
+			// empty namespace because chi requires a literal segment.
+			r.Get("/rbac/subject/{kind}/{namespace}/{name}", s.handleRBACSubject)
+			r.Get("/rbac/subject/{kind}/{name}", s.handleRBACSubject)
+			r.Get("/rbac/role/{kind}/{namespace}/{name}", s.handleRBACRole)
+			r.Get("/rbac/namespace/{namespace}", s.handleRBACNamespace)
+			r.Get("/rbac/whoami", s.handleRBACWhoami)
+
 			r.Get("/namespaces", s.handleNamespaces)
 			r.Get("/api-resources", s.handleAPIResources)
 			r.Get("/resource-counts", s.handleResourceCounts)
@@ -1351,6 +1372,40 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 				return cache.PodDisruptionBudgets().PodDisruptionBudgets(ns).List(labels.Everything())
 			},
 		)
+	case "serviceaccounts":
+		// ServiceAccounts are in the deferred informer batch, but the typed
+		// lister object is available before sync (isEnabled is true). Calling
+		// .List() pre-sync would return empty, which the frontend renders as
+		// "No ServiceAccount found" — misleading when 46 actually exist.
+		// notReadyOrForbidden distinguishes "still syncing" (503) from
+		// "RBAC denied" (403).
+		if cache.ServiceAccounts() == nil {
+			notReadyOrForbidden("serviceaccounts")
+			return
+		}
+		result, err = listPerNs(
+			func() (any, error) { return cache.ServiceAccounts().List(labels.Everything()) },
+			func(ns string) (any, error) {
+				return cache.ServiceAccounts().ServiceAccounts(ns).List(labels.Everything())
+			},
+		)
+	case "ingressclasses":
+		if cache.IngressClasses() == nil {
+			forbiddenMsg("ingressclasses")
+			return
+		}
+		result, err = cache.IngressClasses().List(labels.Everything())
+	case "limitranges":
+		if cache.LimitRanges() == nil {
+			notReadyOrForbidden("limitranges")
+			return
+		}
+		result, err = listPerNs(
+			func() (any, error) { return cache.LimitRanges().List(labels.Everything()) },
+			func(ns string) (any, error) {
+				return cache.LimitRanges().LimitRanges(ns).List(labels.Everything())
+			},
+		)
 	case "networkpolicies", "netpol":
 		if cache.NetworkPolicies() == nil {
 			notReadyOrForbidden("networkpolicies")
@@ -1656,6 +1711,48 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resource, err = cache.NetworkPolicies().NetworkPolicies(namespace).Get(name)
+	case "serviceaccounts", "serviceaccount":
+		if cache.ServiceAccounts() == nil {
+			notReadyOrForbiddenGet("serviceaccounts")
+			return
+		}
+		resource, err = cache.ServiceAccounts().ServiceAccounts(namespace).Get(name)
+	case "ingressclasses", "ingressclass":
+		if cache.IngressClasses() == nil {
+			forbiddenGet("ingressclasses")
+			return
+		}
+		resource, err = cache.IngressClasses().Get(name)
+	case "limitranges", "limitrange":
+		if cache.LimitRanges() == nil {
+			notReadyOrForbiddenGet("limitranges")
+			return
+		}
+		resource, err = cache.LimitRanges().LimitRanges(namespace).Get(name)
+	case "roles", "role":
+		if cache.Roles() == nil {
+			forbiddenGet("roles")
+			return
+		}
+		resource, err = cache.Roles().Roles(namespace).Get(name)
+	case "clusterroles", "clusterrole":
+		if cache.ClusterRoles() == nil {
+			forbiddenGet("clusterroles")
+			return
+		}
+		resource, err = cache.ClusterRoles().Get(name)
+	case "rolebindings", "rolebinding":
+		if cache.RoleBindings() == nil {
+			forbiddenGet("rolebindings")
+			return
+		}
+		resource, err = cache.RoleBindings().RoleBindings(namespace).Get(name)
+	case "clusterrolebindings", "clusterrolebinding":
+		if cache.ClusterRoleBindings() == nil {
+			forbiddenGet("clusterrolebindings")
+			return
+		}
+		resource, err = cache.ClusterRoleBindings().Get(name)
 	default:
 		// Fall back to dynamic cache for CRDs and other unknown resources
 		// Use group to disambiguate when multiple API groups have similar resource names

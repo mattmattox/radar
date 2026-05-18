@@ -287,6 +287,21 @@ Proactive best-practices scanner with 31 checks across security, reliability, an
 - Framework labels: NSA/CISA, CIS benchmarks
 - MCP tool (`get_cluster_audit`) for AI-assisted cluster analysis
 
+### Access Control (RBAC visibility)
+
+Inspect what any ServiceAccount can actually do — without three `kubectl describe` calls.
+
+- **ServiceAccount detail**: direct bindings, effective permissions (per-binding and deduplicated flat view), inherited grants via implicit groups (`system:authenticated`, `system:serviceaccounts`), and "Used by Pods" closing the loop
+- **Pod detail**: "Permissions" section showing the most-permissive rules the Pod's SA grants, plus a blast-radius alert when the SA has wildcards, cluster-admin, escalation verbs, or cluster-wide `create pods`
+- **Workload detail** (Deployment / StatefulSet / DaemonSet): same Permissions section framed at the workload level — every Pod the workload spawns inherits these grants
+- **Namespace detail**: RBAC summary with RoleBindings configured here + ClusterRoleBindings whose subjects reference this namespace
+- **Role / ClusterRole detail**: who is bound to this role, with subject summaries inline
+- **RoleBinding detail**: inline preview of the rules the binding grants + warnings when subjects include wide groups (`system:authenticated`, `system:unauthenticated`, `system:masters`)
+- **"My Permissions" panel**: namespace-scoped live `SelfSubjectRulesReview` for the current user — for fast "why can't I do X" debugging
+- **MCP**: `get_subject_permissions` tool exposes the same data to AI assistants for "is this SA over-privileged?" / "blast radius if compromised?" queries
+
+Considered for follow-ups, deliberately not in this pass — RBAC audit checks (wildcard / cluster-admin / orphan-binding / unused-role detection, Kubescape-aligned), a verb × resource matrix view on the SA page (rakkess-style), a "Subject Explorer" top-level page for browsing Users / Groups without a detail page today, a graph topology view of Subject → Binding → Role → Rule (`rbac-tool viz` style), in-UI binding edits, and a "can-i" free-form query UI. Read-only visibility ships first; we'll come back once we see how operators use the reverse-lookup.
+
 ### AI Integration (MCP) <sup>beta</sup>
 
 Radar includes a built-in [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets AI assistants — Claude, Cursor, Copilot, and others — query your cluster through Radar.
@@ -343,6 +358,7 @@ Radar auto-discovers any CRD in your cluster. Popular tools get [dedicated integ
 | **Velero** | Backup, Restore, Schedule, BackupStorageLocation, VolumeSnapshotLocation |
 | **External Secrets** | ExternalSecret, ClusterExternalSecret, SecretStore, ClusterSecretStore |
 | **CloudNativePG** | Cluster, Backup, ScheduledBackup, Pooler |
+| **Crossplane** | Managed Resources (any provider), Composite Resources, Claims, Provider, ProviderConfig, Function, Configuration, Composition, CompositionRevision, XRD |
 | **Kyverno** | Policy, ClusterPolicy, PolicyReport, ClusterPolicyReport |
 | **Sealed Secrets** | SealedSecret |
 | **Cost (OpenCost)** | Namespace/workload/node cost breakdown via Prometheus (no CRDs) |

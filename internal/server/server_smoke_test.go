@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -20,7 +21,10 @@ import (
 	"github.com/skyhook-io/radar/internal/timeline"
 )
 
-var testServer *httptest.Server
+var (
+	testServer   *httptest.Server
+	testServerSrv *Server
+)
 
 func TestMain(m *testing.M) {
 	replicas := int32(1)
@@ -144,6 +148,38 @@ func TestMain(m *testing.M) {
 			ObjectMeta: metav1.ObjectMeta{Name: "system-token", Namespace: "kube-system"},
 			Type:       corev1.SecretTypeOpaque,
 		},
+		// RBAC fixtures: one SA, a Role/RoleBinding pair binding it, a
+		// ClusterRole/ClusterRoleBinding grant to system:authenticated so
+		// rbac_handlers_test can exercise both direct + inherited paths.
+		&corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "app-sa", Namespace: "default"},
+		},
+		&rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "app-reader", Namespace: "default"},
+			Rules: []rbacv1.PolicyRule{{
+				Verbs: []string{"get", "list"}, APIGroups: []string{""}, Resources: []string{"pods"},
+			}},
+		},
+		&rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "app-binding", Namespace: "default"},
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "app-reader", APIGroup: "rbac.authorization.k8s.io"},
+			Subjects: []rbacv1.Subject{{
+				Kind: "ServiceAccount", Namespace: "default", Name: "app-sa",
+			}},
+		},
+		&rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbac-test-view"},
+			Rules: []rbacv1.PolicyRule{{
+				Verbs: []string{"list"}, APIGroups: []string{""}, Resources: []string{"namespaces"},
+			}},
+		},
+		&rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbac-test-auth-view"},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "rbac-test-view", APIGroup: "rbac.authorization.k8s.io"},
+			Subjects: []rbacv1.Subject{{
+				Kind: "Group", Name: "system:authenticated", APIGroup: "rbac.authorization.k8s.io",
+			}},
+		},
 	)
 
 	// Initialize cache from fake client (bypasses RBAC checks)
@@ -163,6 +199,7 @@ func TestMain(m *testing.M) {
 	}
 
 	srv := New(Config{DevMode: true})
+	testServerSrv = srv
 	testServer = httptest.NewServer(srv.Handler())
 
 	code := m.Run()

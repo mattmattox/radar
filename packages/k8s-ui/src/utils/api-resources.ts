@@ -124,8 +124,11 @@ export function formatGroupName(group: string): string {
     'gateway.networking.k8s.io': 'Gateway API',
     'traefik.io': 'Traefik',
     'traefik.containo.us': 'Traefik',
+    'crossplane.io': 'Crossplane',
     'pkg.crossplane.io': 'Crossplane',
     'apiextensions.crossplane.io': 'Crossplane',
+    'helm.crossplane.io': 'Crossplane',
+    'kubernetes.crossplane.io': 'Crossplane',
     'source.toolkit.fluxcd.io': 'Flux',
     'helm.toolkit.fluxcd.io': 'Flux',
     'kustomize.toolkit.fluxcd.io': 'Flux',
@@ -167,7 +170,12 @@ export function formatGroupName(group: string): string {
     'kubeflow.org': 'Kubeflow',
     'snapshot.storage.k8s.io': 'Snapshots',
   }
-  return knownGroups[group] || group
+  if (knownGroups[group]) return knownGroups[group]
+  // Suffix rules — for unbounded provider group sets (Crossplane providers ship
+  // their own per-service groups like s3.aws.upbound.io, compute.gcp.upbound.io).
+  if (group.endsWith('.upbound.io')) return 'Crossplane'
+  if (group.endsWith('.crossplane.io')) return 'Crossplane'
+  return group
 }
 
 export function shortenGroupName(group: string): string {

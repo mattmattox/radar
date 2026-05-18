@@ -10,7 +10,10 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+
+	"github.com/skyhook-io/radar/pkg/timeutil"
 )
 
 // RunChecks runs all best-practice checks against the provided resources
@@ -61,6 +64,11 @@ func RunChecks(input *CheckInput) *ScanResults {
 	// non-GitOps resources (stuck Pods on failed nodes, Deployments
 	// blocked by webhook finalizers, etc.).
 	findings = append(findings, checkStuckTerminating(input)...)
+
+	// --- Crossplane: MRs/XRs/Claims stuck Ready=False or Synced=False ---
+	// Same severity ramp as stuckTerminating (5min warning, 30min danger) so
+	// operators see the same "long enough to flag" semantics across surfaces.
+	findings = append(findings, checkCrossplaneStuck(input)...)
 
 	return buildResults(findings)
 }
@@ -1063,7 +1071,7 @@ func checkStuckTerminating(input *CheckInput) []Finding {
 			CheckID:   "stuckTerminating",
 			Category:  CategoryReliability,
 			Severity:  severity,
-			Message:   fmt.Sprintf("Has been pending deletion for %s%s", formatDurationShort(age), note),
+			Message:   fmt.Sprintf("Has been pending deletion for %s%s", timeutil.FormatAgeShort(age), note),
 		})
 	}
 	// Scan every typed slice we have. Adding a new type to CheckInput
@@ -1105,26 +1113,137 @@ func checkStuckTerminating(input *CheckInput) []Finding {
 	return findings
 }
 
-// formatDurationShort renders a duration as the same compact form used
-// by the gitops insights detector ("3s", "12m", "4h", "21d") so audit
-// findings and per-resource Issues read consistently to operators
-// glancing across both surfaces.
+// checkCrossplaneStuck finds Crossplane Managed Resources, Composites, and
+// Claims with Ready=False or Synced=False past the same 5-minute/30-minute
+// thresholds used by checkStuckTerminating. Reusing the thresholds keeps the
+// audit page consistent across stuck-resource categories so operators don't
+// have to relearn what "long enough to flag" means for each kind.
 //
-// keep in sync: pkg/gitops/insights/insights.go::formatAgeShort (Go)
-// and web/src/components/gitops/GitOpsView.tsx::formatRelativeAge
-// (TypeScript) carry the same tier breakpoints.
-func formatDurationShort(d time.Duration) string {
-	if d < 0 {
-		d = 0
+// The check inspects status.conditions on each unstructured object directly
+// — Crossplane condition semantics are stable across every provider (Ready,
+// Synced) so we don't need per-provider knowledge.
+func checkCrossplaneStuck(input *CheckInput) []Finding {
+	if input == nil {
+		return nil
 	}
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	var findings []Finding
+	now := time.Now()
+
+	emit := func(category string, u *unstructured.Unstructured) {
+		// Skip terminating resources — they're already flagged by checkStuckTerminating
+		// with the right severity ramp. Reporting both creates noise.
+		if !u.GetDeletionTimestamp().IsZero() {
+			return
+		}
+		// Don't flag paused resources — the operator intentionally stopped
+		// reconciliation; lighting a "stuck" finding is misleading.
+		if u.GetAnnotations()["crossplane.io/paused"] == "true" {
+			return
+		}
+		cond, ok := findFalseCrossplaneCondition(u)
+		if !ok {
+			return
+		}
+		age := now.Sub(cond.transitionTime)
+		if age < stuckTerminatingThresholdWarning {
+			return
+		}
+		severity := SeverityWarning
+		if age >= stuckTerminatingThresholdDanger {
+			severity = SeverityDanger
+		}
+		// Crossplane conditions almost always include a reason+message — surface
+		// both, since the message often contains the upstream cloud-API error
+		// verbatim (the actionable thing) and the reason classifies it.
+		extra := ""
+		if cond.reason != "" {
+			extra = " (" + cond.reason + ")"
+		}
+		if cond.message != "" {
+			// Keep messages bounded — some providers return multi-line errors.
+			msg := strings.SplitN(cond.message, "\n", 2)[0]
+			extra += ": " + msg
+		}
+		findings = append(findings, Finding{
+			Kind:      u.GetKind(),
+			Namespace: u.GetNamespace(),
+			Name:      u.GetName(),
+			CheckID:   "crossplaneStuck",
+			Category:  category,
+			Severity:  severity,
+			Message:   fmt.Sprintf("%s=False for %s%s", cond.condType, timeutil.FormatAgeShort(age), extra),
+		})
 	}
+	for _, mr := range input.ManagedResources {
+		if mr != nil {
+			emit(CategoryReliability, mr)
+		}
+	}
+	for _, xr := range input.CompositeResources {
+		if xr != nil {
+			emit(CategoryReliability, xr)
+		}
+	}
+	return findings
+}
+
+// crossplaneFalseCondition holds the fields we need from a False Ready/Synced
+// condition. Local to the audit package so it doesn't pollute the public API.
+type crossplaneFalseCondition struct {
+	condType       string
+	reason         string
+	message        string
+	transitionTime time.Time
+}
+
+// findFalseCrossplaneCondition returns the most-actionable False condition
+// for a Crossplane resource — Synced=False first (configuration error,
+// fixable), then Ready=False (provider can't converge, may resolve). Returns
+// false if neither is False or the transition time is missing.
+func findFalseCrossplaneCondition(u *unstructured.Unstructured) (crossplaneFalseCondition, bool) {
+	conds, found, err := unstructured.NestedSlice(u.Object, "status", "conditions")
+	if err != nil || !found {
+		return crossplaneFalseCondition{}, false
+	}
+	// Synced gets priority: it usually indicates the provider rejected
+	// the spec (bad ProviderConfig, malformed forProvider, missing perms).
+	// Ready=False is downstream — fixing Synced often resolves Ready.
+	priority := []string{"Synced", "Ready"}
+	for _, want := range priority {
+		for _, raw := range conds {
+			c, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			t, _ := c["type"].(string)
+			s, _ := c["status"].(string)
+			if t != want || s != "False" {
+				continue
+			}
+			reason, _ := c["reason"].(string)
+			message, _ := c["message"].(string)
+			tt, _ := c["lastTransitionTime"].(string)
+			var transitionTime time.Time
+			if tt != "" {
+				if parsed, err := time.Parse(time.RFC3339, tt); err == nil {
+					transitionTime = parsed
+				}
+			}
+			if transitionTime.IsZero() {
+				// Without a transition time we can't measure age — skip this
+				// condition and let the outer loop fall through to the next
+				// priority tier (Synced first, then Ready). Crossplane always
+				// sets it on its own conditions; missing means non-standard
+				// producer.
+				continue
+			}
+			return crossplaneFalseCondition{
+				condType:       t,
+				reason:         reason,
+				message:        message,
+				transitionTime: transitionTime,
+			}, true
+		}
+	}
+	return crossplaneFalseCondition{}, false
 }
