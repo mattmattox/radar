@@ -14,6 +14,7 @@ import (
 
 	"github.com/skyhook-io/radar/pkg/gitops"
 	gitopstree "github.com/skyhook-io/radar/pkg/gitops/tree"
+	"github.com/skyhook-io/radar/pkg/timeutil"
 )
 
 type Insight struct {
@@ -1502,7 +1503,7 @@ func detectPendingDeletion(root *unstructured.Unstructured, resolver Resolver) *
 	if age < 0 {
 		age = 0
 	}
-	rel := formatAgeShort(age)
+	rel := timeutil.FormatAgeShort(age)
 
 	severity := SeverityInfo
 	reason := "Terminating"
@@ -1570,30 +1571,6 @@ func detectPendingDeletion(root *unstructured.Unstructured, resolver Resolver) *
 	}
 }
 
-// formatAgeShort renders a duration as a compact relative string used in
-// Issue messages: "3s", "12m", "4h", "21d".
-//
-// keep in sync: pkg/audit/checks.go::formatDurationShort (byte-identical)
-// and web/src/components/gitops/GitOpsView.tsx::formatRelativeAge
-// (TypeScript). Adding a new tier (e.g. "weeks") in one and not the
-// others would let the lifecycle banner, the chip tooltip, the audit
-// finding, and the fleet "Pending Nago" cell disagree on the same
-// duration. Worth consolidating into a shared package eventually.
-func formatAgeShort(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	}
-}
 
 // detectStuckDriftLoop emits a critical issue when an Argo Application is
 // in the "applied successfully but still drifted" state — the case where

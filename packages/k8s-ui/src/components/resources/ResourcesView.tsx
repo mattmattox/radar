@@ -137,6 +137,8 @@ import { PolicyReportCell, ClusterPolicyReportCell, KyvernoPolicyCell, ClusterPo
 import { ExternalSecretCell, ClusterExternalSecretCell, SecretStoreCell, ClusterSecretStoreCell } from './renderers/eso-cells'
 import { BackupCell, RestoreCell, ScheduleCell, BackupStorageLocationCell } from './renderers/velero-cells'
 import { CNPGClusterCell, CNPGBackupCell, CNPGScheduledBackupCell, CNPGPoolerCell } from './renderers/cnpg-cells'
+import { ManagedResourceCell, CompositeResourceCell, CrossplaneProviderCell, CrossplaneProviderConfigCell, CompositionCell, XRDCell } from './renderers/crossplane-cells'
+import { isManagedResource, isComposite } from './resource-utils-crossplane'
 import { VirtualServiceCell, DestinationRuleCell, IstioGatewayCell, ServiceEntryCell, PeerAuthenticationCell, AuthorizationPolicyCell } from './renderers/istio-cells'
 import { KnativeServiceCell, ConfigurationCell as KnativeConfigurationCell, RevisionCell as KnativeRevisionCell, RouteCell as KnativeRouteCell, BrokerCell, TriggerCell, EventTypeCell, PingSourceCell, ApiServerSourceCell, ContainerSourceCell, SinkBindingCell, ChannelCell, InMemoryChannelCell, SubscriptionCell, SequenceCell, ParallelCell, DomainMappingCell, ServerlessServiceCell, KnativeIngressCell, KnativeCertificateCell } from './renderers/knative-cells'
 import { IngressRouteCell, MiddlewareCell, TraefikServiceCell, ServersTransportCell, TLSOptionCell } from './renderers/traefik-cells'
@@ -1513,6 +1515,43 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
     { key: 'status', label: 'Status', width: 'w-28 shrink-0' },
     { key: 'age', label: 'Age', width: 'w-24 shrink-0' },
   ],
+  // Crossplane — Managed Resources are unbounded (one kind per provider CRD);
+  // routed via isLikelyCrossplaneMRGroup, not by exact kind plural.
+  crossplanemanagedresources: [
+    { key: 'name', label: 'Name', width: 'min-w-40' },
+    { key: 'namespace', label: 'Namespace', width: 'w-32 shrink-0' },
+    { key: 'kind', label: 'Kind', width: 'w-32 shrink-0' },
+    { key: 'external', label: 'External Name', width: 'min-w-48', hideOnMobile: true },
+    { key: 'provider', label: 'Provider Config', width: 'w-36 shrink-0', hideOnMobile: true },
+    { key: 'status', label: 'Status', width: 'w-32 shrink-0' },
+    { key: 'age', label: 'Age', width: 'w-24 shrink-0' },
+  ],
+  providers: [
+    { key: 'name', label: 'Name', width: 'min-w-40' },
+    { key: 'package', label: 'Package', width: 'min-w-48' },
+    { key: 'revision', label: 'Revision', width: 'w-36 shrink-0', hideOnMobile: true },
+    { key: 'status', label: 'Status', width: 'w-32 shrink-0' },
+    { key: 'age', label: 'Age', width: 'w-24 shrink-0' },
+  ],
+  providerconfigs: [
+    { key: 'name', label: 'Name', width: 'min-w-40' },
+    { key: 'credentials', label: 'Credentials', width: 'w-36 shrink-0' },
+    { key: 'status', label: 'Status', width: 'w-32 shrink-0' },
+    { key: 'age', label: 'Age', width: 'w-24 shrink-0' },
+  ],
+  compositions: [
+    { key: 'name', label: 'Name', width: 'min-w-40' },
+    { key: 'composite', label: 'Composite Kind', width: 'w-40 shrink-0' },
+    { key: 'mode', label: 'Mode', width: 'w-24 shrink-0' },
+    { key: 'functions', label: 'Functions', width: 'w-24 shrink-0', hideOnMobile: true },
+    { key: 'age', label: 'Age', width: 'w-24 shrink-0' },
+  ],
+  compositeresourcedefinitions: [
+    { key: 'name', label: 'Name', width: 'min-w-40' },
+    { key: 'kind', label: 'Kind', width: 'w-40 shrink-0' },
+    { key: 'claim', label: 'Claim Kind', width: 'w-40 shrink-0', hideOnMobile: true },
+    { key: 'age', label: 'Age', width: 'w-24 shrink-0' },
+  ],
 }
 
 // Map (plural, group) → KNOWN_COLUMNS key for kinds that collide with core K8s
@@ -1545,8 +1584,32 @@ function normalizeKindToPlural(kind: string, group?: string): string {
   return lower
 }
 
+// Crossplane Managed Resources are unbounded (each provider ships its own
+// CRDs under per-service groups like s3.aws.upbound.io, compute.gcp.upbound.io).
+// Route any non-core-Crossplane resource in these groups to the generic MR
+// column set. ProviderConfig is excluded — those have their own renderer.
+function isLikelyCrossplaneMRGroup(kind: string, group: string): boolean {
+  if (!group) return false
+  const k = kind.toLowerCase()
+  if (k === 'providerconfig' || k === 'providerconfigs') return false
+  if (group.endsWith('.upbound.io')) return true
+  if (group === 'kubernetes.crossplane.io' || group === 'helm.crossplane.io') return true
+  // Reserved Crossplane core groups — never MRs.
+  if (group === 'crossplane.io' || group === 'pkg.crossplane.io' || group === 'apiextensions.crossplane.io') {
+    return false
+  }
+  // Any other *.crossplane.io subgroup is presumed to be a provider's MR group.
+  if (group.endsWith('.crossplane.io')) return true
+  return false
+}
+
 function getColumnsForKind(kind: string, group?: string): Column[] {
-  return KNOWN_COLUMNS[normalizeKindToPlural(kind, group)] || DEFAULT_COLUMNS
+  const key = normalizeKindToPlural(kind, group)
+  if (KNOWN_COLUMNS[key]) return KNOWN_COLUMNS[key]
+  if (group && isLikelyCrossplaneMRGroup(kind, group)) {
+    return KNOWN_COLUMNS.crossplanemanagedresources
+  }
+  return DEFAULT_COLUMNS
 }
 
 // Get the default visible columns for a kind
@@ -4405,7 +4468,29 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
       return <AzureMachineTemplateCell resource={resource} column={column} />
     case 'azuremanagedclusters':
       return <AzureManagedClusterCell resource={resource} column={column} />
+    // Crossplane
+    case 'providers':
+      // Disambiguate from any future kind named "providers" by checking group
+      if (resource.apiVersion?.startsWith('pkg.crossplane.io/')) {
+        return <CrossplaneProviderCell resource={resource} column={column} />
+      }
+      return <GenericCell resource={resource} column={column} />
+    case 'providerconfigs':
+      return <CrossplaneProviderConfigCell resource={resource} column={column} />
+    case 'compositions':
+      return <CompositionCell resource={resource} column={column} />
+    case 'compositeresourcedefinitions':
+      return <XRDCell resource={resource} column={column} />
     default:
+      // Crossplane Managed Resources: unbounded plurals (one CRD per provider
+      // service), detected via group prefix + spec.providerConfigRef heuristic.
+      if (isLikelyCrossplaneMRGroup(kind, group ?? '') && isManagedResource(resource)) {
+        return <ManagedResourceCell resource={resource} column={column} />
+      }
+      // Composite Resources (XRs) — user-defined kinds with resourceRefs.
+      if (isComposite(resource)) {
+        return <CompositeResourceCell resource={resource} column={column} />
+      }
       // Generic cell for CRDs and unknown resources
       return <GenericCell resource={resource} column={column} />
   }

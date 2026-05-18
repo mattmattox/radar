@@ -205,6 +205,26 @@ func registerTools(server *mcp.Server) {
 
 	// --- Workload logs tool (read-only) ---
 
+	// --- RBAC reverse-lookup (read-only) ---
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "get_subject_permissions",
+		Description: "Get the effective RBAC permissions of a Kubernetes subject " +
+			"(ServiceAccount, User, or Group) — what can this principal do across " +
+			"the cluster. Returns: the bindings that grant access (each pointing at " +
+			"its Role/ClusterRole), a deduplicated flat rule list, and (for " +
+			"ServiceAccounts) the Pods running as this SA. " +
+			"Use this to answer 'is this SA over-privileged?', 'why can X do Y?', " +
+			"or 'what's the blast radius if this Pod is compromised?'. " +
+			"For ServiceAccount, namespace is required. For User/Group, omit namespace " +
+			"(those are external identities, not namespaced resources). " +
+			"Inherited grants from implicit group memberships (system:authenticated, " +
+			"system:serviceaccounts) are included for ServiceAccount subjects with the " +
+			"`inheritedFromGroup` field set per binding so you can distinguish direct " +
+			"from inherited grants.",
+		Annotations: readOnly,
+	}, logToolCall("get_subject_permissions", handleGetSubjectPermissions))
+
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "get_workload_logs",
 		Description: "Get aggregated, AI-filtered logs from all pods of a workload (Deployment, StatefulSet, " +

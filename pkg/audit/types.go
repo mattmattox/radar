@@ -6,6 +6,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // CheckInput contains the typed K8s resources to check.
@@ -32,6 +33,14 @@ type CheckInput struct {
 	// PodMetrics provides live CPU/memory usage for utilization checks.
 	// Optional — check is skipped when nil/empty. Callers populate from metrics-server or equivalent.
 	PodMetrics []PodMetricsInput
+
+	// Crossplane resources arrive unstructured because every provider ships
+	// its own CRDs — there's no typed Go schema to share across them. The
+	// audit layer doesn't enumerate kinds; it inspects spec/status shape.
+	// Populated by callers from a dynamic resource cache; nil when Crossplane
+	// isn't installed or RBAC denies discovery.
+	ManagedResources   []*unstructured.Unstructured // detected by spec.providerConfigRef (v1) or spec.crossplane.providerConfigRef (v2)
+	CompositeResources []*unstructured.Unstructured // detected by spec.resourceRefs / spec.crossplane.resourceRefs; includes v1 Claims
 }
 
 // PodMetricsInput provides metrics data for resource utilization checks.

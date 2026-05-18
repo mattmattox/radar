@@ -198,7 +198,7 @@ rules:
     verbs: ["get", "list", "watch"]
   {{- end }}
   {{- if .Values.rbac.crdGroups.crossplane }}
-  - apiGroups: ["crossplane.io", "pkg.crossplane.io", "apiextensions.crossplane.io"]
+  - apiGroups: ["crossplane.io", "pkg.crossplane.io", "apiextensions.crossplane.io", "helm.crossplane.io", "kubernetes.crossplane.io"]
     resources: ["*"]
     verbs: ["get", "list", "watch"]
   {{- end }}

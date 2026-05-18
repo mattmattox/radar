@@ -12,6 +12,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -1597,5 +1598,192 @@ func TestCheckStuckTerminating_AllKinds(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: severity = %q, want %q", k, got, want)
 		}
+	}
+}
+
+// TestCheckCrossplaneStuck pins the severity ramp and condition-priority
+// rules for stuck MR/XR/Claim resources. The 5min/30min thresholds are
+// shared with stuckTerminating; if either is retuned, retune both so the
+// audit page reports consistent severity across stuck-resource categories.
+func TestCheckCrossplaneStuck(t *testing.T) {
+	now := time.Now()
+	mr := func(name string, ttype, treason, tmessage string, transitionAgo time.Duration, paused bool) *unstructured.Unstructured {
+		annotations := map[string]interface{}{}
+		if paused {
+			annotations["crossplane.io/paused"] = "true"
+		}
+		u := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "kubernetes.crossplane.io/v1alpha1",
+			"kind":       "Object",
+			"metadata": map[string]interface{}{
+				"name":        name,
+				"annotations": annotations,
+			},
+			"spec": map[string]interface{}{
+				"providerConfigRef": map[string]interface{}{"name": "default"},
+			},
+			"status": map[string]interface{}{
+				"conditions": []interface{}{
+					map[string]interface{}{
+						"type":               ttype,
+						"status":             "False",
+						"reason":             treason,
+						"message":            tmessage,
+						"lastTransitionTime": now.Add(-transitionAgo).Format(time.RFC3339),
+					},
+				},
+			},
+		}}
+		return u
+	}
+
+	healthy := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "kubernetes.crossplane.io/v1alpha1",
+		"kind":       "Object",
+		"metadata":   map[string]interface{}{"name": "healthy"},
+		"spec":       map[string]interface{}{"providerConfigRef": map[string]interface{}{"name": "default"}},
+		"status": map[string]interface{}{
+			"conditions": []interface{}{
+				map[string]interface{}{"type": "Ready", "status": "True", "lastTransitionTime": now.Format(time.RFC3339)},
+				map[string]interface{}{"type": "Synced", "status": "True", "lastTransitionTime": now.Format(time.RFC3339)},
+			},
+		},
+	}}
+
+	input := &CheckInput{
+		ManagedResources: []*unstructured.Unstructured{
+			healthy,
+			mr("under-threshold", "Ready", "Pending", "still converging", 4*time.Minute+59*time.Second, false),
+			mr("warn-ready", "Ready", "ProviderConfigNotReady", "auth error from cloud", 6*time.Minute, false),
+			mr("warn-synced", "Synced", "ReconcileError", "schema rejected by provider", 6*time.Minute, false),
+			mr("danger", "Ready", "BackendError", "quota exceeded", 45*time.Minute, false),
+			mr("paused-ignored", "Ready", "ProviderConfigNotReady", "auth error", 45*time.Minute, true),
+		},
+	}
+
+	results := RunChecks(input)
+	bySeverity := map[string]map[string]Finding{}
+	for _, f := range results.Findings {
+		if f.CheckID != "crossplaneStuck" {
+			continue
+		}
+		if bySeverity[f.Severity] == nil {
+			bySeverity[f.Severity] = map[string]Finding{}
+		}
+		bySeverity[f.Severity][f.Name] = f
+	}
+
+	if _, found := bySeverity["warning"]["healthy"]; found {
+		t.Error("healthy MR should not be flagged")
+	}
+	if _, found := bySeverity["warning"]["under-threshold"]; found {
+		t.Error("MR within 5min window should not be flagged")
+	}
+	if _, found := bySeverity["warning"]["paused-ignored"]; found {
+		t.Error("paused MR should not be flagged regardless of age — operator intent")
+	}
+	if _, found := bySeverity["danger"]["paused-ignored"]; found {
+		t.Error("paused MR should not be flagged regardless of age — operator intent")
+	}
+
+	warnReady, ok := bySeverity["warning"]["warn-ready"]
+	if !ok {
+		t.Fatal("expected warning-tier finding for 6min-old Ready=False MR")
+	}
+	if !strings.Contains(warnReady.Message, "Ready=False") {
+		t.Errorf("expected message to name Ready=False; got %q", warnReady.Message)
+	}
+	if !strings.Contains(warnReady.Message, "auth error from cloud") {
+		t.Errorf("expected message to include the upstream cloud error; got %q", warnReady.Message)
+	}
+
+	warnSynced, ok := bySeverity["warning"]["warn-synced"]
+	if !ok {
+		t.Fatal("expected warning-tier finding for 6min-old Synced=False MR")
+	}
+	if !strings.Contains(warnSynced.Message, "Synced=False") {
+		t.Errorf("expected message to name Synced=False; got %q", warnSynced.Message)
+	}
+
+	danger, ok := bySeverity["danger"]["danger"]
+	if !ok {
+		t.Fatal("expected danger-tier finding for 45min-old MR")
+	}
+	if !strings.Contains(danger.Message, "quota exceeded") {
+		t.Errorf("expected danger message to include cloud error; got %q", danger.Message)
+	}
+}
+
+// TestCheckCrossplaneStuck_SyncedPriority verifies Synced=False takes
+// precedence over Ready=False when both are present. Synced=False usually
+// indicates a configuration error (the actionable thing); Ready=False is
+// often a downstream consequence. Operators fixing Synced first resolves
+// both — surfacing Synced=False in the finding tells them where to look.
+func TestCheckCrossplaneStuck_SyncedPriority(t *testing.T) {
+	now := time.Now()
+	bothFalse := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "kubernetes.crossplane.io/v1alpha1",
+		"kind":       "Object",
+		"metadata":   map[string]interface{}{"name": "both"},
+		"spec":       map[string]interface{}{"providerConfigRef": map[string]interface{}{"name": "default"}},
+		"status": map[string]interface{}{
+			"conditions": []interface{}{
+				map[string]interface{}{"type": "Ready", "status": "False", "reason": "ProviderConfigNotReady", "message": "ready msg", "lastTransitionTime": now.Add(-10 * time.Minute).Format(time.RFC3339)},
+				map[string]interface{}{"type": "Synced", "status": "False", "reason": "ReconcileError", "message": "synced msg", "lastTransitionTime": now.Add(-10 * time.Minute).Format(time.RFC3339)},
+			},
+		},
+	}}
+	input := &CheckInput{ManagedResources: []*unstructured.Unstructured{bothFalse}}
+	results := RunChecks(input)
+	var found *Finding
+	for i := range results.Findings {
+		if results.Findings[i].CheckID == "crossplaneStuck" && results.Findings[i].Name == "both" {
+			found = &results.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected a crossplaneStuck finding")
+	}
+	if !strings.Contains(found.Message, "Synced=False") {
+		t.Errorf("expected Synced=False to win over Ready=False; got message %q", found.Message)
+	}
+	if !strings.Contains(found.Message, "synced msg") {
+		t.Errorf("expected Synced message body in finding; got %q", found.Message)
+	}
+}
+
+// TestCheckCrossplaneStuck_Composites checks that XRs/Claims are scanned too.
+func TestCheckCrossplaneStuck_Composites(t *testing.T) {
+	now := time.Now()
+	xr := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "demo.example.io/v1alpha1",
+		"kind":       "AppBundle",
+		"metadata":   map[string]interface{}{"name": "broken-xr"},
+		"spec": map[string]interface{}{
+			"crossplane": map[string]interface{}{
+				"resourceRefs": []interface{}{},
+			},
+		},
+		"status": map[string]interface{}{
+			"conditions": []interface{}{
+				map[string]interface{}{"type": "Synced", "status": "False", "reason": "ComposeResources", "message": "composition error", "lastTransitionTime": now.Add(-10 * time.Minute).Format(time.RFC3339)},
+			},
+		},
+	}}
+	input := &CheckInput{CompositeResources: []*unstructured.Unstructured{xr}}
+	results := RunChecks(input)
+	var found *Finding
+	for i := range results.Findings {
+		if results.Findings[i].CheckID == "crossplaneStuck" && results.Findings[i].Name == "broken-xr" {
+			found = &results.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected crossplaneStuck finding for composite resource")
+	}
+	if found.Kind != "AppBundle" {
+		t.Errorf("expected Kind=AppBundle, got %q", found.Kind)
 	}
 }

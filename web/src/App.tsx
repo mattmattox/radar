@@ -40,11 +40,12 @@ import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/con
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import radarLoadingIcon from '@skyhook-io/k8s-ui/assets/radar/radar-icon-loading.svg'
-import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck, GitBranch } from 'lucide-react'
+import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck, GitBranch, Shield as ShieldIcon } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
 import { SettingsDialog } from './components/settings/SettingsDialog'
+import { MyPermissionsDialog } from './components/settings/MyPermissionsDialog'
 import type { TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
 import { kindToPlural, openExternal, apiVersionToGroup, buildWorkloadPath } from './utils/navigation'
 import type { ContextSwitcherHandle } from './components/ContextSwitcher'
@@ -288,6 +289,7 @@ function AppInner() {
 
   // Settings dialog state
   const [showSettings, setShowSettings] = useState(false)
+  const [showMyPermissions, setShowMyPermissions] = useState(false)
 
   // Listen for desktop "open-settings" event from native menu
   useEffect(() => {
@@ -1146,6 +1148,18 @@ function AppInner() {
             </button>
           )}
 
+          {/* My Permissions — what the current user can do in the cluster,
+              computed live by the apiserver via SelfSubjectRulesReview.
+              Available in embedded mode too — Radar Hub users still benefit
+              from "why can't I do X" debugging. */}
+          <button
+            onClick={() => setShowMyPermissions(true)}
+            className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
+            title="My permissions in this cluster"
+          >
+            <ShieldIcon className="w-4 h-4" />
+          </button>
+
           {/* User menu (when auth enabled) — hidden in embedded mode;
               host app typically provides its own via rightExtras. */}
           {!navCustomization.embedded && <UserMenu />}
@@ -1584,6 +1598,7 @@ function AppInner() {
 
       {/* Settings dialog */}
       <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
+      <MyPermissionsDialog open={showMyPermissions} onClose={() => setShowMyPermissions(false)} />
 
       {/* Debug overlay - only in dev mode */}
       {import.meta.env.DEV && <DebugOverlay />}

@@ -111,6 +111,9 @@ func (s *Server) finalizePostContextSwitch() {
 	if s.permCache != nil {
 		s.permCache.Invalidate()
 	}
+	if s.rbacMemo != nil {
+		s.rbacMemo.Invalidate()
+	}
 	k8s.InvalidateUserCapabilitiesCache()
 	s.clearAllNamespacePreferences()
 }
