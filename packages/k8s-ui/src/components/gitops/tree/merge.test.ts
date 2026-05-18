@@ -227,6 +227,9 @@ describe('mergeGitOpsTrees', () => {
       const source = (n.data ?? {})[MERGED_NODE_SOURCE_KEY]
       expect(source).toBeDefined()
     }
+    // `root` carries the same routing tag — consumers that read merged.root
+    // directly (rather than walking nodes) must not get undefined.
+    expect(merged.root.data?.[MERGED_NODE_SOURCE_KEY]).toBe('controller')
     const app = merged.nodes.find((n) => n.ref.kind === 'Application')
     const dep = merged.nodes.find((n) => n.ref.kind === 'Deployment')
     const pod = merged.nodes.find((n) => n.ref.kind === 'Pod')

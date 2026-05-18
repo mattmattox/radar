@@ -146,7 +146,9 @@ export function mergeGitOpsTrees(
   const warnings = [...(controller.warnings ?? []), ...(destination.warnings ?? [])]
 
   return {
-    root: controller.root,
+    // `root` is tagged the same way nodes are — consumers reading
+    // `merged.root.data._source` rely on the same contract as nodes.
+    root: withSource(controller.root, 'controller'),
     nodes: [...nodes, ...destOnly],
     edges,
     warnings: warnings.length > 0 ? warnings : undefined,
