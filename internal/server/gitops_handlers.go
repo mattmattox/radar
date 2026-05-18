@@ -372,7 +372,10 @@ func (s *Server) handleGitOpsManagedResources(w http.ResponseWriter, r *http.Req
 		}
 		for _, obj := range objs {
 			ns := obj.GetNamespace()
-			if nsFilter != "" && ns != nsFilter {
+			// `ns == ""` means cluster-scoped; let it pass nsFilter so apps that manage
+			// ClusterRole/ClusterRoleBinding/Namespace alongside namespaced workloads
+			// still show those resources. filterGitOpsTreeForUser enforces per-kind canRead.
+			if nsFilter != "" && ns != "" && ns != nsFilter {
 				continue
 			}
 			if !gitopstree.ArgoTrackingMatches(obj, app) {
