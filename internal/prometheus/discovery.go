@@ -87,29 +87,40 @@ func (c *Client) discover(ctx context.Context) (string, string, error) {
 		}
 	}
 
-	// Fallback: start a port-forward to the highest-priority candidate and
-	// retry. This path is only reached when Radar runs outside the cluster;
-	// in-cluster deployments resolve a candidate directly above.
-	best := candidates[0]
-	log.Printf("[prometheus] No candidate reachable in-cluster, starting port-forward to %s/%s...",
-		best.Namespace, best.Name)
-	c.setDiscoveryServiceFromCandidate(best)
+	// Fallback: try port-forwarding candidates in priority order. This path is
+	// normally reached when Radar runs outside the cluster, where in-cluster
+	// Service DNS cannot resolve from the user's machine.
+	var lastErr error
+	for _, cand := range candidates {
+		log.Printf("[prometheus] No candidate reachable in-cluster, starting port-forward to %s/%s...",
+			cand.Namespace, cand.Name)
+		c.setDiscoveryServiceFromCandidate(cand)
 
-	connInfo, pfErr := portforward.Start(ctx, best.Namespace, best.Name, best.TargetPort, contextName)
-	if pfErr != nil {
-		errorlog.Record("prometheus", "error", "port-forward to %s/%s failed: %v", best.Namespace, best.Name, pfErr)
-		return "", "", fmt.Errorf("port-forward to %s/%s failed: %w", best.Namespace, best.Name, pfErr)
+		connInfo, pfErr := portforward.Start(ctx, cand.Namespace, cand.Name, cand.TargetPort, contextName)
+		if pfErr != nil {
+			lastErr = fmt.Errorf("port-forward to %s/%s failed: %w", cand.Namespace, cand.Name, pfErr)
+			errorlog.Record("prometheus", "error", "port-forward to %s/%s failed: %v", cand.Namespace, cand.Name, pfErr)
+			continue
+		}
+
+		addr := connInfo.Address
+		if c.probe(ctx, addr+cand.BasePath) {
+			c.markConnected(addr, cand.BasePath)
+			return addr, cand.BasePath, nil
+		}
+
+		portforward.Stop()
+		lastErr = fmt.Errorf("Prometheus at %s/%s not responding after port-forward", cand.Namespace, cand.Name)
+		errorlog.Record("prometheus", "error", "Prometheus at %s/%s not responding after port-forward", cand.Namespace, cand.Name)
 	}
 
-	addr := connInfo.Address
-	if c.probe(ctx, addr+best.BasePath) {
-		c.markConnected(addr, best.BasePath)
-		return addr, best.BasePath, nil
+	c.mu.Lock()
+	c.discoveryService = nil
+	c.mu.Unlock()
+	if lastErr != nil {
+		return "", "", lastErr
 	}
-
-	portforward.Stop()
-	errorlog.Record("prometheus", "error", "Prometheus at %s/%s not responding after port-forward", best.Namespace, best.Name)
-	return "", "", fmt.Errorf("Prometheus at %s/%s not responding after port-forward", best.Namespace, best.Name)
+	return "", "", fmt.Errorf("no Prometheus service found in cluster")
 }
 
 // setDiscoveryServiceFromCandidate records the discovered service metadata
