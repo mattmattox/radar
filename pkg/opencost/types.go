@@ -16,18 +16,24 @@ type CostSummary struct {
 	Window            string          `json:"window,omitempty"`
 	TotalHourlyCost   float64         `json:"totalHourlyCost,omitempty"`
 	TotalStorageCost  float64         `json:"totalStorageCost,omitempty"`
+	TotalNetworkCost  float64         `json:"totalNetworkCost,omitempty"`
 	TotalIdleCost     float64         `json:"totalIdleCost,omitempty"`
 	ClusterEfficiency float64         `json:"clusterEfficiency,omitempty"` // 0-100
 	Namespaces        []NamespaceCost `json:"namespaces,omitempty"`
 }
 
-// NamespaceCost holds per-namespace cost breakdown.
+// NamespaceCost holds per-row cost breakdown. The name reflects the
+// default aggregation; the struct is also used for controller and pod
+// rows — Kind disambiguates (empty = namespace).
 type NamespaceCost struct {
 	Name            string  `json:"name"`
+	Kind            string  `json:"kind,omitempty"` // "namespace" (default if empty) | "controller" | "pod"
+	Namespace       string  `json:"namespace,omitempty"` // populated for controller/pod rows
 	HourlyCost      float64 `json:"hourlyCost"`
 	CPUCost         float64 `json:"cpuCost"`
 	MemoryCost      float64 `json:"memoryCost"`
 	StorageCost     float64 `json:"storageCost,omitempty"`
+	NetworkCost     float64 `json:"networkCost,omitempty"`
 	CPUUsageCost    float64 `json:"cpuUsageCost,omitempty"`
 	MemoryUsageCost float64 `json:"memoryUsageCost,omitempty"`
 	Efficiency      float64 `json:"efficiency,omitempty"` // 0-100

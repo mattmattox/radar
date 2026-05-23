@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/skyhook-io/radar/internal/errorlog"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/pkg/prom"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -305,9 +306,9 @@ func computeRightsizingRow(ctx context.Context, client *Client, namespace, workl
 // queryContainerP95 returns the P95 of a container's CPU/memory usage over the
 // rightsizing window. Returns nil (no error) when there's no data.
 func queryContainerP95(ctx context.Context, client *Client, namespace, workload, container, resKind string) (*float64, error) {
-	ns := SanitizeLabelValue(namespace)
-	podPattern := fmt.Sprintf("%s-.*", escapeRegexMeta(SanitizeLabelValue(workload)))
-	cn := SanitizeLabelValue(container)
+	ns := prom.SanitizeLabelValue(namespace)
+	podPattern := fmt.Sprintf("%s-.*", prom.EscapeRegexMeta(prom.SanitizeLabelValue(workload)))
+	cn := prom.SanitizeLabelValue(container)
 	windowSec := int64(rightsizingWindow.Seconds())
 
 	var query string
@@ -520,8 +521,8 @@ func handlePVCUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ns := SanitizeLabelValue(namespace)
-	pvc := SanitizeLabelValue(name)
+	ns := prom.SanitizeLabelValue(namespace)
+	pvc := prom.SanitizeLabelValue(name)
 
 	// kubelet's native label is `persistentvolumeclaim`; clusters with custom
 	// relabeling that renamed it will return no series and the gauge hides.
@@ -560,7 +561,7 @@ func handlePVCUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func firstValue(res *QueryResult) *float64 {
+func firstValue(res *prom.QueryResult) *float64 {
 	if res == nil || len(res.Series) == 0 || len(res.Series[0].DataPoints) == 0 {
 		return nil
 	}

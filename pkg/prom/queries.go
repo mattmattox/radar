@@ -1,4 +1,4 @@
-package prometheus
+package prom
 
 import (
 	"fmt"
@@ -16,10 +16,10 @@ func SanitizeLabelValue(s string) string {
 	})
 }
 
-// escapeRegexMeta escapes regex metacharacters for PromQL =~ matching.
+// EscapeRegexMeta escapes regex metacharacters for PromQL =~ matching.
 var regexMeta = regexp.MustCompile(`([.+*?^${}()|[\]\\])`)
 
-func escapeRegexMeta(s string) string {
+func EscapeRegexMeta(s string) string {
 	return regexMeta.ReplaceAllString(s, `\\$1`)
 }
 
@@ -199,9 +199,9 @@ func buildClusterQueryInner(category MetricCategory, filterContainer bool) strin
 	}
 }
 
-// categoryUsesContainerFilter returns true if the category's queries include
-// the container!='' filter that may need fallback on cri-docker clusters.
-func categoryUsesContainerFilter(category MetricCategory) bool {
+// CategoryUsesContainerFilter returns true if the category's queries include
+// the container!='' filter that may need a fallback on cri-docker clusters.
+func CategoryUsesContainerFilter(category MetricCategory) bool {
 	return category == CategoryCPU || category == CategoryMemory
 }
 
@@ -249,7 +249,7 @@ func buildPodQuery(namespace, podName string, category MetricCategory, filterCon
 func buildWorkloadQuery(namespace, workloadName string, category MetricCategory, filterContainer bool) string {
 	ns := SanitizeLabelValue(namespace)
 	// Sanitize then escape regex metacharacters so e.g. "my.app" matches literally
-	podPattern := fmt.Sprintf("%s-.*", escapeRegexMeta(SanitizeLabelValue(workloadName)))
+	podPattern := fmt.Sprintf("%s-.*", EscapeRegexMeta(SanitizeLabelValue(workloadName)))
 	cf := ""
 	if filterContainer {
 		cf = "container!='',"
@@ -290,7 +290,7 @@ func buildNodeQuery(nodeName string, category MetricCategory) string {
 	// name or IP. The value often includes a port suffix, so we match with an optional port.
 	// This heuristic works for most standard deployments; clusters with custom relabeling
 	// may need the --prometheus-url flag plus adjusted recording rules.
-	sanitized := escapeRegexMeta(SanitizeLabelValue(nodeName))
+	sanitized := EscapeRegexMeta(SanitizeLabelValue(nodeName))
 	nodeFilter := fmt.Sprintf(`instance=~'%s(:\\d+)?'`, sanitized)
 
 	switch category {
