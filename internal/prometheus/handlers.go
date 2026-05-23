@@ -194,15 +194,15 @@ func handleResourceMetrics(w http.ResponseWriter, r *http.Request) {
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
-		log.Printf("[prometheus] Query failed for %s/%s/%s (%s): %v", kind, namespace, name, category, err)
-		errorlog.Record("prometheus", "error", "query failed for %s/%s/%s (%s): %v", kind, namespace, name, category, err)
+		log.Printf("[prometheus] Query failed for %q/%q/%q (%q): %v", kind, namespace, name, category, err)
+		errorlog.Record("prometheus", "error", "query failed for %q/%q/%q (%q): %v", kind, namespace, name, category, err)
 		writeError(w, http.StatusBadGateway, "Prometheus query failed: "+err.Error())
 		return
 	}
 
 	result, query = retryWithoutContainerFilter(r.Context(), client, result, query, category, start, end, step,
 		func() string { return prom.BuildQueryNoContainerFilter(kind, namespace, name, category) },
-		fmt.Sprintf("Primary query empty for %s/%s/%s (%s)", kind, namespace, name, category))
+		fmt.Sprintf("Primary query empty for %q/%q/%q (%q)", kind, namespace, name, category))
 
 	resp := ResourceMetricsResponse{
 		Kind:      kind,
@@ -218,8 +218,8 @@ func handleResourceMetrics(w http.ResponseWriter, r *http.Request) {
 	if len(result.Series) == 0 {
 		resp.Query = query
 		resp.Hint = detectCRIDockerHint(kind, namespace, name)
-		log.Printf("[prometheus] Empty result for %s/%s/%s (%s), query: %s", kind, namespace, name, category, query)
-		errorlog.Record("prometheus", "warning", "empty result for %s/%s/%s (%s), query: %s", kind, namespace, name, category, query)
+		log.Printf("[prometheus] Empty result for %q/%q/%q (%q), query: %q", kind, namespace, name, category, query)
+		errorlog.Record("prometheus", "warning", "empty result for %q/%q/%q (%q), query: %q", kind, namespace, name, category, query)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -271,8 +271,8 @@ func handleClusterScopedResourceMetrics(w http.ResponseWriter, r *http.Request) 
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
-		log.Printf("[prometheus] Query failed for %s/%s (%s): %v", kind, name, category, err)
-		errorlog.Record("prometheus", "error", "query failed for %s/%s (%s): %v", kind, name, category, err)
+		log.Printf("[prometheus] Query failed for %q/%q (%q): %v", kind, name, category, err)
+		errorlog.Record("prometheus", "error", "query failed for %q/%q (%q): %v", kind, name, category, err)
 		writeError(w, http.StatusBadGateway, "Prometheus query failed: "+err.Error())
 		return
 	}
@@ -287,8 +287,8 @@ func handleClusterScopedResourceMetrics(w http.ResponseWriter, r *http.Request) 
 	}
 	if len(result.Series) == 0 {
 		resp.Query = query
-		log.Printf("[prometheus] Empty result for %s/%s (%s), query: %s", kind, name, category, query)
-		errorlog.Record("prometheus", "warning", "empty result for %s/%s (%s), query: %s", kind, name, category, query)
+		log.Printf("[prometheus] Empty result for %q/%q (%q), query: %q", kind, name, category, query)
+		errorlog.Record("prometheus", "warning", "empty result for %q/%q (%q), query: %q", kind, name, category, query)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -327,15 +327,15 @@ func handleNamespaceMetrics(w http.ResponseWriter, r *http.Request) {
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
-		log.Printf("[prometheus] Namespace query failed for %s (%s): %v", namespace, category, err)
-		errorlog.Record("prometheus", "error", "namespace query failed for %s (%s): %v", namespace, category, err)
+		log.Printf("[prometheus] Namespace query failed for %q (%q): %v", namespace, category, err)
+		errorlog.Record("prometheus", "error", "namespace query failed for %q (%q): %v", namespace, category, err)
 		writeError(w, http.StatusBadGateway, "Prometheus query failed: "+err.Error())
 		return
 	}
 
 	result, _ = retryWithoutContainerFilter(r.Context(), client, result, query, category, start, end, step,
 		func() string { return prom.BuildNamespaceQueryNoContainerFilter(namespace, category) },
-		fmt.Sprintf("Namespace query empty for %s (%s)", namespace, category))
+		fmt.Sprintf("Namespace query empty for %q (%q)", namespace, category))
 
 	writeJSON(w, http.StatusOK, NamespaceMetricsResponse{
 		Namespace: namespace,
@@ -378,15 +378,15 @@ func handleClusterMetrics(w http.ResponseWriter, r *http.Request) {
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
-		log.Printf("[prometheus] Cluster query failed (%s): %v", category, err)
-		errorlog.Record("prometheus", "error", "cluster query failed (%s): %v", category, err)
+		log.Printf("[prometheus] Cluster query failed (%q): %v", category, err)
+		errorlog.Record("prometheus", "error", "cluster query failed (%q): %v", category, err)
 		writeError(w, http.StatusBadGateway, "Prometheus query failed: "+err.Error())
 		return
 	}
 
 	result, _ = retryWithoutContainerFilter(r.Context(), client, result, query, category, start, end, step,
 		func() string { return prom.BuildClusterQueryNoContainerFilter(category) },
-		fmt.Sprintf("Cluster query empty (%s)", category))
+		fmt.Sprintf("Cluster query empty (%q)", category))
 
 	writeJSON(w, http.StatusOK, ClusterMetricsResponse{
 		Category: category,
