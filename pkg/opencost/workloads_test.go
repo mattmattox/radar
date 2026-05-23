@@ -50,10 +50,14 @@ func workloadsProm(t *testing.T, body string) *prom.Client {
 func TestComputeWorkloads_OwnerLookupResolves(t *testing.T) {
 	// Three pods reported by PromQL; ownerLookup resolves all three to two
 	// distinct workloads. Replicas should be 2 + 1, not 3 standalone rows.
+	// worker pod cost (5.0) > sum of api pods (1.0 + 1.0 = 2.0) so sort
+	// is deterministic. The same vector body is returned for all four
+	// queries (CPU alloc, mem alloc, CPU usage, mem usage), so the
+	// per-pod HourlyCost is 2× the input value (cpu + mem).
 	client := workloadsProm(t, podVectorBody(map[string]float64{
-		"api-7f8d9c-xyz12":   1.0,
-		"api-7f8d9c-abc34":   1.0,
-		"worker-deadbeef01":  2.0,
+		"api-7f8d9c-xyz12":  1.0,
+		"api-7f8d9c-abc34":  1.0,
+		"worker-deadbeef01": 5.0,
 	}))
 	lookup := func(pod string) (WorkloadOwner, bool) {
 		switch pod {

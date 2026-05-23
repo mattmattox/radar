@@ -165,8 +165,8 @@ func ComputeCostSummary(ctx context.Context, client *RESTClient, opts SummaryOpt
 	}
 
 	namespaces := make([]NamespaceCost, 0, len(combined))
-	var totalHourlyCost, totalStorageCost, totalNetworkCost, totalIdleCost, totalEff float64
-	var effRows int
+	var totalHourlyCost, totalStorageCost, totalNetworkCost, totalIdleCost float64
+	var totalAllocCost, totalUsageCost float64
 
 	for name, a := range combined {
 		// OpenCost emits __idle__ as a synthetic row for unallocated node
@@ -216,11 +216,11 @@ func ComputeCostSummary(ctx context.Context, client *RESTClient, opts SummaryOpt
 		}
 		allocCost := nc.CPUCost + nc.MemoryCost
 		if a.TotalEfficiency > 0 && allocCost > 0 {
-			// Cap per-row efficiency at 1.0 BEFORE accumulating for the
-			// cluster-average. OpenCost occasionally reports
-			// TotalEfficiency > 1 (burstable pods exceeding their request,
-			// measurement noise). Without this cap a single outlier
-			// dominates the fleet average.
+			// Cap per-row efficiency at 1.0 BEFORE accumulating into the
+			// cluster total. OpenCost occasionally reports TotalEfficiency
+			// > 1 (burstable pods exceeding their request, measurement
+			// noise); without this cap a single outlier could push the
+			// cluster total above 100%.
 			rowEff := a.TotalEfficiency
 			if rowEff > 1 {
 				rowEff = 1
@@ -233,8 +233,11 @@ func ComputeCostSummary(ctx context.Context, client *RESTClient, opts SummaryOpt
 			if nc.IdleCost < 0 {
 				nc.IdleCost = 0
 			}
-			totalEff += rowEff
-			effRows++
+			// Accumulate cost-weighted, matching ComputeCostSummaryFromProm.
+			// An unweighted mean would let a $0.01 row at 10% efficiency
+			// drag down the cluster number identically to a $100 row.
+			totalAllocCost += allocCost
+			totalUsageCost += usageCost
 		}
 		totalHourlyCost += nc.HourlyCost
 		totalStorageCost += nc.StorageCost
@@ -251,8 +254,8 @@ func ComputeCostSummary(ctx context.Context, client *RESTClient, opts SummaryOpt
 	})
 
 	var clusterEfficiency float64
-	if effRows > 0 {
-		clusterEfficiency = roundTo((totalEff/float64(effRows))*100, 1)
+	if totalAllocCost > 0 && totalUsageCost > 0 {
+		clusterEfficiency = roundTo((totalUsageCost/totalAllocCost)*100, 1)
 		if clusterEfficiency > 100 {
 			clusterEfficiency = 100
 		}

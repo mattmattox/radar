@@ -2,6 +2,7 @@ package prometheus
 
 import (
 	"context"
+	"errors"
 	"log"
 	"maps"
 	"net/http"
@@ -289,7 +290,13 @@ func (c *Client) QueryRange(ctx context.Context, query string, start, end time.T
 	if _, _, err := c.EnsureConnected(ctx); err != nil {
 		return nil, err
 	}
-	return c.getPromClient().QueryRange(ctx, query, start, end, step)
+	p := c.getPromClient()
+	if p == nil {
+		// Concurrent Reset cleared baseURL between EnsureConnected returning
+		// and getPromClient — the connection was reset under us.
+		return nil, errors.New("prometheus connection was reset")
+	}
+	return p.QueryRange(ctx, query, start, end, step)
 }
 
 // Query executes a Prometheus instant query via the underlying pkg/prom.Client.
@@ -297,5 +304,9 @@ func (c *Client) Query(ctx context.Context, query string) (*prom.QueryResult, er
 	if _, _, err := c.EnsureConnected(ctx); err != nil {
 		return nil, err
 	}
-	return c.getPromClient().Query(ctx, query)
+	p := c.getPromClient()
+	if p == nil {
+		return nil, errors.New("prometheus connection was reset")
+	}
+	return p.Query(ctx, query)
 }
