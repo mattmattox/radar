@@ -9,11 +9,9 @@ import (
 // REST API. Same shape as pkg/prom.Transport (path + params in, body out)
 // so a single concrete type in a caller can satisfy both interfaces.
 //
-// Implementations:
-//
-//   - radar desktop: direct HTTP against a port-forwarded localhost URL
-//   - koala-backend: routed through CAC proxy → skyhook-connector → in-cluster OpenCost
-//   - tests:         httptest server
+// Typical implementations: direct HTTP against a known URL (in-cluster or
+// kubectl port-forwarded), a tunneled proxy transport for callers that
+// can't reach the cluster directly, and an httptest server in unit tests.
 type Transport interface {
 	// Do issues a request to path (e.g. "/allocation") with query
 	// parameters and returns the raw response body. Non-2xx responses

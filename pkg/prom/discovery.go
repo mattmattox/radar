@@ -23,7 +23,7 @@ const (
 // Candidate is a Prometheus-compatible service the caller can attempt to
 // reach. Discover populates the fields and orders candidates by priority,
 // but does not probe — it leaves the transport choice (direct HTTP vs.
-// port-forward vs. CAC proxy) to the caller.
+// port-forward vs. tunneled proxy) to the caller.
 type Candidate struct {
 	Namespace   string
 	Name        string
@@ -108,8 +108,8 @@ var SkipNamespaces = map[string]bool{
 // ranked by ScoreService.
 //
 // Discover does NOT probe any candidate — callers decide how to reach each
-// (direct HTTP, port-forward, CAC proxy) and then use pkg/prom.Client.Probe
-// to validate.
+// (direct HTTP, port-forward, tunneled proxy) and then use
+// pkg/prom.Client.Probe to validate.
 func Discover(ctx context.Context, k8sClient kubernetes.Interface, opts DiscoverOptions) ([]Candidate, error) {
 	if k8sClient == nil {
 		return nil, fmt.Errorf("prom.Discover: k8sClient is nil")

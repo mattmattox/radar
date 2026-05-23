@@ -74,8 +74,7 @@ type SummaryOptions struct {
 
 // ComputeCostSummary is the default compute path: asks OpenCost's REST API
 // for namespace-level allocation over the window and maps the response into
-// our normalized CostSummary. This is the path used by koala-backend's
-// /finops/explore handler for routine cost queries.
+// our normalized CostSummary.
 //
 // Why REST by default: OpenCost computes cost internally (cloud pricing +
 // Kubernetes allocation data) and exposes the results two ways — REST at
@@ -319,10 +318,10 @@ func safeRatio(num, den float64) float64 {
 	return num / den
 }
 
-// ComputeCostSummaryFromProm is the legacy PromQL-based compute path.
-// Kept as an alternative for callers that already have a scraped-OpenCost
-// Prometheus available (e.g., radar desktop's /api/opencost/summary
-// handler, or future correlation-with-usage queries in koala-backend).
+// ComputeCostSummaryFromProm is the PromQL-based compute path, for callers
+// that have a scraped-OpenCost Prometheus available rather than the REST
+// API (or that need to correlate cost with live Prometheus metrics in the
+// same query).
 //
 // Contract:
 //   - If the primary OpenCost allocation metrics are absent entirely, the

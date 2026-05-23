@@ -18,8 +18,8 @@ import (
 //  4. Dynamic cluster-wide discovery with scoring (via pkg/prom.Discover)
 //
 // Well-known + dynamic candidate enumeration lives in pkg/prom.Discover so
-// it's shared with skyhook-connector and koala-backend. This function owns
-// the *desktop-specific* port-forward fallback behavior.
+// it can be shared with non-desktop callers. This function owns the
+// *desktop-specific* port-forward fallback behavior.
 //
 // The lock is only held briefly to read/write state, not during network I/O.
 func (c *Client) discover(ctx context.Context) (string, string, error) {

@@ -12,12 +12,10 @@ import (
 
 // Transport is the pluggable HTTP transport used by Client to issue requests
 // to a Prometheus HTTP API. Implementations decide how the request physically
-// reaches Prometheus:
-//
-//   - HTTPTransport: direct HTTP against a known URL (in-cluster, or a
-//     kubectl port-forwarded localhost URL used by radar desktop).
-//   - caclient-backed transport (in koala-backend): forwards through CAC
-//     proxy → skyhook-connector → in-cluster Prometheus.
+// reaches Prometheus — typically either direct HTTP against a known URL
+// (in-cluster, or a kubectl port-forwarded localhost) or a tunneled proxy
+// transport that forwards requests through some external broker to an
+// in-cluster Prometheus.
 //
 // Transport is responsible for returning the raw upstream body bytes. Parsing
 // is the Client's concern.
@@ -25,8 +23,8 @@ type Transport interface {
 	Do(ctx context.Context, method, path string, params url.Values) ([]byte, error)
 
 	// Address returns a human-readable identifier for this transport, used
-	// for status reporting and error messages (e.g. the base URL, or a
-	// description like "via CAC proxy to prod-us-east-1").
+	// for status reporting and error messages — typically the base URL, or
+	// a short description of the proxy path for tunneled transports.
 	Address() string
 }
 

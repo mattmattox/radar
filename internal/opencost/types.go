@@ -1,9 +1,9 @@
 package opencost
 
 // This file re-exports the cost-data types defined in radar/pkg/opencost so
-// that internal/opencost HTTP handlers and other radar-local consumers keep
-// working unchanged while the underlying types become the shared source of
-// truth across radar, skyhook-connector, and koala-backend.
+// that internal/opencost HTTP handlers and other radar-local consumers can
+// keep their existing type imports while the canonical definitions live in
+// the shared package.
 
 import "github.com/skyhook-io/radar/pkg/opencost"
 

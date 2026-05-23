@@ -11,9 +11,8 @@ import (
 
 // Client is a Prometheus HTTP API client that delegates all network calls to
 // the injected Transport. The Client itself is stateless with respect to
-// discovery — callers (radar's internal/prometheus, skyhook-connector's
-// capabilities probe, koala-backend's finops processor) are responsible for
-// constructing an appropriate Transport.
+// discovery — callers are responsible for constructing an appropriate
+// Transport (direct HTTP, kubectl port-forward, or any other tunnel).
 type Client struct {
 	t Transport
 }

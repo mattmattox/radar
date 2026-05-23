@@ -152,8 +152,8 @@ func ComputeCostTrend(ctx context.Context, client *RESTClient, opts TrendOptions
 // fewer, coarser buckets than a typical charting library would because
 // OpenCost's /allocation with step= enabled scales roughly with bucket
 // count — a 24h query at 1h step takes ~30s on our test cluster, vs ~3s
-// at 6h step. Most connector → CAC task pipelines cap at 10s, so keeping
-// response time under 5s is load-bearing.
+// at 6h step. Callers that proxy through a short-deadline RPC pipeline
+// (e.g. ~10s) need the response well under 5s, which is load-bearing.
 //
 // Bucket counts we target: 1h → 12, 24h → 4, 7d → 7, 30d → 15.
 func defaultStep(window string) string {

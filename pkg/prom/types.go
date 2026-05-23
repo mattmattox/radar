@@ -1,7 +1,7 @@
 // Package prom provides a Prometheus HTTP API client with a pluggable
 // Transport so the same query, parsing, and discovery logic can be used
-// across in-cluster (skyhook-connector), server-side (koala-backend via CAC
-// proxy), and desktop (radar via kubectl port-forward) callers.
+// from any context that can reach a Prometheus endpoint — directly, via
+// kubectl port-forward, or through a tunneled proxy.
 //
 // The package is intentionally pure: no global state, no singletons, no
 // k8s client dependency in the Client itself. K8s-aware discovery is a
@@ -20,8 +20,8 @@ type ServiceInfo struct {
 }
 
 // Status represents the current Prometheus connection status as exposed to
-// callers/UI. Address is the effective URL (may be port-forwarded, a CAC
-// proxy URL, or a direct service URL depending on the Transport).
+// callers/UI. Address is the effective URL (may be port-forwarded, a
+// tunneled proxy URL, or a direct service URL depending on the Transport).
 type Status struct {
 	Available   bool         `json:"available"`
 	Connected   bool         `json:"connected"`

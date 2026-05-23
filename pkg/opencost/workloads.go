@@ -15,10 +15,10 @@ type WorkloadOwner struct {
 }
 
 // PodOwnerLookup returns the workload owner for a pod name in a given
-// namespace, or (false) if the lookup cannot resolve it. Callers in radar
-// supply this from the in-memory K8s informer cache; koala-backend can
-// satisfy it from CAC-served pod metadata. Keeping the dependency abstract
-// here keeps pkg/opencost free of k8s.io/client-go.
+// namespace, or (false) if the lookup cannot resolve it. Callers with an
+// in-process K8s informer cache supply this directly; callers without can
+// satisfy it from any other pod-metadata source. Keeping the dependency
+// abstract here keeps pkg/opencost free of k8s.io/client-go.
 type PodOwnerLookup func(podName string) (WorkloadOwner, bool)
 
 // ComputeWorkloadsFromProm returns workload-level cost breakdown for a
