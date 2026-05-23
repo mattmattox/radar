@@ -2,7 +2,7 @@ package prom
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -109,7 +109,7 @@ func TestClient_Query_HTTPErrorIsTyped(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var httpErr *HTTPError
-	if !errorsAs(err, &httpErr) {
+	if !errors.As(err, &httpErr) {
 		t.Fatalf("want *HTTPError, got %T: %v", err, err)
 	}
 	if httpErr.StatusCode != http.StatusBadGateway {
@@ -175,22 +175,3 @@ func TestHTTPTransport_BasePathIncluded(t *testing.T) {
 	}
 }
 
-// errorsAs is a tiny substitute for errors.As to avoid importing the stdlib
-// package just for the test.
-func errorsAs(err error, target interface{}) bool {
-	if err == nil {
-		return false
-	}
-	switch t := target.(type) {
-	case **HTTPError:
-		he, ok := err.(*HTTPError)
-		if ok {
-			*t = he
-			return true
-		}
-	}
-	return false
-}
-
-// silence unused imports if tests evolve
-var _ = fmt.Sprintf

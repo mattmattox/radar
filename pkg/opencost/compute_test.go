@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -84,18 +85,10 @@ func scalarBody(v float64) string {
 	return string(b)
 }
 
+// formatFloat renders a value the way Prometheus does — a numeric string
+// with enough precision to round-trip the test inputs exactly.
 func formatFloat(v float64) string {
-	// Prometheus returns values as strings; match that.
-	// Use enough precision to round-trip the test inputs exactly.
-	return strFromFloat(v)
-}
-
-// strFromFloat is intentionally small + allocating-free for fixture strings.
-func strFromFloat(v float64) string {
-	// fmt would be fine but we avoid the import here.
-	b, _ := json.Marshal(v)
-	// Marshal wraps as a number; convert to string.
-	return string(b)
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 func TestComputeCostSummary_HappyPath(t *testing.T) {
@@ -222,5 +215,39 @@ func TestComputeCostSummary_RoundsValues(t *testing.T) {
 	}
 	if nc.MemoryCost != 2.9877 {
 		t.Errorf("Memory rounding: got %v, want 2.9877", nc.MemoryCost)
+	}
+}
+
+func TestWindowHours(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+	}{
+		// Standard units
+		{"1h", 1},
+		{"24h", 24},
+		{"7d", 168},
+		{"1w", 168},
+		{"30d", 720},
+		// Decimal hours (rare but accepted)
+		{"1.5h", 1.5},
+		// Minutes — documented decision to treat lone "m" as minutes,
+		// not months. Pinned here so the windowHours("m") comment can't
+		// be quietly "fixed" to mean months.
+		{"5m", 5.0 / 60},
+		// Fallbacks: empty, missing unit, parse error, non-positive
+		{"", 1},
+		{"h", 1},
+		{"-5h", 1},
+		{"0h", 1},
+		{"abch", 1},
+		// Unknown unit
+		{"3y", 1},
+	}
+	for _, tc := range cases {
+		got := windowHours(tc.in)
+		if got != tc.want {
+			t.Errorf("windowHours(%q) = %v, want %v", tc.in, got, tc.want)
+		}
 	}
 }
