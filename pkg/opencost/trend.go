@@ -180,9 +180,11 @@ func defaultStep(window string) string {
 	}
 }
 
-// bucketTimestamp returns a Unix-milli timestamp derived from the first
+// bucketTimestamp returns a Unix-seconds timestamp derived from the first
 // allocation row in the bucket (each row in a bucket shares the same
-// window, so any row is representative).
+// window, so any row is representative). Seconds because the PromQL trend
+// path emits seconds, and both paths feed the same CostDataPoint.Timestamp
+// field — the UI assumes seconds at the render layer.
 func bucketTimestamp(bucket map[string]*Allocation) int64 {
 	for _, a := range bucket {
 		if a == nil {
@@ -190,7 +192,7 @@ func bucketTimestamp(bucket map[string]*Allocation) int64 {
 		}
 		if a.Start != "" {
 			if t, err := time.Parse(time.RFC3339, a.Start); err == nil {
-				return t.UnixMilli()
+				return t.Unix()
 			}
 		}
 	}

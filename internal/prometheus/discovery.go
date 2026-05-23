@@ -125,11 +125,16 @@ func (c *Client) setDiscoveryServiceFromCandidate(cand prom.Candidate) {
 	c.mu.Unlock()
 }
 
-// markConnected records the active connection and marks discovery as complete.
+// markConnected records the active connection and marks discovery as
+// complete. Also clears any cached pkg/prom.Client so the next
+// getPromClient rebuilds against the (possibly new) address — otherwise
+// a stale cached client could survive a discovery that landed on a
+// different endpoint.
 func (c *Client) markConnected(addr, basePath string) {
 	c.mu.Lock()
 	c.baseURL = addr
 	c.basePath = basePath
+	c.prom = nil
 	c.discovered = true
 	c.mu.Unlock()
 }

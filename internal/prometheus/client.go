@@ -167,27 +167,35 @@ func (c *Client) GetStatus() prom.Status {
 	}
 }
 
-// EnsureConnected attempts to discover and connect to Prometheus if not already connected.
-// Returns the base URL and base path, or an error.
+// EnsureConnected attempts to discover and connect to Prometheus if not
+// already connected. Returns the base URL and base path, or an error.
 func (c *Client) EnsureConnected(ctx context.Context) (string, string, error) {
 	c.mu.RLock()
 	base := c.baseURL
 	bp := c.basePath
-	cached := c.prom
 	c.mu.RUnlock()
 
-	if base != "" && cached != nil {
-		ok, reason := cached.Probe(ctx)
-		if ok {
-			return base, bp, nil
+	if base != "" {
+		// Probe whatever we already have, building the pkg/prom.Client
+		// on-demand. The cached client may be nil here for two reasons:
+		// (a) a concurrent request hasn't yet primed getPromClient, or
+		// (b) SetHeaders cleared the cache to force a header reload.
+		// In both cases the connection itself is still valid; only the
+		// cached client wrapper needs rebuilding. Pre-extraction probed
+		// solely on base!="", so this preserves that behavior.
+		if p := c.getPromClient(); p != nil {
+			ok, reason := p.Probe(ctx)
+			if ok {
+				return base, bp, nil
+			}
+			log.Printf("[prometheus] cached connection to %s failed probe (reason=%s), rediscovering", base, reason)
+			c.mu.Lock()
+			c.baseURL = ""
+			c.basePath = ""
+			c.prom = nil
+			c.discovered = false
+			c.mu.Unlock()
 		}
-		log.Printf("[prometheus] cached connection to %s failed probe (reason=%s), rediscovering", base, reason)
-		c.mu.Lock()
-		c.baseURL = ""
-		c.basePath = ""
-		c.prom = nil
-		c.discovered = false
-		c.mu.Unlock()
 	}
 
 	return c.discover(ctx)
