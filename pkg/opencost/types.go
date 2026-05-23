@@ -22,9 +22,9 @@ type CostSummary struct {
 	Namespaces        []NamespaceCost `json:"namespaces,omitempty"`
 }
 
-// NamespaceCost holds per-row cost breakdown. Despite the historical name it
-// is used for any aggregation level (namespace, controller, pod). The Kind
-// field disambiguates; empty means the row represents a namespace.
+// NamespaceCost holds per-row cost breakdown. The name reflects the
+// default aggregation; the struct is also used for controller and pod
+// rows — Kind disambiguates (empty = namespace).
 type NamespaceCost struct {
 	Name            string  `json:"name"`
 	Kind            string  `json:"kind,omitempty"` // "namespace" (default if empty) | "controller" | "pod"

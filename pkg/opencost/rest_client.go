@@ -81,8 +81,8 @@ func (o AllocationOptions) toQuery() url.Values {
 }
 
 // Allocation is the per-row allocation data OpenCost returns. Fields are
-// subsets of OpenCost's schema — we map what the finops UI actually
-// consumes. Full field list: see OpenCost docs.
+// the subset of OpenCost's schema this package's compute path consumes;
+// full field list is in OpenCost's documentation.
 //
 // Costs are in the configured currency (USD by default) and sum to the
 // given window (not per-hour unless window=1h).

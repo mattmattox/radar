@@ -39,8 +39,7 @@ type Candidate struct {
 type DiscoverOptions struct {
 	// IncludeDynamic controls whether a cluster-wide service scan is performed.
 	// The scan is an O(all services) List call plus a scoring pass; skip it
-	// for callers (e.g., lightweight connector probes) that only want
-	// well-known locations.
+	// for callers that only need a quick well-known check.
 	IncludeDynamic bool
 
 	// MaxDynamic caps the number of dynamic candidates returned. Default 5.
