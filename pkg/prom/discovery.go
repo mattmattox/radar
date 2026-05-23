@@ -51,8 +51,7 @@ type DiscoverOptions struct {
 }
 
 // WellKnownLocations is the ordered list of namespaces + service names where
-// Prometheus-compatible services are commonly installed. Exposed so callers
-// that maintain their own discovery loops can iterate this list directly.
+// Prometheus-compatible services are commonly installed.
 var WellKnownLocations = []struct {
 	Namespace string
 	Name      string
@@ -84,9 +83,9 @@ var WellKnownLocations = []struct {
 	{"caretta", "caretta-vm", 8428, ""},
 }
 
-// MetricsNamespaces are commonly used for metrics services; used as a scoring
+// metricsNamespaces are commonly used for metrics services; used as a scoring
 // signal in dynamic discovery.
-var MetricsNamespaces = map[string]bool{
+var metricsNamespaces = map[string]bool{
 	"monitoring":       true,
 	"prometheus":       true,
 	"observability":    true,
@@ -96,8 +95,8 @@ var MetricsNamespaces = map[string]bool{
 	"opencost":         true,
 }
 
-// SkipNamespaces are excluded from dynamic discovery.
-var SkipNamespaces = map[string]bool{
+// skipNamespaces are excluded from dynamic discovery.
+var skipNamespaces = map[string]bool{
 	"kube-public":     true,
 	"kube-node-lease": true,
 }
@@ -186,13 +185,13 @@ func Discover(ctx context.Context, k8sClient kubernetes.Interface, opts Discover
 }
 
 // ScoreService computes a heuristic score for a service being
-// Prometheus-compatible. Exported so callers that already hold a Service
-// list can reuse the scoring without re-running Discover.
+// Prometheus-compatible. Returns the score and an inferred BasePath for
+// vmselect-style services.
 func ScoreService(svc corev1.Service) (score int, basePath string) {
 	if svc.Spec.Type == corev1.ServiceTypeExternalName {
 		return 0, ""
 	}
-	if SkipNamespaces[svc.Namespace] {
+	if skipNamespaces[svc.Namespace] {
 		return 0, ""
 	}
 
@@ -257,7 +256,7 @@ func ScoreService(svc corev1.Service) (score int, basePath string) {
 		score += 15
 	}
 
-	if MetricsNamespaces[svc.Namespace] {
+	if metricsNamespaces[svc.Namespace] {
 		score += 10
 	}
 

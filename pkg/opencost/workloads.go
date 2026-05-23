@@ -27,8 +27,7 @@ type PodOwnerLookup func(podName string) (WorkloadOwner, bool)
 //
 // When ownerLookup is nil or can't resolve a pod, the pod is assigned to a
 // fallback "standalone" workload whose name is the pod name with its hash
-// suffixes stripped — best-effort grouping that mirrors radar's prior
-// behavior.
+// suffixes stripped — best-effort grouping for orphan pods.
 func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespace string, ownerLookup PodOwnerLookup) *WorkloadCostResponse {
 	if client == nil {
 		return &WorkloadCostResponse{Namespace: namespace, Available: false, Reason: ReasonNoPrometheus}

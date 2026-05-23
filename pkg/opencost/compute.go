@@ -14,8 +14,8 @@ import (
 // "30d") into a number of hours. OpenCost's /allocation returns totalCost
 // summed over the whole window; to present an hourly rate (which then
 // multiplies by 730 for monthly projection) we divide by this value. Falls
-// back to 1.0 for unknown inputs so we degrade into the pre-fix behavior
-// rather than silently zero out costs.
+// back to 1.0 for unknown inputs so callers degrade gracefully rather than
+// silently zero out costs.
 func windowHours(w string) float64 {
 	s := strings.TrimSpace(strings.ToLower(w))
 	if s == "" {
@@ -362,14 +362,17 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 		return &CostSummary{Available: false, Reason: ReasonNoMetrics}
 	}
 
-	cpuUsageMap := lastValuePerNamespace(client.Query(ctx,
-		`sum by (namespace) (label_replace(rate(container_cpu_usage_seconds_total{container!="", namespace!=""}[1h]), "node", "$1", "instance", "(.+?)(?::\\d+)?$") * on(node) group_left() node_cpu_hourly_cost)`))
+	cpuUsageRes, cpuUsageErr := client.Query(ctx,
+		`sum by (namespace) (label_replace(rate(container_cpu_usage_seconds_total{container!="", namespace!=""}[1h]), "node", "$1", "instance", "(.+?)(?::\\d+)?$") * on(node) group_left() node_cpu_hourly_cost)`)
+	cpuUsageMap := lastValuePerLabel(cpuUsageRes, cpuUsageErr, "namespace")
 
-	memUsageMap := lastValuePerNamespace(client.Query(ctx,
-		`sum by (namespace) (label_replace(container_memory_working_set_bytes{container!="", namespace!=""}, "node", "$1", "instance", "(.+?)(?::\\d+)?$") / 1073741824 * on(node) group_left() node_ram_hourly_cost)`))
+	memUsageRes, memUsageErr := client.Query(ctx,
+		`sum by (namespace) (label_replace(container_memory_working_set_bytes{container!="", namespace!=""}, "node", "$1", "instance", "(.+?)(?::\\d+)?$") / 1073741824 * on(node) group_left() node_ram_hourly_cost)`)
+	memUsageMap := lastValuePerLabel(memUsageRes, memUsageErr, "namespace")
 
-	storageMap := lastValuePerNamespace(client.Query(ctx,
-		`sum by (namespace) (pv_hourly_cost * on(persistentvolume) group_left(namespace) kube_persistentvolume_claim_ref)`))
+	storageRes, storageErr := client.Query(ctx,
+		`sum by (namespace) (pv_hourly_cost * on(persistentvolume) group_left(namespace) kube_persistentvolume_claim_ref)`)
+	storageMap := lastValuePerLabel(storageRes, storageErr, "namespace")
 
 	nsMap := make(map[string]*NamespaceCost)
 	mergeSeriesIntoNamespaceField(cpuResult, nsMap, func(nc *NamespaceCost, v float64) { nc.CPUCost = v })
@@ -468,23 +471,6 @@ func mergeSeriesIntoNamespaceField(result *prom.QueryResult, nsMap map[string]*N
 			set(nc, s.DataPoints[len(s.DataPoints)-1].Value)
 		}
 	}
-}
-
-func lastValuePerNamespace(result *prom.QueryResult, err error) map[string]float64 {
-	out := make(map[string]float64)
-	if err != nil || result == nil {
-		return out
-	}
-	for _, s := range result.Series {
-		ns := s.Labels["namespace"]
-		if ns == "" {
-			continue
-		}
-		if len(s.DataPoints) > 0 {
-			out[ns] = s.DataPoints[len(s.DataPoints)-1].Value
-		}
-	}
-	return out
 }
 
 // roundTo rounds to `places` decimal places, returning 0 for NaN/Inf

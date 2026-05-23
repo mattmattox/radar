@@ -19,7 +19,7 @@ import (
 //
 // Many clusters have (1) working but (2) not wired up (Prometheus exists
 // but no scrape job for OpenCost's /metrics). REST works everywhere OpenCost
-// works, so it's the default compute path for the finops backend.
+// works, so it's the default compute path.
 type RESTClient struct {
 	t Transport
 }
@@ -28,12 +28,6 @@ type RESTClient struct {
 func NewRESTClient(t Transport) *RESTClient {
 	return &RESTClient{t: t}
 }
-
-// Transport returns the underlying transport for diagnostics.
-func (c *RESTClient) Transport() Transport { return c.t }
-
-// Address returns the transport's diagnostic identifier.
-func (c *RESTClient) Address() string { return c.t.Address() }
 
 // AllocationOptions controls an /allocation query.
 type AllocationOptions struct {

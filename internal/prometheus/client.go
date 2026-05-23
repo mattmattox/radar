@@ -233,12 +233,10 @@ func (c *Client) getPromClient() *prom.Client {
 }
 
 // probe checks if a Prometheus endpoint at `addr` is reachable and has at
-// least one active scrape target, using pkg/prom.Client.Probe. Retained as
-// a method on *Client so existing discovery call sites (which test many
-// candidate addresses before committing) can continue to use `c.probe(...)`.
-// Also records an errorlog warning when a candidate is skipped because the
-// instance has no active scrape targets, so operators can see why discovery
-// moved past an otherwise-reachable endpoint.
+// least one active scrape target, using pkg/prom.Client.Probe. Records an
+// errorlog warning when a candidate is skipped because the instance has no
+// active scrape targets, so operators can see why discovery moved past an
+// otherwise-reachable endpoint.
 func (c *Client) probe(ctx context.Context, addr string) bool {
 	c.mu.RLock()
 	httpC := c.httpClient

@@ -41,6 +41,3 @@ var (
 	CategoryUsesContainerFilter       = prom.CategoryUsesContainerFilter
 )
 
-// categoryUsesContainerFilter is a lowercase alias kept for handlers.go's
-// existing call site; delete when call sites migrate to the capitalized form.
-var categoryUsesContainerFilter = prom.CategoryUsesContainerFilter

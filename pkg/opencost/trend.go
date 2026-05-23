@@ -66,10 +66,7 @@ func ComputeCostTrend(ctx context.Context, client *RESTClient, opts TrendOptions
 		return &CostTrendResponse{Available: false, Reason: ReasonNoMetrics, Range: window}
 	}
 
-	bucketHours := stepHours(step)
-	if bucketHours <= 0 {
-		bucketHours = 1
-	}
+	bucketHours := windowHours(step)
 
 	// Walk buckets in order. For each bucket, accumulate per-aggregate
 	// totals and the bucket timestamp (parsed from one row's Start, since
@@ -168,26 +165,6 @@ func defaultStep(window string) string {
 	default:
 		return "2d"
 	}
-}
-
-// stepHours parses a step string into hours, mirroring windowHours. OpenCost
-// accepts "Nm", "Nh", "Nd".
-func stepHours(s string) float64 {
-	if len(s) < 2 {
-		return 1
-	}
-	unit := s[len(s)-1]
-	// Reuse windowHours for h/d/w; handle "m" as minutes specifically since
-	// windowHours treats "m" as minutes too.
-	h := windowHours(s)
-	if h > 0 {
-		return h
-	}
-	switch unit {
-	case 'm':
-		return 1.0 / 60
-	}
-	return 1
 }
 
 // bucketTimestamp returns a Unix-milli timestamp derived from the first

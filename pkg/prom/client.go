@@ -22,11 +22,6 @@ func NewClient(t Transport) *Client {
 	return &Client{t: t}
 }
 
-// Transport returns the underlying Transport. Useful for diagnostics.
-func (c *Client) Transport() Transport {
-	return c.t
-}
-
 // Query executes an instant PromQL query.
 func (c *Client) Query(ctx context.Context, promQL string) (*QueryResult, error) {
 	return c.issueQuery(ctx, "/api/v1/query", url.Values{"query": {promQL}})
@@ -153,22 +148,13 @@ func parseDataPoint(v []interface{}) (DataPoint, bool) {
 		return DataPoint{}, false
 	}
 
-	var ts float64
-	switch t := v[0].(type) {
-	case float64:
-		ts = t
-	case json.Number:
-		f, err := t.Float64()
-		if err != nil {
-			return DataPoint{}, false
-		}
-		ts = f
-	default:
+	ts, ok := v[0].(float64)
+	if !ok {
 		return DataPoint{}, false
 	}
 
-	valStr, ok := v[1].(string)
-	if !ok {
+	valStr, sok := v[1].(string)
+	if !sok {
 		return DataPoint{}, false
 	}
 	val, err := strconv.ParseFloat(valStr, 64)

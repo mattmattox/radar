@@ -442,7 +442,7 @@ func handleRawQuery(w http.ResponseWriter, r *http.Request) {
 // cri-docker and other setups where cAdvisor metrics lack the container label.
 // Returns the updated result (original or fallback) and the query that produced it.
 func retryWithoutContainerFilter(ctx context.Context, client *Client, result *QueryResult, query string, category MetricCategory, start, end time.Time, step time.Duration, buildFallback func() string, logPrefix string) (*QueryResult, string) {
-	if len(result.Series) > 0 || !categoryUsesContainerFilter(category) {
+	if len(result.Series) > 0 || !CategoryUsesContainerFilter(category) {
 		return result, query
 	}
 	fallbackQuery := buildFallback()

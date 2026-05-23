@@ -10,14 +10,9 @@ import (
 
 // TrendPromOptions controls ComputeCostTrendFromProm.
 type TrendPromOptions struct {
-	// Range is "6h", "24h", "7d" (default "24h"). Echoed back as Range on
-	// the response and drives default Start/End/Step when those are zero.
+	// Range is "6h", "24h", "7d" (default "24h"). Drives the start/end and
+	// step of the underlying range query and is echoed on the response.
 	Range string
-
-	// Start, End, Step override the defaults derived from Range. If any is
-	// the zero value, Range's defaults are used.
-	Start, End time.Time
-	Step       time.Duration
 
 	// MaxSeries is the top-N namespaces kept; the rest are aggregated into
 	// a single "other" series. Defaults to 8 when zero.
@@ -37,7 +32,7 @@ func ComputeCostTrendFromProm(ctx context.Context, client *prom.Client, opts Tre
 		return &CostTrendResponse{Available: false, Reason: ReasonNoPrometheus}
 	}
 
-	start, end, step, label := resolveTrendRange(opts)
+	start, end, step, label := resolveTrendRange(opts.Range)
 	maxSeries := opts.MaxSeries
 	if maxSeries <= 0 {
 		maxSeries = 8
@@ -114,46 +109,15 @@ func ComputeCostTrendFromProm(ctx context.Context, client *prom.Client, opts Tre
 	return &CostTrendResponse{Available: true, Range: label, Series: series}
 }
 
-// resolveTrendRange returns the start/end/step/label for ComputeCostTrendFromProm,
-// honoring explicit overrides on opts and otherwise defaulting based on opts.Range.
-func resolveTrendRange(opts TrendPromOptions) (start, end time.Time, step time.Duration, label string) {
-	end = opts.End
-	if end.IsZero() {
-		end = time.Now()
-	}
-
-	switch opts.Range {
+// resolveTrendRange returns the start/end/step/label for the named Range.
+func resolveTrendRange(rangeStr string) (start, end time.Time, step time.Duration, label string) {
+	end = time.Now()
+	switch rangeStr {
 	case "6h":
-		label = "6h"
-		if opts.Start.IsZero() {
-			start = end.Add(-6 * time.Hour)
-		}
-		if opts.Step == 0 {
-			step = 15 * time.Minute
-		}
+		return end.Add(-6 * time.Hour), end, 15 * time.Minute, "6h"
 	case "7d":
-		label = "7d"
-		if opts.Start.IsZero() {
-			start = end.Add(-7 * 24 * time.Hour)
-		}
-		if opts.Step == 0 {
-			step = 6 * time.Hour
-		}
+		return end.Add(-7 * 24 * time.Hour), end, 6 * time.Hour, "7d"
 	default:
-		label = "24h"
-		if opts.Start.IsZero() {
-			start = end.Add(-24 * time.Hour)
-		}
-		if opts.Step == 0 {
-			step = time.Hour
-		}
+		return end.Add(-24 * time.Hour), end, time.Hour, "24h"
 	}
-
-	if !opts.Start.IsZero() {
-		start = opts.Start
-	}
-	if opts.Step != 0 {
-		step = opts.Step
-	}
-	return
 }
