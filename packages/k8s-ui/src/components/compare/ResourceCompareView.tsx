@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { ArrowLeftRight, GitCompare, Rows, FileText, FileCode2, X, Pencil, AlertTriangle, Sparkles } from 'lucide-react'
 import { YamlDiffEditor } from '../ui/YamlEditor'
+import { PaneLoader } from '../ui/PaneLoader'
 import { Tooltip } from '../ui/Tooltip'
 import { pluralToKind } from '../../utils/navigation'
 import { toComparableYaml } from './normalize'
@@ -26,9 +27,6 @@ export interface ResourceCompareViewProps {
   b: CompareResourceRef
   aData: unknown
   bData: unknown
-  /** Per-side loading — a ready side renders while the slow side spins. */
-  aLoading?: boolean
-  bLoading?: boolean
   /** Per-side fetch errors. Each side renders independently — a working side stays useful. */
   errors?: CompareSideError[]
   /** Caller-supplied theme passthrough for the Monaco editor. */
@@ -38,6 +36,20 @@ export interface ResourceCompareViewProps {
   /** Optional — when provided, the resource pill shows a pencil button to re-pick. */
   onChangeA?: () => void
   onChangeB?: () => void
+  /**
+   * Optional small label rendered after the resource name in each pill.
+   * Used by cross-cluster compare to surface the cluster identity for
+   * each side; single-cluster compare leaves these undefined.
+   */
+  aSubtitle?: string
+  bSubtitle?: string
+  /**
+   * When true, the diff editor area drops its padding + rounded border.
+   * Use when the host renders compare as a full-bleed page (the diff IS
+   * the page). Default false preserves the inset-card look that works
+   * inside OSS Radar's narrower compare route.
+   */
+  bleed?: boolean
 }
 
 function ResourcePill({
@@ -45,11 +57,13 @@ function ResourcePill({
   side,
   error,
   onChange,
+  subtitle,
 }: {
   resource: CompareResourceRef
   side: CompareSide
   error?: string
   onChange?: () => void
+  subtitle?: string
 }) {
   const tones = SIDE_TONES[side]
   const errTone = 'border-red-400/50 bg-red-500/10'
@@ -70,6 +84,11 @@ function ResourcePill({
       <span className={clsx('truncate min-w-0', error ? 'text-red-300' : 'text-theme-text-primary')}>
         {resource.namespace && <span className="opacity-60">{resource.namespace}/</span>}
         {resource.name}
+        {subtitle && (
+          <span className="opacity-60 ml-1" aria-label={`Source: ${subtitle}`}>
+            · {subtitle}
+          </span>
+        )}
       </span>
       {onChange && (
         <Tooltip content="Pick a different resource">
@@ -90,14 +109,15 @@ export function ResourceCompareView({
   b,
   aData,
   bData,
-  aLoading,
-  bLoading,
   errors,
   editorTheme = 'vs-dark',
   onSwap,
   onClose,
   onChangeA,
   onChangeB,
+  aSubtitle,
+  bSubtitle,
+  bleed = false,
 }: ResourceCompareViewProps) {
   const [specOnly, setSpecOnly] = useState(false)
   const [unified, setUnified] = useState(false)
@@ -113,6 +133,25 @@ export function ResourceCompareView({
   const bError = errors?.find(e => e.side === 'b')?.message
   const anyError = !!(aError || bError)
 
+  // Settle gate, keyed on the rendered A/B identity. Mount the diff
+  // editor only after both sides have first settled (data or error) for
+  // the current pair. Once settled, Monaco stays mounted across re-picks
+  // — clearing a side's data transiently during a refetch must not
+  // blank the editor. When the A/B identity changes (navigating to a
+  // new pair on the same route), the latch resets so the loader shows
+  // again until the new fetches settle.
+  const settleKey = `${a.kind}|${a.namespace}|${a.name}|${a.group ?? ''}|${aSubtitle ?? ''}` +
+    `|${b.kind}|${b.namespace}|${b.name}|${b.group ?? ''}|${bSubtitle ?? ''}`
+  const settleKeyRef = useRef(settleKey)
+  const hasSettledRef = useRef(false)
+  if (settleKeyRef.current !== settleKey) {
+    settleKeyRef.current = settleKey
+    hasSettledRef.current = false
+  }
+  const bothSettled = (!!aData || !!aError) && (!!bData || !!bError)
+  if (bothSettled) hasSettledRef.current = true
+  const showInitialLoader = !hasSettledRef.current && !bothSettled
+
   return (
     <div className="flex-1 min-w-0 flex flex-col h-full bg-theme-base">
       <div className="h-0.5 w-full bg-gradient-to-r from-blue-400/70 via-skyhook-400/40 to-emerald-400/70" />
@@ -125,7 +164,7 @@ export function ResourceCompareView({
         </h2>
 
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <ResourcePill resource={a} side="a" error={aError} onChange={onChangeA} />
+          <ResourcePill resource={a} side="a" error={aError} onChange={onChangeA} subtitle={aSubtitle} />
           <Tooltip content="Swap A and B">
             <button
               onClick={onSwap}
@@ -134,7 +173,7 @@ export function ResourceCompareView({
               <ArrowLeftRight className="w-3.5 h-3.5" />
             </button>
           </Tooltip>
-          <ResourcePill resource={b} side="b" error={bError} onChange={onChangeB} />
+          <ResourcePill resource={b} side="b" error={bError} onChange={onChangeB} subtitle={bSubtitle} />
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
@@ -181,11 +220,9 @@ export function ResourceCompareView({
         </div>
       )}
 
-      <div className="flex-1 min-h-0 p-3">
-        {aLoading && bLoading ? (
-          <div className="flex items-center justify-center h-full text-theme-text-secondary text-sm">
-            Loading resources…
-          </div>
+      <div className={clsx('flex-1 min-h-0', bleed ? '' : 'p-3')}>
+        {showInitialLoader ? (
+          <PaneLoader label="Loading resources…" className="h-full" />
         ) : (
           <YamlDiffEditor
             original={aYaml}
@@ -194,6 +231,7 @@ export function ResourceCompareView({
             hideUnchanged={hideUnchanged && !identical}
             theme={editorTheme}
             height="100%"
+            bleed={bleed}
           />
         )}
       </div>
