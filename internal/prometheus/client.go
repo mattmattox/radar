@@ -211,9 +211,14 @@ func (c *Client) Prom() *prom.Client {
 	return c.getPromClient()
 }
 
-// getPromClient returns a pkg/prom.Client pointed at the current baseURL/basePath,
-// building (and caching) one if necessary. Callers must hold the read or
-// write lock appropriately; see QueryRange/Query.
+// getPromClient returns a pkg/prom.Client pointed at the current
+// baseURL/basePath, building (and caching) one if necessary.
+//
+// Fast path: cached client under RLock. Slow path: take the write lock and
+// build from the live state, which guarantees baseURL/basePath/headers all
+// reflect the same point-in-time view. Transport construction is just
+// struct-field assignments (no I/O) so holding the write lock across it
+// is cheap, and avoids the read-then-rebuild-then-recheck race entirely.
 func (c *Client) getPromClient() *prom.Client {
 	c.mu.RLock()
 	if c.prom != nil {
@@ -221,26 +226,20 @@ func (c *Client) getPromClient() *prom.Client {
 		c.mu.RUnlock()
 		return p
 	}
-	base, bp, httpC := c.baseURL, c.basePath, c.httpClient
-	headers := copyHeaders(c.headers)
 	c.mu.RUnlock()
 
-	if base == "" {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.prom != nil {
+		return c.prom
+	}
+	if c.baseURL == "" {
 		return nil
 	}
-
-	tr := prom.NewHTTPTransport(base, bp, httpC)
-	tr.Headers = headers
-	p := prom.NewClient(tr)
-	c.mu.Lock()
-	// Double-check in case another goroutine built one.
-	if c.prom == nil {
-		c.prom = p
-	} else {
-		p = c.prom
-	}
-	c.mu.Unlock()
-	return p
+	tr := prom.NewHTTPTransport(c.baseURL, c.basePath, c.httpClient)
+	tr.Headers = copyHeaders(c.headers)
+	c.prom = prom.NewClient(tr)
+	return c.prom
 }
 
 // probe checks if a Prometheus endpoint at `addr` is reachable and has at
