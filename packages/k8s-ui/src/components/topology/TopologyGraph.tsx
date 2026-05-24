@@ -20,7 +20,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { toCanvas } from 'html-to-image'
 
-import { AlertTriangle, Download, LayoutGrid, Loader2, Maximize, Minus, Pause, Play, Plus, RotateCw, Shield, Workflow } from 'lucide-react'
+import { AlertTriangle, Download, Layers, LayoutGrid, Loader2, Maximize, Minus, Pause, Play, Plus, RotateCw, Shield, Workflow } from 'lucide-react'
 import { PaneLoader } from '../ui/PaneLoader'
 import { Tooltip } from '../ui/Tooltip'
 import { useToast } from '../ui/Toast'
@@ -31,6 +31,8 @@ import { GroupNode } from './GroupNode'
 import { buildHierarchicalElkGraph, applyHierarchicalLayout, getGroupKey, type GroupDisplayLevel } from './layout'
 import type { Topology, TopologyNode, TopologyEdge, ViewMode, GroupingMode } from '../../types'
 import { pluralize } from '../../utils/pluralize'
+import { foldHash } from '../../utils/structure-hash'
+import { recordLayoutDuration, recordLayoutSkipped, recordStructureKeyDuration } from '../../perf'
 
 // Edge colors by type
 const EDGE_COLORS = {
@@ -442,13 +444,28 @@ export function TopologyGraph({
     if (topoNode) onNodeClick(topoNode)
   }, [topology, workingNodes, onNodeClick])
 
-  // Structure key for change detection — includes groupLevels so chip↔cardGrid triggers relayout
+  // Structure key for change detection — includes groupLevels so chip↔cardGrid triggers relayout.
+  //
+  // Uses an order-independent XOR fold of FNV-1a hashes per ID instead of
+  // sort+join. At 3000+ nodes the join allocated a ~50KB string every time
+  // (and the sort dominated for short ID arrays); the fold is O(n) with
+  // constant memory and detects the same structural changes (add/remove/
+  // rename). Pure reorders no longer trigger a layout, which is correct —
+  // ELK relayouts on reorder were wasted work.
   const structureKey = useMemo(() => {
-    const nodeIds = workingNodes.map(n => n.id).sort().join(',')
-    const edgeIds = workingEdges.map(e => `${e.source}->${e.target}:${e.type}`).sort().join(',')
-    const levels = Array.from(groupLevels.entries()).sort().map(([k, v]) => `${k}:${v}`).join(',')
-    const expanded = Array.from(expandedPodGroups).sort().join(',')
-    return `${viewMode}|${nodeIds}|${edgeIds}|${levels}|${expanded}|${groupingMode}|${layoutRetryCount}`
+    const t0 = performance.now()
+    const nodeHash = foldHash(workingNodes, n => n.id)
+    const edgeHash = foldHash(workingEdges, e => `${e.source}->${e.target}:${e.type}`)
+    const levelsHash = foldHash(Array.from(groupLevels.entries()), ([k, v]) => `${k}:${v}`)
+    const expandedHash = foldHash(Array.from(expandedPodGroups), s => s)
+    const key =
+      `${viewMode}|${groupingMode}|${layoutRetryCount}` +
+      `|n${workingNodes.length}:${nodeHash}` +
+      `|e${workingEdges.length}:${edgeHash}` +
+      `|l${groupLevels.size}:${levelsHash}` +
+      `|x${expandedPodGroups.size}:${expandedHash}`
+    recordStructureKeyDuration((performance.now() - t0) * 1000)
+    return key
   }, [viewMode, workingNodes, workingEdges, groupLevels, expandedPodGroups, groupingMode, layoutRetryCount])
 
   // Layout when structure changes - use hierarchical ELK layout
@@ -465,6 +482,7 @@ export function TopologyGraph({
     const structureChanged = structureKey !== prevStructureRef.current
 
     if (!structureChanged) {
+      recordLayoutSkipped()
       return
     }
 
@@ -517,6 +535,7 @@ export function TopologyGraph({
     groupMapRef.current = groupMap
 
     // Apply layout and get positioned nodes
+    const layoutStartMs = performance.now()
     applyHierarchicalLayout(
       elkGraph,
       workingNodes,
@@ -540,6 +559,7 @@ export function TopologyGraph({
         return
       }
       setLayoutError(null)
+      recordLayoutDuration(performance.now() - layoutStartMs, workingNodes.length, workingEdges.length)
 
       // Preserve positions for nodes that already have a saved position (i.e. were
       // present in a previous layout). New nodes use the ELK-computed position.
@@ -778,6 +798,15 @@ export function TopologyGraph({
               <p className="mt-1 text-xs text-theme-text-tertiary font-mono">{layoutError}</p>
             </div>
           </div>
+        </div>
+      )}
+      {/* Summary-mode pill — pod tier collapsed to per-workload/service counts */}
+      {topology?.summaryMode && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 bg-blue-500/10 border border-blue-500/30 rounded-full px-3 py-1 backdrop-blur-sm">
+          <Layers className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+          <span className="text-xs text-theme-text-secondary">
+            Summary view — pods collapsed to counts. Filter to a smaller namespace to see individual pods.
+          </span>
         </div>
       )}
       <ReactFlow

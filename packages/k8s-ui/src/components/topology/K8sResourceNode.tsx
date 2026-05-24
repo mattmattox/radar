@@ -171,8 +171,27 @@ function getStatusStyle(status: HealthStatus): React.CSSProperties {
 }
 
 
-// Format subtitle based on node kind
+// Format subtitle based on node kind. In summary mode the pod tier is
+// collapsed, so workload/service nodes carry a podSummary — append it so the
+// count of pods (and any unhealthy/pending) is still visible without children.
 function getSubtitle(kind: NodeKind, nodeData: Record<string, unknown>): string {
+  const base = baseSubtitle(kind, nodeData)
+  const ps = nodeData.podSummary as { total: number; healthy: number; degraded: number; unhealthy: number } | undefined
+  if (ps && SUMMARY_POD_KINDS.has(kind)) {
+    let suffix = `${ps.total} pods`
+    if (ps.unhealthy > 0) suffix += ` (${ps.unhealthy} unhealthy)`
+    else if (ps.degraded > 0) suffix += ` (${ps.degraded} pending)`
+    return base ? `${base} • ${suffix}` : suffix
+  }
+  return base
+}
+
+// Kinds that own pods and therefore carry a podSummary in summary mode.
+const SUMMARY_POD_KINDS = new Set<NodeKind>([
+  'Deployment', 'StatefulSet', 'DaemonSet', 'Rollout', 'Job', 'Service',
+])
+
+function baseSubtitle(kind: NodeKind, nodeData: Record<string, unknown>): string {
   switch (kind) {
     case 'Deployment':
     case 'Rollout':
