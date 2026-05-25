@@ -261,9 +261,23 @@ func TestSummaryModeMissingControllerPodsNotDropped(t *testing.T) {
 			t.Errorf("unexpected podSummary on node %s — pods attributed to a non-existent controller", n.ID)
 		}
 	}
-	// ...but the pods are NOT dropped: they fall back to a collapsed PodGroup.
-	if countKind(topo, KindPodGroup) == 0 {
-		t.Error("expected orphan PodGroup for pods whose controller node is absent")
+	// ...the pods are NOT dropped, but collapse into a single bounded summary
+	// node per namespace — NOT a PodGroup carrying 10000 per-pod records.
+	if got := countKind(topo, KindPodGroup); got != 1 {
+		t.Fatalf("expected exactly 1 orphan summary node, got %d", got)
+	}
+	orphan := findNode(topo, "podgroup-orphans-big")
+	if orphan == nil {
+		t.Fatal("expected orphan summary node podgroup-orphans-big")
+	}
+	if _, hasPods := orphan.Data["pods"]; hasPods {
+		t.Error("orphan summary node must NOT carry a per-pod 'pods' array (would defeat the summary guard + stay expandable)")
+	}
+	if orphan.Data["podCount"] != 10000 {
+		t.Errorf("orphan podCount = %v, want 10000", orphan.Data["podCount"])
+	}
+	if orphan.Data["summaryOnly"] != true {
+		t.Errorf("orphan node should be marked summaryOnly")
 	}
 }
 
@@ -293,9 +307,20 @@ func TestSummaryModeStandalonePodsFallBackToPodGroup(t *testing.T) {
 	if summary := dep.Data["podSummary"].(map[string]any); summary["total"] != 10000 {
 		t.Errorf("deployment podSummary.total = %v, want 10000 (standalone pods excluded)", summary["total"])
 	}
-	// They surface as orphan PodGroups instead.
-	if countKind(topo, KindPodGroup) == 0 {
-		t.Error("expected orphan PodGroup nodes for standalone pods")
+	// They surface as a single bounded orphan summary node (not 3 per-pod
+	// PodGroups, and not one carrying a 'pods' array).
+	if got := countKind(topo, KindPodGroup); got != 1 {
+		t.Fatalf("expected exactly 1 orphan summary node for standalone pods, got %d", got)
+	}
+	orphan := findNode(topo, "podgroup-orphans-big")
+	if orphan == nil {
+		t.Fatal("expected orphan summary node podgroup-orphans-big")
+	}
+	if _, hasPods := orphan.Data["pods"]; hasPods {
+		t.Error("orphan summary node must NOT carry a per-pod 'pods' array")
+	}
+	if orphan.Data["podCount"] != 3 {
+		t.Errorf("orphan podCount = %v, want 3", orphan.Data["podCount"])
 	}
 }
 

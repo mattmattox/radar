@@ -2697,32 +2697,29 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		// Summary mode: collapse the pod tier entirely. Roll each pod's health
 		// onto its owning workload node. Pods with no resolvable workload
 		// (standalone, bare ReplicaSet, or a controller whose node wasn't
-		// created) fall back to a collapsed PodGroup so they stay visible
-		// without re-introducing thousands of pod nodes.
+		// created) are aggregated into ONE summary-only node per namespace —
+		// counts only, no per-pod array and no expand affordance — so a large
+		// orphan set can't re-introduce the pod-tier payload/render cost.
 		existingNodeIDs := make(map[string]bool, len(nodes))
 		for _, n := range nodes {
 			existingNodeIDs[n.ID] = true
 		}
-		var orphanPods []*corev1.Pod
+		orphanByNS := make(map[string]*PodSummary)
+		orphanRestarts := make(map[string]int32)
 		for _, pod := range pods {
 			if !opts.MatchesNamespaceFilter(pod.Namespace) {
 				continue
 			}
 			workloadID := b.resolvePodWorkloadID(pod, existingNodeIDs, replicaSetToDeployment, replicaSetToRollout, jobIDs)
 			if workloadID == "" {
-				orphanPods = append(orphanPods, pod)
+				addPodHealth(orphanByNS, pod.Namespace, pod)
+				orphanRestarts[pod.Namespace] += ComputePodRestarts(pod)
 				continue
 			}
 			addPodHealth(podSummaries, workloadID, pod)
 		}
-		if len(orphanPods) > 0 {
-			orphanResult := GroupPods(orphanPods, PodGroupingOptions{Namespaces: opts.Namespaces})
-			for _, group := range orphanResult.Groups {
-				podGroupID := GetPodGroupID(group)
-				nodes = append(nodes, CreatePodGroupNode(group, b.provider))
-				firstPod := group.Pods[0]
-				edges = append(edges, b.createPodOwnerEdges(firstPod, podGroupID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, jobIDs, jobToCronJob)...)
-			}
+		for ns, summary := range orphanByNS {
+			nodes = append(nodes, CreateOrphanPodSummaryNode(ns, *summary, orphanRestarts[ns]))
 		}
 	} else if len(pods) > 0 {
 		// Group pods using shared grouping logic

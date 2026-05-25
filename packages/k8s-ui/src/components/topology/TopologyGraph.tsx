@@ -583,9 +583,13 @@ export function TopologyGraph({
         savedPositionsRef.current.set(node.id, node.position)
       }
 
-      // Add expand/collapse handlers to pod-related nodes
+      // Add expand/collapse handlers to pod-related nodes. Only PodGroups that
+      // actually carry a per-pod array are expandable — summary-only orphan
+      // nodes (summary mode) hold counts only, so they get no expand affordance.
       const nodesWithHandlers = positionedNodes.map(node => {
         const isPodGroup = node.data?.kind === 'PodGroup'
+        const podsArray = (node.data as Record<string, unknown> | undefined)?.pods
+        const isExpandablePodGroup = isPodGroup && Array.isArray(podsArray) && podsArray.length > 0
         const nodeData = node.data?.nodeData as Record<string, unknown> | undefined
         const expandedFromGroup = nodeData?.expandedFromGroup as string | undefined
 
@@ -593,9 +597,9 @@ export function TopologyGraph({
           ...node,
           data: {
             ...node.data,
-            onExpand: isPodGroup ? handleExpandPodGroup : undefined,
+            onExpand: isExpandablePodGroup ? handleExpandPodGroup : undefined,
             onCollapse: expandedFromGroup ? handleCollapsePodGroup : undefined,
-            isExpanded: isPodGroup ? expandedPodGroups.has(node.id) : undefined,
+            isExpanded: isExpandablePodGroup ? expandedPodGroups.has(node.id) : undefined,
           },
         }
       })
