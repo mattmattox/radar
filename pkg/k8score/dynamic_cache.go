@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,6 +17,20 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
+)
+
+const (
+	// defaultInformerIdleTTL is how long a namespace-scoped informer survives
+	// without a read before the reaper stops it. Comfortably larger than the
+	// frontend's resource-list refetch interval (60–120s), so an open view —
+	// which re-lists on that cadence — keeps its informer warm and is never
+	// reaped out from under a live stream.
+	defaultInformerIdleTTL = 30 * time.Minute
+	// reapMinInterval / reapMaxInterval bound how often the reaper wakes,
+	// derived from the TTL. The reaper only ever stops idle informers, so a
+	// coarse cadence is fine.
+	reapMinInterval = 30 * time.Second
+	reapMaxInterval = 5 * time.Minute
 )
 
 // informerKey identifies one informer. ns == "" means a cluster-wide watch;
@@ -29,24 +44,27 @@ type informerKey struct {
 }
 
 // informerEntry is one running informer plus its lifecycle handle. synced is
-// guarded by DynamicResourceCache.mu.
+// guarded by DynamicResourceCache.mu; lastAccess is atomic so the hot read
+// path can stamp it without taking the write lock.
 type informerEntry struct {
-	informer cache.SharedIndexInformer
-	cancel   context.CancelFunc
-	synced   bool
+	informer   cache.SharedIndexInformer
+	cancel     context.CancelFunc
+	synced     bool
+	lastAccess atomic.Int64 // unix nanos of the most recent read
 }
+
+func (e *informerEntry) touch() { e.lastAccess.Store(time.Now().UnixNano()) }
 
 // DynamicResourceCache provides on-demand caching for CRDs and other dynamic
 // resources. It is safe for concurrent use. Application-specific callbacks
 // (timeline, metrics) are injected via DynamicCacheConfig.
 type DynamicResourceCache struct {
-	factory         dynamicinformer.DynamicSharedInformerFactory
-	nsFactories     map[string]dynamicinformer.DynamicSharedInformerFactory // one per watched namespace, lazily created
 	informers       map[informerKey]*informerEntry
 	stopCh          chan struct{} // global shutdown; parent of every per-informer context
 	stopOnce        sync.Once
 	mu              sync.RWMutex
 	config          DynamicCacheConfig
+	idleTTL         time.Duration // 0 disables idle reaping
 	discoveryStatus CRDDiscoveryStatus
 	discoveryMu     sync.RWMutex
 	discoveryDone   chan struct{} // closed when DiscoverAllCRDs() completes
@@ -71,44 +89,92 @@ func NewDynamicResourceCache(cfg DynamicCacheConfig) (*DynamicResourceCache, err
 		return nil, fmt.Errorf("namespace must be set when NamespaceScoped is true")
 	}
 
-	factory := dynamicinformer.NewDynamicSharedInformerFactory(
-		cfg.DynamicClient,
-		0, // no resync — updates come via watch
-	)
 	if cfg.NamespaceScoped && cfg.Namespace != "" {
 		log.Printf("Using namespace-scoped dynamic informers for namespace %q", cfg.Namespace)
 	} else if cfg.NamespaceFallback != "" {
 		log.Printf("Using namespace fallback for dynamic informers: %q", cfg.NamespaceFallback)
 	}
 
+	idleTTL := defaultInformerIdleTTL
+	if cfg.InformerIdleTTL > 0 {
+		idleTTL = cfg.InformerIdleTTL
+	} else if cfg.InformerIdleTTL < 0 {
+		idleTTL = 0 // reaping disabled
+	}
+
 	d := &DynamicResourceCache{
-		factory:         factory,
-		nsFactories:     make(map[string]dynamicinformer.DynamicSharedInformerFactory),
 		informers:       make(map[informerKey]*informerEntry),
 		stopCh:          make(chan struct{}),
 		config:          cfg,
+		idleTTL:         idleTTL,
 		discoveryStatus: CRDDiscoveryIdle,
 		discoveryDone:   make(chan struct{}),
 		gvrHandlers:     make(map[schema.GroupVersionResource][]cache.ResourceEventHandler),
+	}
+
+	if idleTTL > 0 {
+		go d.reapLoop()
 	}
 
 	log.Println("Dynamic resource cache initialized")
 	return d, nil
 }
 
-// factoryForNs returns the informer factory for ns, creating and caching a
-// namespace-filtered factory on first use. ns == "" is the cluster-wide
-// factory. Caller must hold d.mu.
-func (d *DynamicResourceCache) factoryForNs(ns string) dynamicinformer.DynamicSharedInformerFactory {
-	if ns == "" {
-		return d.factory
+// reapInterval derives the reaper cadence from the TTL, clamped to a sane
+// range. The reaper only ever stops idle informers, so a coarse cadence is
+// fine.
+func reapInterval(ttl time.Duration) time.Duration {
+	switch iv := ttl / 4; {
+	case iv < reapMinInterval:
+		return reapMinInterval
+	case iv > reapMaxInterval:
+		return reapMaxInterval
+	default:
+		return iv
 	}
-	if f, ok := d.nsFactories[ns]; ok {
-		return f
+}
+
+// reapLoop periodically stops namespace-scoped informers idle beyond the TTL.
+// Runs until Stop() closes stopCh.
+func (d *DynamicResourceCache) reapLoop() {
+	t := time.NewTicker(reapInterval(d.idleTTL))
+	defer t.Stop()
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-t.C:
+			d.reapIdleInformers(time.Now())
+		}
 	}
-	f := dynamicinformer.NewFilteredDynamicSharedInformerFactory(d.config.DynamicClient, 0, ns, nil)
-	d.nsFactories[ns] = f
-	return f
+}
+
+// reapIdleInformers stops and removes every namespace-scoped informer whose
+// last read predates the idle TTL, returning the count reaped. Cluster-wide
+// informers (ns == "") are never reaped: they are bounded (one per GVR) and
+// serve every namespace, so churning them is pure cost. Reaped informers are
+// transparently re-created on the next access (List/Get re-probe and re-watch).
+//
+// Takes an explicit now so tests can drive it deterministically without timing.
+func (d *DynamicResourceCache) reapIdleInformers(now time.Time) int {
+	if d.idleTTL <= 0 {
+		return 0
+	}
+	cutoff := now.Add(-d.idleTTL).UnixNano()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	reaped := 0
+	for key, e := range d.informers {
+		if key.ns == "" || e.lastAccess.Load() > cutoff {
+			continue
+		}
+		e.cancel()
+		delete(d.informers, key)
+		reaped++
+		log.Printf("Reaped idle dynamic informer: %s.%s/%s (namespace %s)", key.gvr.Resource, key.gvr.Group, key.gvr.Version, key.ns)
+	}
+	return reaped
 }
 
 // ---------------------------------------------------------------------------
@@ -173,17 +239,25 @@ func (d *DynamicResourceCache) ensureWatching(gvr schema.GroupVersionResource, p
 // ensureWatching skip the probe and then have List(gvr, "") find nothing,
 // returning a spurious "informer not found" instead of probing cluster-wide
 // (or returning a clean forbidden).
+//
+// It touches the covering entry: this confirm-step is on the read path, so
+// stamping lastAccess here keeps the reaper from evicting the entry in the
+// window between this check and the caller's subsequent readEntries.
 func (d *DynamicResourceCache) hasCoveringInformer(gvr schema.GroupVersionResource, ns string) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	if _, ok := d.informers[informerKey{gvr: gvr}]; ok {
+	if e, ok := d.informers[informerKey{gvr: gvr}]; ok {
+		e.touch()
 		return true
 	}
 	if ns == "" {
 		return false
 	}
-	_, ok := d.informers[informerKey{gvr: gvr, ns: ns}]
-	return ok
+	if e, ok := d.informers[informerKey{gvr: gvr, ns: ns}]; ok {
+		e.touch()
+		return true
+	}
+	return false
 }
 
 // startWatching creates and starts an informer for (gvr, scopeNS), where
@@ -219,8 +293,15 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 		}
 	}
 
-	factory := d.factoryForNs(scopeNS)
-	informer := factory.ForResource(gvr).Informer()
+	// Construct the informer directly (not via a shared factory): a factory
+	// caches one informer per GVR, so after the reaper stops an informer the
+	// factory would hand back the same stopped instance — which can't be
+	// re-Run. Standalone informers can be freely stopped and re-created.
+	// scopeNS == "" lists/watches across all namespaces.
+	informer := dynamicinformer.NewFilteredDynamicInformer(
+		d.config.DynamicClient, gvr, scopeNS, 0,
+		cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, nil,
+	).Informer()
 	// Apply the dynamic-cache transform BEFORE informer.Run so every
 	// object entering the store is shrunk in place. SetTransform must
 	// be called pre-Run (returns ErrRunning otherwise). If it ever
@@ -238,7 +319,9 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 		case <-ctx.Done():
 		}
 	}()
-	d.informers[key] = &informerEntry{informer: informer, cancel: cancel}
+	entry := &informerEntry{informer: informer, cancel: cancel}
+	entry.touch()
+	d.informers[key] = entry
 
 	kind := d.gvrToKind(gvr)
 	d.addDynamicChangeHandlers(informer, kind, gvr)
@@ -274,9 +357,13 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 			log.Printf("Dynamic resource synced: %s.%s/%s (%s)", gvr.Resource, gvr.Group, gvr.Version, scopeDesc)
 		}
 
+		// Only mark synced if this exact entry is still installed. If the
+		// reaper evicted it and a later access re-created a fresh informer at
+		// the same key, this stale goroutine must not flag the replacement
+		// synced before it has actually synced.
 		d.mu.Lock()
-		if e := d.informers[key]; e != nil {
-			e.synced = true
+		if d.informers[key] == entry {
+			entry.synced = true
 		}
 		d.mu.Unlock()
 	}()
@@ -603,12 +690,14 @@ func (d *DynamicResourceCache) readEntries(gvr schema.GroupVersionResource, ns s
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	if e, ok := d.informers[informerKey{gvr: gvr}]; ok {
+		e.touch()
 		return []*informerEntry{e}
 	}
 	if ns == "" {
 		return nil
 	}
 	if e, ok := d.informers[informerKey{gvr: gvr, ns: ns}]; ok {
+		e.touch()
 		return []*informerEntry{e}
 	}
 	return nil
@@ -694,6 +783,7 @@ func (d *DynamicResourceCache) Count(gvr schema.GroupVersionResource, namespaces
 		if !e.synced {
 			return 0, fmt.Errorf("informer not found or not synced for %v", gvr)
 		}
+		e.touch()
 		if len(namespaces) == 0 {
 			return len(e.informer.GetIndexer().List()), nil
 		}
@@ -710,6 +800,7 @@ func (d *DynamicResourceCache) Count(gvr schema.GroupVersionResource, namespaces
 		if !ok || !e.synced {
 			return 0, fmt.Errorf("informer not found or not synced for %v in namespace %s", gvr, ns)
 		}
+		e.touch()
 		n, err := countByNamespaces(e, []string{ns})
 		if err != nil {
 			return 0, err
@@ -776,6 +867,12 @@ func (d *DynamicResourceCache) ListWatched(gvr schema.GroupVersionResource) ([]*
 		return nil, fmt.Errorf("dynamic resource cache not initialized")
 	}
 	entries := d.entriesForGVR(gvr)
+	// A read keeps the informers warm: periodic scanners (audit, PolicyReport
+	// index) are sometimes a namespace-scoped informer's only reader, so
+	// without this the reaper would evict it and the next scan would drop it.
+	for _, e := range entries {
+		e.touch()
+	}
 	items, err := indexerItems(entries, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list resources: %w", err)
@@ -1421,31 +1518,8 @@ func (d *DynamicResourceCache) Stop() {
 		d.discoveryMu.Unlock()
 
 		// Closing stopCh cancels every per-informer context (each informer's
-		// watchdog goroutine selects on it), stopping all watches.
+		// watchdog goroutine selects on it) and stops the reaper loop. Standalone
+		// informers stop when their context is cancelled — no factory to shut down.
 		close(d.stopCh)
-
-		d.mu.RLock()
-		nsFactories := make([]dynamicinformer.DynamicSharedInformerFactory, 0, len(d.nsFactories))
-		for _, f := range d.nsFactories {
-			nsFactories = append(nsFactories, f)
-		}
-		d.mu.RUnlock()
-
-		go func() {
-			done := make(chan struct{})
-			go func() {
-				d.factory.Shutdown()
-				for _, f := range nsFactories {
-					f.Shutdown()
-				}
-				close(done)
-			}()
-			select {
-			case <-done:
-				log.Println("Dynamic resource cache factory shutdown complete")
-			case <-time.After(5 * time.Second):
-				log.Println("Dynamic resource cache factory shutdown taking >5s, abandoning (goroutine will finish on its own)")
-			}
-		}()
 	})
 }

@@ -1440,6 +1440,108 @@ func TestDynamicResourceCache_StatusAPIsSpanNamespaceInformers(t *testing.T) {
 	}
 }
 
+func (d *DynamicResourceCache) hasInformer(gvr schema.GroupVersionResource, ns string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, ok := d.informers[informerKey{gvr: gvr, ns: ns}]
+	return ok
+}
+
+// The idle reaper stops namespace-scoped informers untouched beyond the TTL,
+// leaves freshly-read ones alone, and never touches cluster-wide informers.
+// Reaped informers are re-created transparently on the next access.
+func TestDynamicResourceCache_ReapsIdleNamespacedInformers(t *testing.T) {
+	const nsIdle, nsFresh = "idle-ns", "fresh-ns"
+	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
+	dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+		gvr: "WidgetList",
+	}, func(_ schema.GroupVersionResource, ns string) bool { return ns != "" }) // namespaced only
+
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, InformerIdleTTL: time.Hour})
+	if err != nil {
+		t.Fatalf("NewDynamicResourceCache failed: %v", err)
+	}
+	defer d.Stop()
+
+	for _, ns := range []string{nsIdle, nsFresh} {
+		if _, err := d.ListBlocking(gvr, ns, 2*time.Second); err != nil {
+			t.Fatalf("ListBlocking(%q) failed: %v", ns, err)
+		}
+	}
+
+	// Backdate the idle informer's last access; leave the fresh one current.
+	d.mu.RLock()
+	d.informers[informerKey{gvr: gvr, ns: nsIdle}].lastAccess.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	d.mu.RUnlock()
+
+	if reaped := d.reapIdleInformers(time.Now()); reaped != 1 {
+		t.Fatalf("reaped %d informers, want 1", reaped)
+	}
+	if d.hasInformer(gvr, nsIdle) {
+		t.Errorf("idle informer for %q was not reaped", nsIdle)
+	}
+	if !d.hasInformer(gvr, nsFresh) {
+		t.Errorf("fresh informer for %q was wrongly reaped", nsFresh)
+	}
+
+	// Next access re-creates the reaped informer.
+	if _, err := d.ListBlocking(gvr, nsIdle, 2*time.Second); err != nil {
+		t.Fatalf("re-list after reap failed: %v", err)
+	}
+	if !d.hasInformer(gvr, nsIdle) {
+		t.Errorf("informer for %q was not re-created on access", nsIdle)
+	}
+}
+
+// Cluster-wide informers are exempt from reaping even when idle, and a
+// negative TTL disables reaping entirely.
+func TestDynamicResourceCache_ReapExemptionsAndDisable(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "gadgets"}
+
+	t.Run("cluster-wide exempt", func(t *testing.T) {
+		dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+			gvr: "GadgetList",
+		}, func(_ schema.GroupVersionResource, ns string) bool { return ns == "" }) // cluster-wide allowed
+		d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, InformerIdleTTL: time.Hour})
+		if err != nil {
+			t.Fatalf("NewDynamicResourceCache failed: %v", err)
+		}
+		defer d.Stop()
+		if _, err := d.ListBlocking(gvr, "", 2*time.Second); err != nil {
+			t.Fatalf("ListBlocking failed: %v", err)
+		}
+		d.mu.RLock()
+		d.informers[informerKey{gvr: gvr}].lastAccess.Store(int64(0)) // ancient
+		d.mu.RUnlock()
+		if reaped := d.reapIdleInformers(time.Now()); reaped != 0 {
+			t.Errorf("reaped %d cluster-wide informers, want 0 (exempt)", reaped)
+		}
+		if !d.hasInformer(gvr, "") {
+			t.Error("cluster-wide informer was reaped")
+		}
+	})
+
+	t.Run("negative TTL disables reaping", func(t *testing.T) {
+		dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+			gvr: "GadgetList",
+		}, func(_ schema.GroupVersionResource, ns string) bool { return ns != "" }) // namespaced only
+		d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, InformerIdleTTL: -1})
+		if err != nil {
+			t.Fatalf("NewDynamicResourceCache failed: %v", err)
+		}
+		defer d.Stop()
+		if _, err := d.ListBlocking(gvr, "team-x", 2*time.Second); err != nil {
+			t.Fatalf("ListBlocking failed: %v", err)
+		}
+		d.mu.RLock()
+		d.informers[informerKey{gvr: gvr, ns: "team-x"}].lastAccess.Store(int64(0))
+		d.mu.RUnlock()
+		if reaped := d.reapIdleInformers(time.Now()); reaped != 0 {
+			t.Errorf("reaped %d with reaping disabled, want 0", reaped)
+		}
+	})
+}
+
 // EnsureWatching must surface a probe that's forbidden everywhere it looks
 // (cluster-wide AND the fallback namespace) as an apierrors.IsForbidden-
 // classifiable error through the %w wrap — that's what lets the resources

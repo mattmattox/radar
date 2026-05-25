@@ -278,6 +278,14 @@ type DynamicCacheConfig struct {
 	// Ignored when NamespaceScoped is true.
 	NamespaceFallback string
 
+	// InformerIdleTTL bounds how long a namespace-scoped dynamic informer is
+	// kept after its last read before the idle reaper stops it (it is
+	// re-created on the next access). Guards against unbounded informer growth
+	// in long-running, namespace-restricted deployments where many namespaces
+	// get watched over time. Cluster-wide informers are never reaped. Zero
+	// selects the default; a negative value disables reaping entirely.
+	InformerIdleTTL time.Duration
+
 	// DebugEvents enables verbose debug logging.
 	DebugEvents bool
 }
