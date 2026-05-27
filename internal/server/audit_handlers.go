@@ -145,7 +145,12 @@ func (s *Server) handleAuditResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := getCachedResults(cache, namespaces)
-	results = applyAuditSettings(results, getAuditConfig())
+	// Honor ?raw=true here too (mirrors handleAudit), so the per-resource
+	// drill-down and the list endpoint can't drift on the raw contract: Radar
+	// Cloud's Hub owns effective Checks config, standalone keeps local settings.
+	if !queryTrue(r, "raw") {
+		results = applyAuditSettings(results, getAuditConfig())
+	}
 	index := bp.IndexByResource(results.Findings)
 
 	// Try exact kind first, then map API resource name (e.g. "deployments") to Go kind (e.g. "Deployment").
