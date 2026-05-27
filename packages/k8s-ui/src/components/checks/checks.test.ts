@@ -34,4 +34,7 @@ describe('mapRadarSeverity', () => {
     expect(mapRadarSeverity('danger')).toBe('high')
     expect(mapRadarSeverity('warning')).toBe('medium')
   })
+  it('falls back to medium for an unrecognized severity', () => {
+    expect(mapRadarSeverity('unknown')).toBe('medium')
+  })
 })

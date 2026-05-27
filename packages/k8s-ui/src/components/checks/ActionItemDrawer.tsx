@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X, ExternalLink, Wrench, ArrowRight, Layers } from 'lucide-react'
 import { ClusterName } from '../ui'
@@ -23,6 +23,7 @@ export interface ActionItemDrawerProps {
 }
 
 export function ActionItemDrawer({ item, meta, resourceHref, clusterLabel, onClose }: ActionItemDrawerProps) {
+  const closeRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -30,6 +31,12 @@ export function ActionItemDrawer({ item, meta, resourceHref, clusterLabel, onClo
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
+
+  // Move focus into the panel on open so keyboard/SR focus doesn't stay behind
+  // it on the underlying queue. (A full focus-trap is a follow-up.)
+  useEffect(() => {
+    closeRef.current?.focus()
+  }, [])
 
   const rep = item.representativeFinding
   const sev = item.effectiveSeverity
@@ -50,6 +57,7 @@ export function ActionItemDrawer({ item, meta, resourceHref, clusterLabel, onClo
         {/* Severity-themed header band */}
         <div className={`relative shrink-0 px-5 py-4 ring-1 ring-inset ${SEVERITY_GLOW_CLASS[sev]}`}>
           <button
+            ref={closeRef}
             type="button"
             onClick={onClose}
             aria-label="Close"
@@ -135,9 +143,11 @@ export function ActionItemDrawer({ item, meta, resourceHref, clusterLabel, onClo
               Affected resources <span className="tabular-nums">({item.affectedResources})</span>
             </h3>
             <ul className="flex flex-col gap-px">
-              {item.findings.map((f) => (
+              {item.findings.map((f, i) => (
+                // Index-suffixed: a check can fire more than once on the same
+                // resource (per-container), so the resource ref isn't unique.
                 <ResourceRow
-                  key={`${f.resource.group}/${f.resource.kind}/${f.resource.namespace}/${f.resource.name}`}
+                  key={`${f.resource.group}/${f.resource.kind}/${f.resource.namespace}/${f.resource.name}#${i}`}
                   finding={f}
                   resourceHref={resourceHref}
                 />

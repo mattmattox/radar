@@ -302,10 +302,15 @@ function ActionItemRow({
       </div>
 
       <div className="grid transition-[grid-template-rows] duration-200 ease-out" style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}>
-        <div className="overflow-hidden">
+        {/* inert when collapsed: the rows are visually clipped (0fr + overflow)
+            but would otherwise stay keyboard-tabbable + screen-reader-reachable. */}
+        <div className="overflow-hidden" inert={!expanded || undefined}>
           <ul className="flex flex-col gap-px border-t border-theme-border bg-theme-base/40 px-3 py-2 pl-12">
-            {item.findings.map((f) => (
-              <FindingLine key={`${f.resource.group}/${f.resource.kind}/${f.resource.namespace}/${f.resource.name}`} finding={f} resourceHref={resourceHref} />
+            {item.findings.map((f, i) => (
+              // Index-suffixed: a check can fire more than once on the same
+              // resource (e.g. per-container), so the resource ref alone isn't
+              // a unique key within one action item's findings.
+              <FindingLine key={`${f.resource.group}/${f.resource.kind}/${f.resource.namespace}/${f.resource.name}#${i}`} finding={f} resourceHref={resourceHref} />
             ))}
           </ul>
         </div>
