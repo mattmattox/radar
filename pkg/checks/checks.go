@@ -1,23 +1,21 @@
-package audit
+// Package checks is the shared, dependency-light model behind the "Checks"
+// remediation queue. It groups effective findings by check into prioritized
+// rows (Check) — one implementation used by both OSS Radar (single cluster)
+// and Radar Hub (fleet) so the two surfaces can't drift.
+//
+// It is deliberately k8s-free (stdlib only): Radar Hub imports it without
+// pulling k8s.io type libraries into a service that never touches Kubernetes.
+// The k8s-aware audit engine (pkg/audit) layers on top — its CheckMeta is an
+// alias of this package's, and it provides the raw->effective converter.
+package checks
 
 import (
 	"sort"
 	"strconv"
 )
 
-// -----------------------------------------------------------------------------
-// Check rollup: group effective findings by check into a remediation queue.
-//
-// This is the shared engine behind the "Checks" surface in both OSS Radar
-// (single cluster) and Radar Hub (fleet). Each consumer applies its own policy
-// layer first — OSS applies local ~/.radar/settings.json (via ApplySettings),
-// the Hub applies org Checks config — to produce []EffectiveFinding, then calls
-// BuildChecks. Keeping the grouping + priority here means the two surfaces can't
-// drift: there is exactly one implementation.
-// -----------------------------------------------------------------------------
-
 // Severity is the canonical Checks severity ladder. Distinct from the raw
-// detector severity (SeverityWarning|SeverityDanger) Radar emits: operational
+// detector severity (the "warning"/"danger" Radar emits): operational
 // criticality and compliance risk are different axes, so Checks gets its own
 // 4-tier vocabulary.
 type Severity string
@@ -29,14 +27,20 @@ const (
 	SeverityLow      Severity = "low"
 )
 
+// Raw detector severities Radar emits (mirrors pkg/audit.Severity{Danger,Warning}).
+const (
+	rawDanger  = "danger"
+	rawWarning = "warning"
+)
+
 // MapSeverity maps a raw detector severity to the Checks ladder: danger->high,
 // warning->medium. critical/low are only reachable via an org severity override
 // (Hub) — the detector never emits them directly. Unknown inputs fall to medium.
 func MapSeverity(raw string) Severity {
 	switch raw {
-	case SeverityDanger:
+	case rawDanger:
 		return SeverityHigh
-	case SeverityWarning:
+	case rawWarning:
 		return SeverityMedium
 	default:
 		return SeverityMedium
@@ -71,6 +75,16 @@ func SeverityRank(s Severity) int {
 // SourceRadarBuiltin is the only finding source in V1: Radar's built-in
 // detectors. External detectors (Trivy, Polaris, …) would add more later.
 const SourceRadarBuiltin = "radar_builtin"
+
+// CheckMeta is a check's static definition (catalog entry). pkg/audit aliases
+// this type so the audit engine's registry and this package share one shape.
+type CheckMeta struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Remediation string   `json:"remediation"`
+	Frameworks  []string `json:"frameworks,omitempty"`
+}
 
 // ResourceRef is the canonical resource identity. group/namespace are emitted
 // even when empty (core group / cluster-scoped) so consumers never optional-
@@ -158,33 +172,13 @@ type Check struct {
 	priorityScore         int                // unexported: queue sort key only
 }
 
-// EffectiveFindings converts raw (already locally-filtered) findings into
-// effective findings with detector-default severity mapping and state. The OSS
-// single-cluster path uses this directly — it has no org policy, so local
-// settings (applied upstream via ApplySettings) are the only filter and no
-// severity is ever overridden.
-func EffectiveFindings(findings []Finding, clusterID string) []EffectiveFinding {
-	out := make([]EffectiveFinding, 0, len(findings))
-	for _, f := range findings {
-		out = append(out, EffectiveFinding{
-			Source: SourceRadarBuiltin,
-			Resource: ResourceRef{
-				ClusterID: clusterID,
-				Group:     f.Group,
-				Kind:      f.Kind,
-				Namespace: f.Namespace,
-				Name:      f.Name,
-			},
-			CheckID:           f.CheckID,
-			Category:          f.Category,
-			OriginalSeverity:  f.Severity,
-			EffectiveSeverity: MapSeverity(f.Severity),
-			Message:           f.Message,
-			State:             DefaultEffectiveState(),
-		})
-	}
-	return out
-}
+// Categories — mirrors pkg/audit's category vocabulary. Kept here so the
+// priority weights are self-contained.
+const (
+	CategorySecurity    = "Security"
+	CategoryReliability = "Reliability"
+	CategoryEfficiency  = "Efficiency"
+)
 
 // BuildChecks groups effective findings by checkID into the remediation queue:
 // one Check per failing check, aggregating every resource that fails it. The
@@ -320,11 +314,11 @@ func pluralResources(n int) string {
 	return strconv.Itoa(n) + " resources"
 }
 
-// refKey dedups resources within a check. Reuses ResourceKey (group|Kind|ns|
-// name) — ClusterID is constant per BuildChecks call, so it isn't part of the
-// intra-check key.
+// refKey dedups resources within a check: group|Kind|namespace|name (mirrors
+// pkg/audit.ResourceKey). ClusterID is constant per BuildChecks call, so it
+// isn't part of the intra-check key.
 func refKey(r ResourceRef) string {
-	return ResourceKey(r.Group, r.Kind, r.Namespace, r.Name)
+	return r.Group + "|" + r.Kind + "|" + r.Namespace + "|" + r.Name
 }
 
 func sortEffectiveFindings(findings []EffectiveFinding) {

@@ -14,6 +14,7 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/settings"
 	bp "github.com/skyhook-io/radar/pkg/audit"
+	chk "github.com/skyhook-io/radar/pkg/checks"
 )
 
 // apiResourceKindMap maps lowercase plural API resource names to Go Kind names
@@ -120,7 +121,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	// concurrent readers. clusterID/env are empty — single-cluster, and the web
 	// supplies cluster context from the URL when embedded.
 	resp := *results
-	resp.GroupedChecks = bp.BuildChecks(bp.EffectiveFindings(results.Findings, ""), results.Checks, "", "")
+	resp.GroupedChecks = chk.BuildChecks(bp.EffectiveFindings(results.Findings, ""), results.Checks, "", "")
 	s.writeJSON(w, &resp)
 }
 

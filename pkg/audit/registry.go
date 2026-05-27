@@ -1,13 +1,13 @@
 package audit
 
-// CheckMeta provides human-readable context for a best-practice check.
-type CheckMeta struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Remediation string   `json:"remediation"`
-	Frameworks  []string `json:"frameworks,omitempty"`
-}
+import "github.com/skyhook-io/radar/pkg/checks"
+
+// CheckMeta is a check's static definition (human-readable context). Aliased
+// from pkg/checks so the k8s-free Checks rollup and the audit engine share one
+// shape — the Hub imports only pkg/checks; the engine + registry re-export it
+// here. Same fields/JSON, so radar's existing audit.CheckMeta references are
+// unchanged.
+type CheckMeta = checks.CheckMeta
 
 // Framework constants
 const (

@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"github.com/skyhook-io/radar/pkg/checks"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -69,7 +70,7 @@ type ScanResults struct {
 	// not by RunChecks, which doesn't carry the request context BuildChecks
 	// needs. Omitted from the raw scan the Hub fan-out consumes: the Hub
 	// recomputes the rollup itself after applying org Checks policy.
-	GroupedChecks []Check `json:"groupedChecks,omitempty"`
+	GroupedChecks []checks.Check `json:"groupedChecks,omitempty"`
 }
 
 // ResourceGroup aggregates findings for a single resource.
