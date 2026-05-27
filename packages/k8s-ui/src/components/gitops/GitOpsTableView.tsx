@@ -321,7 +321,11 @@ export function GitOpsTableView({
   const terminatingCount = useMemo(() => allRows.filter((row) => row.terminating).length, [allRows])
 
   // Empty-state — when there's truly nothing to show across all kinds.
-  if (totalGitOps === 0 && !loading) {
+  // `counts` is server-filtered by the global namespace pick, so a
+  // namespace-scoped zero is NOT the same as cluster-empty. Fall through
+  // to the actionable empty state below when the host owns a namespace
+  // pick we can clear; otherwise the user lands here with no escape hatch.
+  if (totalGitOps === 0 && !loading && !hasGlobalNamespaceFilter) {
     return (
       <div className="flex h-full min-h-0 flex-1 items-center justify-center bg-theme-base p-4">
         <div className="rounded-lg border border-theme-border bg-theme-surface p-8 text-center">
