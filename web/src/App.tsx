@@ -1490,6 +1490,10 @@ function AppInner() {
             onResourceClick={(res) => res ? navigateToResource(res) : setSelectedResource(null)}
             onResourceClickYaml={(res) => navigateToResource(res, 'yaml')}
             onKindChange={() => setSelectedResource(null)}
+            onClearNamespaces={() => {
+              setNamespaces([])
+              setActiveNamespace.mutate({ namespaces: [] })
+            }}
           />
         )}
 
@@ -1537,6 +1541,10 @@ function AppInner() {
             namespaces={namespaces}
             onOpenResource={(resource) => {
               setSelectedResource(resource)
+            }}
+            onClearNamespaces={() => {
+              setNamespaces([])
+              setActiveNamespace.mutate({ namespaces: [] })
             }}
           />
         )}

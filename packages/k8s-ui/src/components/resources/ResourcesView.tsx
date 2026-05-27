@@ -1776,6 +1776,13 @@ interface ResourcesViewProps {
    * namespace+name only.
    */
   resolveRowCluster?: (resource: any) => { id: string; name: string } | undefined
+  /**
+   * Clears the global namespace selection (the header NamespaceSwitcher state).
+   * When wired, the "Clear filters" button also drops the active namespaces;
+   * otherwise it only resets the view-local filter state. Host-owned because
+   * the switcher lives outside this component and may persist server-side.
+   */
+  onClearNamespaces?: () => void
 }
 
 // Default selected kind
@@ -1922,6 +1929,7 @@ export function ResourcesView({
   onRowSelect,
   onCompareSubmit,
   resolveRowCluster,
+  onClearNamespaces,
 }: ResourcesViewProps) {
   const initialFilters = getInitialFiltersFromURL()
   const [selectedKind, setSelectedKind] = useState<SelectedKindInfo>(() => getInitialKindFromURL(basePath, defaultKind, locationPathname, locationSearch))
@@ -2683,6 +2691,25 @@ export function ResourcesView({
     // updates — they'd still rewrite the address bar through history.
     navigate({ pathname: newPath, search: queryStr }, { replace: !pushHistory })
   }, [navigate, basePath])
+
+  // One-click reset of every view-local filter + optional global namespace
+  // clear. Wired to the toolbar and empty-state "Clear filters" affordance.
+  const clearAllFilters = useCallback(() => {
+    setSearchTerm('')
+    setColumnFilters({})
+    setProblemFilters([])
+    setLabelSelector('')
+    setOwnerKind('')
+    setOwnerName('')
+    setShowInactiveReplicaSets(false)
+    // Drop filter-only URL params; leave path + kind + cross-view params alone.
+    const params = new URLSearchParams(window.location.search)
+    for (const key of ['search', 'filters', 'problems', 'labels', 'ownerKind', 'ownerName', 'showInactive']) {
+      params.delete(key)
+    }
+    navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
+    onClearNamespaces?.()
+  }, [navigate, onClearNamespaces])
 
   // Update URL when any filter changes
   useEffect(() => {
@@ -3505,6 +3532,16 @@ export function ResourcesView({
 
   // Check if any filters are active
   const hasOwnerFilter = ownerKind !== '' && ownerName !== ''
+  // Any view-local filter, the global namespace pick (when host wires a
+  // clearer), or just a stray search term — gates "Clear filters" visibility.
+  const hasAnyFilter =
+    !!searchTerm ||
+    !!labelSelector ||
+    hasOwnerFilter ||
+    problemFilters.length > 0 ||
+    Object.values(columnFilters).some((vals) => vals.length > 0) ||
+    showInactiveReplicaSets ||
+    (!!onClearNamespaces && namespaces.length > 0)
 
 
   // Toggle problem filter
@@ -3799,6 +3836,19 @@ export function ResourcesView({
             </span>
           )}
 
+          {hasAnyFilter && (
+            <Tooltip content="Reset all filters and the active namespace">
+              <button
+                type="button"
+                onClick={clearAllFilters}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Clear filters</span>
+              </button>
+            </Tooltip>
+          )}
+
           {lastUpdated && <LastUpdatedLabel lastUpdated={lastUpdated} />}
           {/* Column picker */}
           <div className="relative" ref={columnPickerRef}>
@@ -3978,6 +4028,16 @@ export function ResourcesView({
                   </div>
                 )
               })()}
+              {hasAnyFilter && (
+                <button
+                  type="button"
+                  onClick={clearAllFilters}
+                  className="flex items-center gap-1.5 mt-3 px-3 py-1.5 text-sm rounded-md bg-theme-elevated hover:bg-theme-border text-theme-text-secondary hover:text-theme-text-primary transition-colors"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Clear filters
+                </button>
+              )}
             </div>
           ) : (
             <MetricsContext.Provider value={metricsLookup}>
