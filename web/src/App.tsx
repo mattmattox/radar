@@ -769,6 +769,17 @@ function AppInner() {
   // lists) stay in lockstep with the picker. The dedicated URL-write effect
   // below propagates the mirrored state to `?namespaces=`.
   const setActiveNamespace = useSetActiveNamespace()
+  // Clear the global namespace pick atomically with its URL param so the
+  // URL→state sync at L862 doesn't re-hydrate the old pick before the
+  // state→URL sync can clean it.
+  const clearAllNamespaces = useCallback(() => {
+    const params = new URLSearchParams(window.location.search)
+    params.delete('namespaces')
+    params.delete('namespace')
+    setSearchParams(params, { replace: true })
+    setNamespaces([])
+    setActiveNamespace.mutate({ namespaces: [] })
+  }, [setSearchParams, setActiveNamespace])
   const initialBookmarkReconciledRef = useRef(false)
   const scopeActives = useMemo(() => namespaceScope?.actives ?? [], [namespaceScope?.actives])
   const namespaceScopeKey = useMemo(() => namespaceScope ? [...scopeActives].sort().join(',') : null, [namespaceScope, scopeActives])
@@ -1490,14 +1501,7 @@ function AppInner() {
             onResourceClick={(res) => res ? navigateToResource(res) : setSelectedResource(null)}
             onResourceClickYaml={(res) => navigateToResource(res, 'yaml')}
             onKindChange={() => setSelectedResource(null)}
-            onClearNamespaces={() => {
-              const params = new URLSearchParams(window.location.search)
-              params.delete('namespaces')
-              params.delete('namespace')
-              setSearchParams(params, { replace: true })
-              setNamespaces([])
-              setActiveNamespace.mutate({ namespaces: [] })
-            }}
+            onClearNamespaces={clearAllNamespaces}
           />
         )}
 
@@ -1546,14 +1550,7 @@ function AppInner() {
             onOpenResource={(resource) => {
               setSelectedResource(resource)
             }}
-            onClearNamespaces={() => {
-              const params = new URLSearchParams(window.location.search)
-              params.delete('namespaces')
-              params.delete('namespace')
-              setSearchParams(params, { replace: true })
-              setNamespaces([])
-              setActiveNamespace.mutate({ namespaces: [] })
-            }}
+            onClearNamespaces={clearAllNamespaces}
           />
         )}
 
