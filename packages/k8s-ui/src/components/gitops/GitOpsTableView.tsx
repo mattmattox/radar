@@ -465,7 +465,7 @@ export function GitOpsTableView({
               </div>
             )}
             {hasAnyFilter && (
-              <Tooltip content="Reset all filters and the active namespace">
+              <Tooltip content={hasGlobalNamespaceFilter ? 'Reset all filters and the active namespace' : 'Reset all filters'}>
                 <button
                   type="button"
                   onClick={clearAllFilters}
