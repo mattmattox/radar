@@ -101,8 +101,26 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := getCachedResults(cache, namespaces)
-	results = applyAuditSettings(results, getAuditConfig())
+	// `?raw=true` returns the unfiltered scan, skipping the local
+	// ~/.radar/settings.json audit filters. Radar Cloud's Hub requests raw so
+	// it can own the effective Checks config (org policy) centrally rather than
+	// inheriting each cluster's local settings as if they were team policy.
+	// Standalone Radar and the embedded per-cluster audit view omit the param
+	// and keep applying local settings.
+	if !queryTrue(r, "raw") {
+		results = applyAuditSettings(results, getAuditConfig())
+	}
 	s.writeJSON(w, results)
+}
+
+// queryTrue reports whether a query param parses as a truthy boolean. Tolerant
+// of the usual forms (true/1/t); anything else (incl. absent) reads false.
+func queryTrue(r *http.Request, key string) bool {
+	switch strings.ToLower(r.URL.Query().Get(key)) {
+	case "true", "1", "t", "yes":
+		return true
+	}
+	return false
 }
 
 // handleAuditResource returns findings for a specific resource.
