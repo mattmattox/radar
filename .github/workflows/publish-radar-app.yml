@@ -3,8 +3,8 @@ name: Publish @skyhook-io/radar-app
 # Radar's source imports deep paths from @skyhook-io/k8s-ui
 # (./types/*, ./utils/*, ./components/gitops/*, ./components/timeline/*,
 # ./components/resources/renderers/*, and ./components/checks/* — the Checks
-# queue, added in k8s-ui v1.8.0). Publish a matching k8s-ui version FIRST
-# before tagging a radar-app release — peer dep resolves to '>=1.8.0', so the
+# queue, shipped in k8s-ui v1.7.3). Publish a matching k8s-ui version FIRST
+# before tagging a radar-app release — peer dep resolves to '>=1.7.3', so the
 # ChecksView/NavCustomization exports must already be on the registry.
 
 on:
