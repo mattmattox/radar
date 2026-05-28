@@ -779,11 +779,12 @@ function AppInner() {
     params.delete('namespaces')
     params.delete('namespace')
     setSearchParams(params, { replace: true })
+    if (namespaces.length === 0) return
     setActiveNamespace.mutate(
       { namespaces: [] },
       { onSettled: () => setNamespaces([]) },
     )
-  }, [setSearchParams, setActiveNamespace])
+  }, [namespaces.length, setSearchParams, setActiveNamespace])
   const initialBookmarkReconciledRef = useRef(false)
   const scopeActives = useMemo(() => namespaceScope?.actives ?? [], [namespaceScope?.actives])
   const namespaceScopeKey = useMemo(() => namespaceScope ? [...scopeActives].sort().join(',') : null, [namespaceScope, scopeActives])
