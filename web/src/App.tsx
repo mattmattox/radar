@@ -769,16 +769,18 @@ function AppInner() {
   // lists) stay in lockstep with the picker. The dedicated URL-write effect
   // below propagates the mirrored state to `?namespaces=`.
   const setActiveNamespace = useSetActiveNamespace()
-  // Defer state-clear to onSuccess (NOT onSettled): flipping state before
-  // the server pref is actually cleared triggers a refetch under the new
-  // empty key while the server still holds the previous pick, caching that
-  // stale scope under the new key with no key change to trigger a later
-  // refresh. onSettled fires on errors too, which would produce the same
-  // stale cache for a failed clear; onSuccess keeps state aligned with the
-  // server. Touching the URL synchronously here would also trip the URL→
-  // state sync at L878 into firing the clear (and a duplicate mutation)
-  // ahead of onSuccess, so the state→URL effect below propagates state=[]
-  // → URL after onSuccess instead.
+  // Defer the state flip to onSuccess. Setting namespaces to [] before the
+  // server-side pref has actually been cleared makes React Query refetch
+  // under the new empty key while the server still returns the previous
+  // pick's scope, caching stale data under the new key with no later
+  // invalidation. onSettled would do the same on errors, leaving the UI
+  // showing "All namespaces" while data is still namespace-scoped — onSuccess
+  // keeps state aligned with the server.
+  //
+  // Don't touch the URL here either: setSearchParams on a still-set state
+  // trips the URL→state sync into firing setNamespaces([]) and a duplicate
+  // mutation immediately, which re-introduces the same race. The state→URL
+  // effect propagates state=[] → URL on its own after onSuccess flips state.
   const clearAllNamespaces = useCallback(() => {
     if (namespaces.length === 0) return
     setActiveNamespace.mutate(

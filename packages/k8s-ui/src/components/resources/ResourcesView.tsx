@@ -2692,8 +2692,6 @@ export function ResourcesView({
     navigate({ pathname: newPath, search: queryStr }, { replace: !pushHistory })
   }, [navigate, basePath])
 
-  // One-click reset of every view-local filter + optional global namespace
-  // clear. Wired to the toolbar and empty-state "Clear filters" affordance.
   const clearAllFilters = useCallback(() => {
     setSearchTerm('')
     setColumnFilters({})
@@ -2702,8 +2700,9 @@ export function ResourcesView({
     setOwnerKind('')
     setOwnerName('')
     setShowInactiveReplicaSets(false)
-    // Drop filter-only URL params; leave path + kind + cross-view params alone.
-    // Host-owned params (namespaces, etc.) are cleaned by onClearNamespaces.
+    // Filter-only URL params. Path + kind + namespace + other cross-view
+    // params are out of scope here; the host's onClearNamespaces (and its
+    // own state→URL sync) owns namespace cleanup.
     const params = new URLSearchParams(window.location.search)
     for (const key of ['search', 'filters', 'problems', 'labels', 'ownerKind', 'ownerName', 'showInactive']) {
       params.delete(key)
@@ -3533,8 +3532,9 @@ export function ResourcesView({
 
   // Check if any filters are active
   const hasOwnerFilter = ownerKind !== '' && ownerName !== ''
-  // Any view-local filter, the global namespace pick (when host wires a
-  // clearer), or just a stray search term — gates "Clear filters" visibility.
+  // Namespace contribution gated on a host-wired clearer: without it the
+  // Clear filters button can't drop the namespace, so showing it would be
+  // a no-op for that case.
   const hasAnyFilter =
     !!searchTerm ||
     !!labelSelector ||
