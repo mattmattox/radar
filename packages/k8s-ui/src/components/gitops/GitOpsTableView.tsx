@@ -1084,13 +1084,6 @@ function GitOpsTable({
                       <a
                         href={href}
                         onClick={(e) => {
-                          // Modifier clicks → let the browser open a new
-                          // tab via the anchor's default behavior. Plain
-                          // unmodified click → call the host. The host
-                          // decides whether to preventDefault + react-router
-                          // navigate (SPA-local) or skip preventDefault and
-                          // let the anchor's full-page reload run (required
-                          // for cross-router-boundary links).
                           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
                           onOpen(row, e)
                         }}
@@ -1361,9 +1354,6 @@ function DestinationCell({
           onClick={(e) => {
             e.stopPropagation()
             if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
-            // No callback supplied → let the anchor's default reload run
-            // (cross-boundary nav). Callback present → host decides whether
-            // to preventDefault for SPA-local nav.
             if (onDestinationClick) onDestinationClick(row, dest, e)
           }}
           className={chipClass + ' focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40'}

@@ -139,10 +139,6 @@ export function AuditCard({ data, onNavigate, navHref }: AuditCardProps) {
       <a
         href={navHref}
         onClick={(e) => {
-          // Modifier clicks → browser default (new tab). Plain unmodified
-          // click → call the host with the event so it can preventDefault
-          // for SPA-local nav, or skip preventDefault to let the anchor's
-          // default reload run (required for cross-router-boundary links).
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
           onNavigate(e)
         }}
