@@ -498,7 +498,10 @@ function ResourceGroupRow({ group: g, checks, expanded, onToggle, onResourceClic
             href={resourceHref}
             onClick={(e) => {
               e.stopPropagation()
-              onResourceClick?.(g.kind, g.namespace, g.name)
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+              if (!onResourceClick) return
+              e.preventDefault()
+              onResourceClick(g.kind, g.namespace, g.name)
             }}
             className="text-sm font-medium text-skyhook-500 hover:text-skyhook-400 hover:underline truncate max-w-[300px] inline-flex items-center gap-1 text-left focus-visible:ring-2 focus-visible:ring-skyhook-500/40 focus-visible:outline-none rounded-sm"
           >
@@ -562,7 +565,12 @@ function FlatFindingRow({ finding, onResourceClick, resourceHrefFor, showCluster
         clusterHref ? (
           <a
             href={clusterHref}
-            onClick={() => onClusterClick?.(finding.cluster!.id)}
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+              if (!onClusterClick) return
+              e.preventDefault()
+              onClusterClick(finding.cluster!.id)
+            }}
             className="text-xs text-[var(--color-radar-accent)] hover:underline shrink-0 max-w-[160px] truncate text-left focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 focus-visible:outline-none rounded-sm"
           >
             {finding.cluster.name}
@@ -583,7 +591,12 @@ function FlatFindingRow({ finding, onResourceClick, resourceHrefFor, showCluster
       {resourceHref ? (
         <a
           href={resourceHref}
-          onClick={() => onResourceClick?.(finding.kind, finding.namespace, finding.name)}
+          onClick={(e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+            if (!onResourceClick) return
+            e.preventDefault()
+            onResourceClick(finding.kind, finding.namespace, finding.name)
+          }}
           className="text-xs font-medium text-theme-text-secondary hover:text-theme-text-primary transition-colors shrink-0 max-w-[200px] truncate text-left focus-visible:ring-2 focus-visible:ring-theme-text-primary/30 focus-visible:outline-none rounded-sm"
         >
           {resourceLabel}

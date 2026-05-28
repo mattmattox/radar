@@ -130,7 +130,15 @@ export function AuditCard({ data, onNavigate, navHref }: AuditCardProps) {
 
   if (navHref) {
     return (
-      <a href={navHref} onClick={onNavigate} className={clsx('block', cardClass)}>
+      <a
+        href={navHref}
+        onClick={(e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+          e.preventDefault()
+          onNavigate()
+        }}
+        className={clsx('block', cardClass)}
+      >
         {body}
       </a>
     )

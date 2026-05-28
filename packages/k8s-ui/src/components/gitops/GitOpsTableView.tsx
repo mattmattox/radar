@@ -1079,7 +1079,15 @@ function GitOpsTable({
                     {href ? (
                       <a
                         href={href}
-                        onClick={() => onOpen(row)}
+                        onClick={(e) => {
+                          // Modifier clicks → let the browser open a new
+                          // tab via the anchor's default behavior. Plain
+                          // unmodified click → host gets to nav (typically
+                          // react-router navigate, which keeps it SPA-local).
+                          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+                          e.preventDefault()
+                          onOpen(row)
+                        }}
                         className="block truncate font-medium text-theme-text-primary hover:underline focus-visible:underline focus-visible:outline-none rounded-sm"
                       >
                         {row.name}
@@ -1169,7 +1177,17 @@ function GitOpsTile({
   )
   const Wrapper = href
     ? ({ children }: { children: ReactNode }) => (
-        <a href={href} onClick={() => onOpen(row)} className={tileClass}>{children}</a>
+        <a
+          href={href}
+          onClick={(e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+            e.preventDefault()
+            onOpen(row)
+          }}
+          className={tileClass}
+        >
+          {children}
+        </a>
       )
     : ({ children }: { children: ReactNode }) => (
         <button type="button" onClick={() => onOpen(row)} className={tileClass}>{children}</button>
@@ -1334,7 +1352,10 @@ function DestinationCell({
           href={destHref}
           onClick={(e) => {
             e.stopPropagation()
-            onDestinationClick?.(row, dest)
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+            if (!onDestinationClick) return
+            e.preventDefault()
+            onDestinationClick(row, dest)
           }}
           className={chipClass + ' focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40'}
           title={title}
