@@ -1,9 +1,9 @@
 // Shared Checks identity contract + data shapes + severity vocabulary.
 //
-// k8s-ui owns these because the Checks queue presentation (ChecksView,
-// CheckDrawer) is host-agnostic: Radar Hub feeds it fleet-resolved data,
-// and OSS Radar can feed a single-cluster ("fleet of one") resolve. Hosts map
-// their wire payloads onto these types; the components render against them.
+// k8s-ui owns these because the Checks queue presentation (ChecksView) is
+// host-agnostic: Radar Hub feeds it fleet-resolved data, and OSS Radar can feed
+// a single-cluster ("fleet of one") resolve. Hosts map their wire payloads onto
+// these types; the components render against them.
 //
 // Mirrors Radar OSS's resource-key convention (radar/pkg/audit.ResourceKey).
 
@@ -113,15 +113,6 @@ export interface EffectiveCheckFinding {
   state: EffectiveFindingState;
 }
 
-/** One explainable contribution to a check's queue ordering. Shown in the UI
- *  so priority is transparent — there is no hidden score. */
-export interface PriorityFactor {
-  key: string;
-  label: string;
-  detail?: string;
-  weight: number;
-}
-
 /**
  * A failing check, rolled up across every resource that fails it — one row of
  * the remediation queue. `subject` is the most-severe representative resource;
@@ -141,5 +132,7 @@ export interface Check {
   affectedResources: number;
   representativeFinding: EffectiveCheckFinding;
   findings: EffectiveCheckFinding[];
-  priorityFactors: PriorityFactor[];
+  /** Source cluster's environment label (e.g. "prod"), shown as a context tag.
+   *  Empty for OSS single-cluster and unlabeled clusters. */
+  environment?: string;
 }

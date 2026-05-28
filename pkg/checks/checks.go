@@ -11,7 +11,6 @@ package checks
 
 import (
 	"sort"
-	"strconv"
 )
 
 // Severity is the canonical Checks severity ladder. Distinct from the raw
@@ -150,16 +149,6 @@ type EffectiveFinding struct {
 	State             EffectiveFindingState `json:"state"`
 }
 
-// PriorityFactor is one explainable contribution to a check's queue ordering.
-// Weight is the additive contribution to the priority score; consumers render
-// the factors so the queue order is transparent — no hidden score.
-type PriorityFactor struct {
-	Key    string `json:"key"`
-	Label  string `json:"label"`
-	Detail string `json:"detail,omitempty"`
-	Weight int    `json:"weight"`
-}
-
 // Check is one row of the remediation queue: a single failing check, rolling up
 // every resource that fails it. Subject is the most-severe representative
 // resource; Findings holds the per-resource detail underneath. (Distinct from
@@ -177,8 +166,10 @@ type Check struct {
 	AffectedResources     int                `json:"affectedResources"`
 	RepresentativeFinding EffectiveFinding   `json:"representativeFinding"`
 	Findings              []EffectiveFinding `json:"findings"`
-	PriorityFactors       []PriorityFactor   `json:"priorityFactors"`
-	priorityScore         int                // unexported: queue sort key only
+	// Environment is the source cluster's environment label (e.g. "prod"),
+	// surfaced in the UI as a context tag. Empty for OSS single-cluster (no
+	// fleet environment) and for unlabeled clusters.
+	Environment string `json:"environment,omitempty"`
 }
 
 // Categories — mirrors pkg/audit's category vocabulary. Kept here so the
@@ -192,10 +183,10 @@ const (
 // BuildChecks groups effective findings by checkID into the remediation queue:
 // one Check per failing check, aggregating every resource that fails it. The
 // subject is the highest-severity representative resource. Ordering is
-// deterministic — the queue is sorted worst-first by explainable priority
-// (tie-broken on checkID), and each Check's member findings are sorted
-// worst-first. clusterID scopes the row ID; env (may be "") feeds the
-// environment priority factor.
+// deterministic and worst-first — severity, then blast radius (affected
+// resources), then checkID — matching the rendered queue; each Check's member
+// findings are also sorted worst-first. clusterID scopes the row ID; env (may
+// be "") is surfaced as the check's Environment context tag.
 func BuildChecks(findings []EffectiveFinding, catalog map[string]CheckMeta, clusterID, env string) []Check {
 	type bucket struct {
 		findings []EffectiveFinding
@@ -232,7 +223,6 @@ func BuildChecks(findings []EffectiveFinding, catalog map[string]CheckMeta, clus
 			message = meta.Description
 		}
 
-		factors, score := priorityFactorsFor(worst, rep.Category, len(b.resKeys), env, rep.Resource.Namespace)
 		checks = append(checks, Check{
 			ID:                    clusterID + "|" + SourceRadarBuiltin + "|" + checkID,
 			Source:                SourceRadarBuiltin,
@@ -246,77 +236,24 @@ func BuildChecks(findings []EffectiveFinding, catalog map[string]CheckMeta, clus
 			AffectedResources:     len(b.resKeys),
 			RepresentativeFinding: rep,
 			Findings:              b.findings,
-			PriorityFactors:       factors,
-			priorityScore:         score,
+			Environment:           env,
 		})
 	}
 
+	// Worst-first, matching the rendered queue: severity, then blast radius,
+	// then checkID for stability. Consumers re-group/re-sort for display; this
+	// is the canonical default order.
 	sort.SliceStable(checks, func(i, j int) bool {
-		if checks[i].priorityScore != checks[j].priorityScore {
-			return checks[i].priorityScore > checks[j].priorityScore
+		ri, rj := SeverityRank(checks[i].EffectiveSeverity), SeverityRank(checks[j].EffectiveSeverity)
+		if ri != rj {
+			return ri > rj
+		}
+		if checks[i].AffectedResources != checks[j].AffectedResources {
+			return checks[i].AffectedResources > checks[j].AffectedResources
 		}
 		return checks[i].CheckID < checks[j].CheckID
 	})
 	return checks
-}
-
-// priorityFactorsFor computes the deterministic, explainable priority for a
-// check. Returns the factor list (shown in the UI) and the summed score (sort
-// key). Factors that don't apply are omitted.
-func priorityFactorsFor(sev Severity, category string, affectedResources int, env, namespace string) ([]PriorityFactor, int) {
-	factors := []PriorityFactor{}
-	total := 0
-	add := func(key, label, detail string, weight int) {
-		factors = append(factors, PriorityFactor{Key: key, Label: label, Detail: detail, Weight: weight})
-		total += weight
-	}
-
-	sevWeight := map[Severity]int{
-		SeverityCritical: 100,
-		SeverityHigh:     70,
-		SeverityMedium:   40,
-		SeverityLow:      15,
-	}[sev]
-	add("severity", "Severity", string(sev), sevWeight)
-
-	switch category {
-	case CategorySecurity:
-		add("category", "Category", CategorySecurity, 15)
-	case CategoryReliability:
-		add("category", "Category", CategoryReliability, 8)
-	case CategoryEfficiency:
-		add("category", "Category", CategoryEfficiency, 0)
-	default:
-		if category != "" {
-			add("category", "Category", category, 0)
-		}
-	}
-
-	if affectedResources > 1 {
-		// Diminishing weight (capped at 20) so blast radius matters without
-		// letting a single noisy check dominate the queue.
-		add("blast_radius", "Affected resources", pluralResources(affectedResources), min(affectedResources, 20))
-	}
-
-	switch env {
-	case "prod":
-		add("environment", "Environment", "prod", 20)
-	case "staging":
-		add("environment", "Environment", "staging", 8)
-	}
-
-	if namespace != "" {
-		add("namespace", "Namespace", namespace, 0)
-	}
-
-	return factors, total
-}
-
-func pluralResources(n int) string {
-	if n == 1 {
-		return "1 resource"
-	}
-	return strconv.Itoa(n) + " resources"
 }
 
 // refKey dedups resources within a check: group|Kind|namespace|name (mirrors

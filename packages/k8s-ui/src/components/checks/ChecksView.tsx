@@ -553,7 +553,7 @@ function ClusterBreakdown({
         {shown.map((c) => {
           const id = c.subject.cluster_id
           const isOpen = openClusters.has(id)
-          const env = c.priorityFactors.find((f) => f.key === 'environment')?.detail
+          const env = c.environment
           return (
             <li key={id} className="rounded-lg border border-theme-border/70 bg-theme-surface">
               <button

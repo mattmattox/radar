@@ -79,21 +79,41 @@ func TestBuildChecks_WorstFirstOrder(t *testing.T) {
 	}
 }
 
-func TestBuildChecks_PriorityFactorsExplainable(t *testing.T) {
-	out := BuildChecks(fixture(), catalog, "cl_1", "prod")
-	var rr Check
-	for _, c := range out {
-		if c.CheckID == "run-as-root" {
-			rr = c
+func TestBuildChecks_VisibleOrder(t *testing.T) {
+	// Worst-first matches the rendered queue: severity dominates, then blast
+	// radius (affected resources), then checkID. "big" and "small" are both
+	// high; "med" is medium. Severity outranks blast radius, so "med" sorts
+	// last despite checkID; among the highs, the bigger blast wins.
+	findings := []EffectiveFinding{
+		eff("Pod", "", "prod", "a", "big", CategorySecurity, rawDanger, "x"),
+		eff("Pod", "", "prod", "b", "big", CategorySecurity, rawDanger, "x"),
+		eff("Pod", "", "prod", "c", "small", CategorySecurity, rawDanger, "x"),
+		eff("Deployment", "apps", "prod", "d", "med", CategoryReliability, rawWarning, "x"),
+	}
+	out := BuildChecks(findings, map[string]CheckMeta{}, "cl_1", "")
+	got := make([]string, len(out))
+	for i, c := range out {
+		got[i] = c.CheckID
+	}
+	want := []string{"big", "small", "med"}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Fatalf("queue order = %v, want %v", got, want)
 		}
 	}
-	keys := map[string]bool{}
-	for _, f := range rr.PriorityFactors {
-		keys[f.Key] = true
+}
+
+func TestBuildChecks_EnvironmentContext(t *testing.T) {
+	// env flows through to the Environment context tag; OSS (env "") leaves it
+	// empty — there is no fleet environment in standalone Radar.
+	for _, c := range BuildChecks(fixture(), catalog, "cl_1", "prod") {
+		if c.Environment != "prod" {
+			t.Errorf("%s: Environment = %q, want prod", c.CheckID, c.Environment)
+		}
 	}
-	for _, want := range []string{"severity", "category", "blast_radius", "environment"} {
-		if !keys[want] {
-			t.Errorf("expected priority factor %q on run-as-root, factors=%+v", want, rr.PriorityFactors)
+	for _, c := range BuildChecks(fixture(), catalog, "cl_1", "") {
+		if c.Environment != "" {
+			t.Errorf("%s: Environment = %q, want empty for OSS", c.CheckID, c.Environment)
 		}
 	}
 }
