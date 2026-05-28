@@ -279,6 +279,11 @@ function CheckRow({
   onHideCategory?: (category: string) => void
 }) {
   const cluster = clusterLabel?.(check)
+  // Environment (prod/staging) is the one priority factor the row doesn't
+  // already convey (severity = badge, blast radius = the count, category = tag).
+  // Surface it as a context tag; the numeric priority score stays internal (it
+  // drives the sort, but a weighted-score ledger isn't something users parse).
+  const env = check.priorityFactors.find((f) => f.key === 'environment')?.detail
 
   const menuItems: { label: string; onClick: () => void }[] = []
   if (onHideCheck) menuItems.push({ label: `Hide "${check.title}" check`, onClick: () => onHideCheck(check.checkID, check.title) })
@@ -321,6 +326,14 @@ function CheckRow({
             <span className="shrink-0 font-medium text-theme-text-secondary tabular-nums">
               {check.affectedResources} {check.affectedResources === 1 ? 'resource' : 'resources'}
             </span>
+            {env && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="shrink-0 rounded bg-theme-elevated px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-theme-text-secondary ring-1 ring-theme-border">
+                  {env}
+                </span>
+              </>
+            )}
           </div>
         </div>
 
@@ -372,8 +385,6 @@ function CheckRow({
                 </div>
               )}
 
-              <PriorityLine check={check} />
-
               <div className="border-t border-theme-border/70 pt-3">
                 <AffectedResources check={check} resourceHref={resourceHref} onResourceClick={onResourceClick} />
               </div>
@@ -382,42 +393,6 @@ function CheckRow({
         </div>
       </div>
     </li>
-  )
-}
-
-// Compact, explainable priority — the score plus its weighted contributors as
-// chips (the animated bars were a drawer luxury; inline this stays terse).
-// The detector→effective severity line shows only when org policy overrode it
-// — for the detector default it's noise.
-function PriorityLine({ check }: { check: Check }) {
-  const rep = check.representativeFinding
-  const overridden = rep.state.source === 'org_config'
-  const weighted = check.priorityFactors.filter((f) => f.weight > 0)
-  const score = weighted.reduce((n, f) => n + f.weight, 0)
-  return (
-    <section className="flex flex-col gap-1.5">
-      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">
-        Why this priority <span className="ml-1 font-normal normal-case text-theme-text-secondary">score {score}</span>
-      </h4>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {weighted.map((f) => (
-          <span
-            key={f.key}
-            className="inline-flex items-center gap-1 rounded-md bg-theme-elevated px-2 py-0.5 text-[11px] text-theme-text-secondary ring-1 ring-theme-border"
-            title={f.detail || undefined}
-          >
-            <span className="capitalize">{f.label}</span>
-            <span className="font-mono text-theme-text-tertiary">+{f.weight}</span>
-          </span>
-        ))}
-      </div>
-      {overridden && (
-        <p className="text-[11px] text-theme-text-tertiary">
-          Severity <span className="capitalize">{rep.originalSeverity}</span> → {SEVERITY_LABEL[check.effectiveSeverity]} · org policy
-          {rep.state.reason ? ` (${rep.state.reason})` : ''}
-        </p>
-      )}
-    </section>
   )
 }
 
