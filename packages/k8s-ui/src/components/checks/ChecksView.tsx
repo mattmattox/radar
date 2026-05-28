@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronRight, ExternalLink, EyeOff, MoreHorizontal, Search, ShieldCheck, Wrench, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink, EyeOff, MoreHorizontal, Search, ShieldCheck, Wrench, X } from 'lucide-react'
 import { ClusterName, EmptyState, FilterPill } from '../ui'
 import type { CheckMeta } from '../audit'
 import { CHECK_SEVERITIES, CHECK_SEVERITY_RANK, type Check, type CheckSeverity, type EffectiveCheckFinding, type CheckResourceRef } from './types'
@@ -15,63 +15,76 @@ import {
 
 const CATEGORIES: readonly string[] = ['Security', 'Reliability', 'Efficiency']
 
-// Affected-resources shown inline before "View all" — a check can fail on
-// thousands of resources; the queue card stays scannable and only the rare
-// big-list case pays the cost of a full expand.
-const RESOURCE_CAP = 10
+// Affected-resources shown inline before "View all". A check can fail on
+// thousands of resources; the card stays scannable and only the rare big-list
+// case pays the cost of a full expand.
+const RESOURCE_CAP = 8
+// Clusters shown before "View all clusters" when a check spans the fleet.
+const CLUSTER_CAP = 12
+// At/below this many clusters, a check's cluster groups open with their
+// resources visible; above it they start collapsed (just cluster · count).
+const AUTO_EXPAND_CLUSTERS = 2
 
 export interface ChecksViewProps {
-  /** Failing checks, typically flattened across the fleet by the host. */
+  /** Per-(cluster, check) rows. The component groups them by check itself, so
+   *  the same check across many clusters collapses to one fleet row (cluster
+   *  becomes a drill-down sub-level). Single-cluster hosts pass one row per
+   *  check and get a flat resource list with no sub-level. */
   checks: Check[]
-  /** Check catalog (checkID → definition) for how-to-fix / description / the
-   *  compliance-framework filter. */
+  /** Check catalog (checkID → definition): how-to-fix / description / framework
+   *  filter / reference links. */
   catalog: Record<string, CheckMeta>
-  /** True when at least one source returned audit data — distinguishes "clean"
-   *  from "nothing audited / everything errored". */
+  /** True when at least one source returned audit data. */
   anyData: boolean
-  /** Resolve a deep-link href for a resource (host-specific routing). Omit to
-   *  render non-link text. */
+  /** Deep-link href for a resource (host routing). Omit for non-link text. */
   resourceHref?: (ref: CheckResourceRef) => string
-  /** In-app resource navigation. When set, resource lines call this (client-
-   *  side, no reload) instead of following resourceHref — OSS opens its own
-   *  drawer this way. Takes precedence over resourceHref when both are given. */
+  /** In-app resource navigation (client-side). Takes precedence over href. */
   onResourceClick?: (ref: CheckResourceRef) => void
-  /** Display label for a check's source cluster. Omit (or return falsy) to hide
-   *  the cluster line — e.g. single-cluster OSS. */
+  /** Display label for a check's source cluster. Omit (single-cluster OSS) to
+   *  drop the cluster sub-level + cluster filter entirely. */
   clusterLabel?: (check: Check) => string | undefined
-  /** Empty-state CTA shown when there's no data (host-specific: connect a
-   *  cluster vs run an audit). */
+  /** Empty-state CTA when there's no data. */
   emptyAction?: ReactNode
-  /** Optional per-row "hide" actions. OSS wires these to local ~/.radar
-   *  settings; the Hub omits them (hiding is the governed Policy tab there).
-   *  When omitted, no row menu renders. */
+  /** Optional per-check "hide" actions (OSS local tuning; Hub omits — Policy
+   *  tab governs hiding there). Operate on the whole check, fleet-wide. */
   onHideCheck?: (checkID: string, title: string) => void
   onHideCategory?: (category: string) => void
+}
+
+// A check rolled up across every cluster it fires on — one row of the fleet
+// queue. `clusters` holds the per-cluster Check rows underneath.
+interface FleetCheck {
+  checkID: string
+  title: string
+  category: string
+  severity: CheckSeverity
+  totalResources: number
+  totalFindings: number
+  clusters: Check[]
+  haystack: string
 }
 
 export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceClick, clusterLabel, emptyAction, onHideCheck, onHideCategory }: ChecksViewProps) {
   const [severityFilter, setSeverityFilter] = useState<Set<CheckSeverity>>(new Set())
   const [categoryFilter, setCategoryFilter] = useState<Set<string>>(new Set())
   const [frameworkFilter, setFrameworkFilter] = useState<Set<string>>(new Set())
+  const [clusterFilter, setClusterFilter] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
-  // Single-open accordion: opening a check collapses the previous one, so the
-  // queue stays scannable and you never lose your place to a wall of expansions.
   const [openId, setOpenId] = useState<string | null>(null)
 
-  const { totals, totalFindings, clusterCount } = useMemo(() => {
-    const totals: Record<CheckSeverity, number> = { critical: 0, high: 0, medium: 0, low: 0 }
-    const clusters = new Set<string>()
-    let totalFindings = 0
+  // Clusters present in the data (id → label), for the cluster facet. Empty
+  // when the host doesn't supply clusterLabel (single-cluster OSS).
+  const clusterOptions = useMemo(() => {
+    if (!clusterLabel) return []
+    const m = new Map<string, string>()
     for (const c of checks) {
-      totals[c.effectiveSeverity] += 1
-      totalFindings += c.affectedFindings
-      clusters.add(c.subject.cluster_id)
+      const id = c.subject.cluster_id
+      if (!m.has(id)) m.set(id, clusterLabel(c) || id)
     }
-    return { totals, totalFindings, clusterCount: clusters.size }
-  }, [checks])
+    return [...m.entries()].map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label))
+  }, [checks, clusterLabel])
+  const multiCluster = clusterOptions.length > 1
 
-  // Compliance frameworks present in the catalog (CIS, NSA/CISA, …). Empty when
-  // no loaded check carries a framework tag, in which case the filter hides.
   const frameworks = useMemo(() => {
     const set = new Set<string>()
     for (const m of Object.values(catalog)) m.frameworks?.forEach((f) => set.add(f))
@@ -79,10 +92,13 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
   }, [catalog])
 
   const searchLower = search.toLowerCase()
-  const filtered = useMemo(() => {
-    const out = checks.filter((c) => {
+
+  // Filter the per-cluster rows, then group by checkID into fleet rows.
+  const fleetChecks = useMemo(() => {
+    const kept = checks.filter((c) => {
       if (severityFilter.size > 0 && !severityFilter.has(c.effectiveSeverity)) return false
       if (categoryFilter.size > 0 && !categoryFilter.has(c.category)) return false
+      if (clusterFilter.size > 0 && !clusterFilter.has(c.subject.cluster_id)) return false
       if (frameworkFilter.size > 0) {
         const fws = catalog[c.checkID]?.frameworks
         if (!fws || !fws.some((f) => frameworkFilter.has(f))) return false
@@ -93,14 +109,57 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
       }
       return true
     })
+
+    const byCheck = new Map<string, Check[]>()
+    for (const c of kept) {
+      const arr = byCheck.get(c.checkID)
+      if (arr) arr.push(c)
+      else byCheck.set(c.checkID, [c])
+    }
+
+    const out: FleetCheck[] = []
+    for (const [checkID, group] of byCheck) {
+      // Worst severity wins for the fleet row (a check's tier is set by check +
+      // org policy, so it's consistent across clusters; this is just defensive).
+      const severity = group.reduce<CheckSeverity>(
+        (worst, c) => (CHECK_SEVERITY_RANK[c.effectiveSeverity] > CHECK_SEVERITY_RANK[worst] ? c.effectiveSeverity : worst),
+        'low',
+      )
+      const clusters = [...group].sort((a, b) => {
+        const r = CHECK_SEVERITY_RANK[b.effectiveSeverity] - CHECK_SEVERITY_RANK[a.effectiveSeverity]
+        if (r !== 0) return r
+        if (b.affectedResources !== a.affectedResources) return b.affectedResources - a.affectedResources
+        return (clusterLabel?.(a) || '').localeCompare(clusterLabel?.(b) || '')
+      })
+      out.push({
+        checkID,
+        title: group[0].title,
+        category: group[0].category,
+        severity,
+        totalResources: group.reduce((n, c) => n + c.affectedResources, 0),
+        totalFindings: group.reduce((n, c) => n + c.affectedFindings, 0),
+        clusters,
+        haystack: '',
+      })
+    }
     // Worst-first across the whole queue (severity, then blast radius, then title).
     return out.sort((a, b) => {
-      const r = CHECK_SEVERITY_RANK[b.effectiveSeverity] - CHECK_SEVERITY_RANK[a.effectiveSeverity]
+      const r = CHECK_SEVERITY_RANK[b.severity] - CHECK_SEVERITY_RANK[a.severity]
       if (r !== 0) return r
-      if (b.affectedResources !== a.affectedResources) return b.affectedResources - a.affectedResources
+      if (b.totalResources !== a.totalResources) return b.totalResources - a.totalResources
       return a.title.localeCompare(b.title)
     })
-  }, [checks, catalog, severityFilter, categoryFilter, frameworkFilter, searchLower])
+  }, [checks, catalog, severityFilter, categoryFilter, frameworkFilter, clusterFilter, searchLower, clusterLabel])
+
+  const { totals, totalFindings } = useMemo(() => {
+    const totals: Record<CheckSeverity, number> = { critical: 0, high: 0, medium: 0, low: 0 }
+    let totalFindings = 0
+    for (const fc of fleetChecks) {
+      totals[fc.severity] += 1
+      totalFindings += fc.totalFindings
+    }
+    return { totals, totalFindings }
+  }, [fleetChecks])
 
   const toggle = <T,>(setter: React.Dispatch<React.SetStateAction<Set<T>>>, v: T) =>
     setter((prev) => {
@@ -110,11 +169,12 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
       return next
     })
 
-  const hasFilters = severityFilter.size > 0 || categoryFilter.size > 0 || frameworkFilter.size > 0 || search !== ''
+  const hasFilters = severityFilter.size > 0 || categoryFilter.size > 0 || frameworkFilter.size > 0 || clusterFilter.size > 0 || search !== ''
   const clearAll = () => {
     setSeverityFilter(new Set())
     setCategoryFilter(new Set())
     setFrameworkFilter(new Set())
+    setClusterFilter(new Set())
     setSearch('')
   }
 
@@ -124,11 +184,11 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
       <div className="flex flex-col gap-3.5 rounded-2xl border border-theme-border bg-theme-surface p-4 shadow-theme-sm">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-semibold tabular-nums text-theme-text-primary">{checks.length}</span>
+            <span className="text-2xl font-semibold tabular-nums text-theme-text-primary">{fleetChecks.length}</span>
             <span className="text-sm text-theme-text-secondary">
-              {checks.length === 1 ? 'check' : 'checks'}
-              {totalFindings > checks.length && <span className="text-theme-text-tertiary"> · {totalFindings} findings</span>}
-              {clusterCount > 1 && <span className="text-theme-text-tertiary"> · {clusterCount} clusters</span>}
+              {fleetChecks.length === 1 ? 'check' : 'checks'}
+              {totalFindings > fleetChecks.length && <span className="text-theme-text-tertiary"> · {totalFindings} findings</span>}
+              {clusterOptions.length > 1 && <span className="text-theme-text-tertiary"> · {clusterOptions.length} clusters</span>}
             </span>
           </div>
           <div className="relative">
@@ -171,10 +231,16 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
               ))}
             </>
           )}
+          {multiCluster && (
+            <>
+              <span className="mx-1.5 h-5 w-px bg-theme-border" />
+              <ClusterFilter options={clusterOptions} selected={clusterFilter} onToggle={(id) => toggle(setClusterFilter, id)} onClear={() => setClusterFilter(new Set())} />
+            </>
+          )}
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {fleetChecks.length === 0 ? (
         hasFilters ? (
           <EmptyState
             tone="filtered"
@@ -204,14 +270,14 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
         )
       ) : (
         <ol className="flex flex-col gap-1.5">
-          {filtered.map((check) => (
-            <CheckRow
-              key={check.id}
-              check={check}
-              meta={catalog[check.checkID]}
+          {fleetChecks.map((fc) => (
+            <FleetCheckRow
+              key={fc.checkID}
+              fc={fc}
+              meta={catalog[fc.checkID]}
               clusterLabel={clusterLabel}
-              open={openId === check.id}
-              onToggle={() => setOpenId((cur) => (cur === check.id ? null : check.id))}
+              open={openId === fc.checkID}
+              onToggle={() => setOpenId((cur) => (cur === fc.checkID ? null : fc.checkID))}
               resourceHref={resourceHref}
               onResourceClick={onResourceClick}
               onHideCheck={onHideCheck}
@@ -257,8 +323,8 @@ function SeverityChip({ severity, count, active, onClick }: { severity: CheckSev
   )
 }
 
-function CheckRow({
-  check,
+function FleetCheckRow({
+  fc,
   meta,
   clusterLabel,
   open,
@@ -268,7 +334,7 @@ function CheckRow({
   onHideCheck,
   onHideCategory,
 }: {
-  check: Check
+  fc: FleetCheck
   meta?: CheckMeta
   clusterLabel?: (check: Check) => string | undefined
   open: boolean
@@ -278,21 +344,15 @@ function CheckRow({
   onHideCheck?: (checkID: string, title: string) => void
   onHideCategory?: (category: string) => void
 }) {
-  const cluster = clusterLabel?.(check)
-  // Environment (prod/staging) is the one priority factor the row doesn't
-  // already convey (severity = badge, blast radius = the count, category = tag).
-  // Surface it as a context tag; the numeric priority score stays internal (it
-  // drives the sort, but a weighted-score ledger isn't something users parse).
-  const env = check.priorityFactors.find((f) => f.key === 'environment')?.detail
+  const clusterCount = fc.clusters.length
+  const single = clusterCount <= 1
 
   const menuItems: { label: string; onClick: () => void }[] = []
-  if (onHideCheck) menuItems.push({ label: `Hide "${check.title}" check`, onClick: () => onHideCheck(check.checkID, check.title) })
-  if (onHideCategory) menuItems.push({ label: `Hide all ${check.category} checks`, onClick: () => onHideCategory(check.category) })
+  if (onHideCheck) menuItems.push({ label: `Hide "${fc.title}" check`, onClick: () => onHideCheck(fc.checkID, fc.title) })
+  if (onHideCategory) menuItems.push({ label: `Hide all ${fc.category} checks`, onClick: () => onHideCategory(fc.category) })
 
   return (
     <li className="overflow-hidden rounded-xl border border-theme-border bg-theme-surface shadow-theme-sm">
-      {/* The whole header is the single toggle target — chevron is just the
-          open/closed indicator, not a separate action. */}
       <div
         role="button"
         tabIndex={0}
@@ -305,51 +365,37 @@ function CheckRow({
             onToggle()
           }
         }}
-        className={`group flex cursor-pointer items-center gap-3 border-l-2 py-3 pl-3 pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 ${SEVERITY_RAIL_CLASS[check.effectiveSeverity]}`}
+        className={`group flex cursor-pointer items-center gap-3 border-l-2 py-3 pl-3 pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 ${SEVERITY_RAIL_CLASS[fc.severity]}`}
       >
         <ChevronRight className={`h-4 w-4 shrink-0 text-theme-text-tertiary transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
 
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-theme-text-primary">{check.title}</span>
-            <span className={`badge-sm shrink-0 text-[10px] ${categoryBadgeClass(check.category)}`}>{check.category}</span>
+            <span className="truncate text-sm font-medium text-theme-text-primary">{fc.title}</span>
+            <span className={`badge-sm shrink-0 text-[10px] ${categoryBadgeClass(fc.category)}`}>{fc.category}</span>
           </div>
           <div className="flex min-w-0 items-center gap-1.5 text-xs text-theme-text-tertiary">
-            {cluster ? (
-              <>
-                <span className="max-w-[180px] truncate">
-                  <ClusterName name={cluster} />
-                </span>
-                <span aria-hidden>·</span>
-              </>
-            ) : null}
             <span className="shrink-0 font-medium text-theme-text-secondary tabular-nums">
-              {check.affectedResources} {check.affectedResources === 1 ? 'resource' : 'resources'}
+              {fc.totalResources} {fc.totalResources === 1 ? 'resource' : 'resources'}
             </span>
-            {env && (
+            {clusterCount > 1 && (
               <>
                 <span aria-hidden>·</span>
-                <span className="shrink-0 rounded bg-theme-elevated px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-theme-text-secondary ring-1 ring-theme-border">
-                  {env}
-                </span>
+                <span className="shrink-0 tabular-nums">{clusterCount} clusters</span>
               </>
             )}
           </div>
         </div>
 
-        <span className={`badge-sm shrink-0 text-[10px] font-semibold ${SEVERITY_BADGE_CLASS[check.effectiveSeverity]}`}>{SEVERITY_LABEL[check.effectiveSeverity]}</span>
+        <span className={`badge-sm shrink-0 text-[10px] font-semibold ${SEVERITY_BADGE_CLASS[fc.severity]}`}>{SEVERITY_LABEL[fc.severity]}</span>
         {menuItems.length > 0 && <RowMenu items={menuItems} />}
       </div>
 
+      {/* Kept mounted (not `open &&`) so the grid-rows transition animates the
+          collapse too; inert when closed so SR + tab skip the clipped content. */}
       <div className="grid transition-[grid-template-rows] duration-200 ease-out" style={{ gridTemplateRows: open ? '1fr' : '0fr' }}>
-        {/* Kept mounted (not `open &&`) so the grid-rows transition animates the
-            collapse too, not just the expand; inert when closed so SR + tab skip
-            the clipped content. */}
         <div className="overflow-hidden" inert={!open || undefined}>
           <div className="border-t border-theme-border bg-theme-base/40 px-4 py-4 pl-11">
-            {/* Fix + context side by side when there's room — both are short, so
-                they balance; the resource list below always spans full width (a
-                two-column split was unbalanced + truncated the messages). */}
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-4 md:flex-row md:gap-8">
                 {meta?.remediation && (
@@ -386,7 +432,16 @@ function CheckRow({
               )}
 
               <div className="border-t border-theme-border/70 pt-3">
-                <AffectedResources check={check} resourceHref={resourceHref} onResourceClick={onResourceClick} />
+                {single ? (
+                  <ResourceList
+                    label={`Affected resources (${fc.totalResources})`}
+                    check={fc.clusters[0]}
+                    resourceHref={resourceHref}
+                    onResourceClick={onResourceClick}
+                  />
+                ) : (
+                  <ClusterBreakdown fc={fc} clusterLabel={clusterLabel} resourceHref={resourceHref} onResourceClick={onResourceClick} />
+                )}
               </div>
             </div>
           </div>
@@ -396,22 +451,111 @@ function CheckRow({
   )
 }
 
-function AffectedResources({
+// Per-cluster sub-groups for a check that spans the fleet. Each cluster is a
+// collapsible row ("cluster · K resources"); open it for that cluster's
+// resources. Caps the cluster list so a check across hundreds of clusters
+// stays scannable.
+function ClusterBreakdown({
+  fc,
+  clusterLabel,
+  resourceHref,
+  onResourceClick,
+}: {
+  fc: FleetCheck
+  clusterLabel?: (check: Check) => string | undefined
+  resourceHref?: (ref: CheckResourceRef) => string
+  onResourceClick?: (ref: CheckResourceRef) => void
+}) {
+  const [openClusters, setOpenClusters] = useState<Set<string>>(
+    () => new Set(fc.clusters.length <= AUTO_EXPAND_CLUSTERS ? fc.clusters.map((c) => c.subject.cluster_id) : []),
+  )
+  const [showAllClusters, setShowAllClusters] = useState(false)
+  const shown = showAllClusters ? fc.clusters : fc.clusters.slice(0, CLUSTER_CAP)
+  const hiddenClusters = fc.clusters.length - shown.length
+
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">
+        Affected resources <span className="tabular-nums">({fc.totalResources})</span> · {fc.clusters.length} clusters
+      </h4>
+      <ul className="flex flex-col gap-1">
+        {shown.map((c) => {
+          const id = c.subject.cluster_id
+          const isOpen = openClusters.has(id)
+          const env = c.priorityFactors.find((f) => f.key === 'environment')?.detail
+          return (
+            <li key={id} className="rounded-lg border border-theme-border/70 bg-theme-surface">
+              <button
+                type="button"
+                aria-expanded={isOpen}
+                onClick={() =>
+                  setOpenClusters((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(id)) next.delete(id)
+                    else next.add(id)
+                    return next
+                  })
+                }
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-theme-hover/50"
+              >
+                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-theme-text-tertiary transition-transform duration-200 ${isOpen ? '' : '-rotate-90'}`} />
+                <span className="min-w-0 max-w-[260px] truncate text-sm font-medium text-theme-text-primary">
+                  <ClusterName name={clusterLabel?.(c) || id} />
+                </span>
+                {env && (
+                  <span className="shrink-0 rounded bg-theme-elevated px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-theme-text-secondary ring-1 ring-theme-border">
+                    {env}
+                  </span>
+                )}
+                <span className="flex-1" />
+                <span className="shrink-0 text-xs tabular-nums text-theme-text-secondary">
+                  {c.affectedResources} {c.affectedResources === 1 ? 'resource' : 'resources'}
+                </span>
+              </button>
+              <div className="grid transition-[grid-template-rows] duration-200 ease-out" style={{ gridTemplateRows: isOpen ? '1fr' : '0fr' }}>
+                <div className="overflow-hidden" inert={!isOpen || undefined}>
+                  <div className="px-2.5 pb-2 pl-7">
+                    <ResourceList check={c} resourceHref={resourceHref} onResourceClick={onResourceClick} />
+                  </div>
+                </div>
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+      {hiddenClusters > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAllClusters(true)}
+          className="mt-0.5 inline-flex w-fit items-center gap-1 rounded px-2 py-1 text-xs font-medium text-[var(--color-radar-accent)] hover:underline"
+        >
+          View all {fc.clusters.length} clusters →
+        </button>
+      )}
+    </section>
+  )
+}
+
+// The resource lines for one cluster's check. `label` (set in the single-cluster
+// case) renders a section heading; in the cluster-breakdown case the cluster row
+// already provides the heading, so it's omitted.
+function ResourceList({
   check,
+  label,
   resourceHref,
   onResourceClick,
 }: {
   check: Check
+  label?: string
   resourceHref?: (ref: CheckResourceRef) => string
   onResourceClick?: (ref: CheckResourceRef) => void
 }) {
   const [showAll, setShowAll] = useState(false)
   // The per-finding message only earns a place when it adds something the line
   // doesn't already show. Normalize each message by removing its own resource
-  // name, then compare: if they're all the same, the message either repeats the
-  // check verbatim (e.g. "token is auto-mounted") or varies only by the object
-  // name (already on the line) — drop it. If they still differ, the variation is
-  // real new info (e.g. a container name) — keep it.
+  // name, then compare: all-same → it repeats the check or varies only by the
+  // object name (already on the line) → drop it; still-different → real new info
+  // (e.g. a container name) → keep it.
   const showMessage = useMemo(() => {
     if (check.findings.length === 0) return false
     const norm = (f: EffectiveCheckFinding) => {
@@ -423,11 +567,10 @@ function AffectedResources({
   }, [check.findings])
   const list = showAll ? check.findings : check.findings.slice(0, RESOURCE_CAP)
   const hidden = check.findings.length - list.length
+
   return (
     <section className="flex flex-col gap-1.5">
-      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">
-        Affected resources <span className="tabular-nums">({check.affectedResources})</span>
-      </h4>
+      {label && <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">{label}</h4>}
       <ul className="flex flex-col gap-px">
         {list.map((f, i) => (
           <FindingLine
@@ -494,11 +637,115 @@ function FindingLine({
   )
 }
 
+// Multi-select cluster facet — clusters are high-cardinality, so a dropdown
+// (portaled out of the row, like the row menu) rather than chips.
+function ClusterFilter({
+  options,
+  selected,
+  onToggle,
+  onClear,
+}: {
+  options: { id: string; label: string }[]
+  selected: Set<string>
+  onToggle: (id: string) => void
+  onClear: () => void
+}) {
+  const [menu, setMenu] = useState<{ top: number; left: number } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onDown = (e: MouseEvent) => {
+      if (btnRef.current?.contains(e.target as Node)) return
+      // keep open when clicking inside the menu
+      if ((e.target as HTMLElement)?.closest?.('[data-cluster-menu]')) return
+      close()
+    }
+    document.addEventListener('mousedown', onDown)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [menu])
+
+  const open = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (menu) {
+      setMenu(null)
+      return
+    }
+    const r = btnRef.current?.getBoundingClientRect()
+    if (r) setMenu({ top: r.bottom + 4, left: r.left })
+  }
+  const active = selected.size > 0
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={menu != null}
+        onClick={open}
+        className={[
+          'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors',
+          active ? 'border-theme-border bg-theme-elevated text-theme-text-primary' : 'border-theme-border-light text-theme-text-secondary hover:bg-theme-hover/60',
+        ].join(' ')}
+      >
+        Clusters{active ? ` · ${selected.size}` : ''}
+        <ChevronDown className="h-3 w-3" />
+      </button>
+      {menu &&
+        createPortal(
+          <div
+            data-cluster-menu
+            role="listbox"
+            aria-multiselectable
+            className="fixed z-[60] max-h-80 w-64 overflow-auto rounded-lg border border-theme-border bg-theme-surface py-1 shadow-xl"
+            style={{ top: menu.top, left: menu.left }}
+          >
+            {active && (
+              <button
+                type="button"
+                onClick={onClear}
+                className="flex w-full items-center px-3 py-1.5 text-left text-xs text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary"
+              >
+                Clear selection
+              </button>
+            )}
+            {options.map((o) => {
+              const on = selected.has(o.id)
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  role="option"
+                  aria-selected={on}
+                  onClick={() => onToggle(o.id)}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-theme-text-secondary transition-colors hover:bg-theme-hover hover:text-theme-text-primary"
+                >
+                  <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border ${on ? 'border-[var(--color-radar-accent)] bg-[var(--color-radar-accent)] text-white' : 'border-theme-border'}`}>
+                    {on && <span className="text-[9px] leading-none">✓</span>}
+                  </span>
+                  <span className="min-w-0 truncate">
+                    <ClusterName name={o.label} />
+                  </span>
+                </button>
+              )
+            })}
+          </div>,
+          document.body,
+        )}
+    </>
+  )
+}
+
 // Quiet per-row overflow menu for the OSS local-tuning actions (hide check /
-// category). The dropdown is portaled to document.body: the row is
-// overflow-hidden (rounded corners + the expand animation), which would
-// otherwise clip the menu. Position is captured at open time and anchored to
-// the trigger; any scroll/resize closes it rather than letting it drift.
+// category). Portaled to document.body so the row's overflow-hidden can't clip
+// it; position captured at open time, any scroll/resize closes it.
 function RowMenu({ items }: { items: { label: string; onClick: () => void }[] }) {
   const [menu, setMenu] = useState<{ top: number; right: number } | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
