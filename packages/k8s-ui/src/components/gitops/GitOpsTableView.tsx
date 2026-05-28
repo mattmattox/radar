@@ -1351,6 +1351,11 @@ function DestinationCell({
       return (
         <a
           href={destHref}
+          // The chip sits inside the row's `<td>`; when a host wires
+          // `destinationHrefFor` without `rowHrefFor`, the `<tr>` retains
+          // its own onClick. Stop the bubble so a click on the chip
+          // doesn't also trigger row navigation.
+          onClick={(e) => e.stopPropagation()}
           className={chipClass + ' focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40'}
           title={title}
         >
