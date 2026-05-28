@@ -769,16 +769,20 @@ function AppInner() {
   // lists) stay in lockstep with the picker. The dedicated URL-write effect
   // below propagates the mirrored state to `?namespaces=`.
   const setActiveNamespace = useSetActiveNamespace()
-  // Clear the global namespace pick atomically with its URL param so the
-  // URL→state sync at L862 doesn't re-hydrate the old pick before the
-  // state→URL sync can clean it.
+  // Defer state-clear until the mutation lands. setNamespaces([]) immediately
+  // would refetch under the new empty key while the server still holds the
+  // previous per-user pref, caching that stale scope under the new key with
+  // no key change to trigger a later refresh. URL drops synchronously so the
+  // URL→state sync doesn't re-hydrate the previous pick.
   const clearAllNamespaces = useCallback(() => {
     const params = new URLSearchParams(window.location.search)
     params.delete('namespaces')
     params.delete('namespace')
     setSearchParams(params, { replace: true })
-    setNamespaces([])
-    setActiveNamespace.mutate({ namespaces: [] })
+    setActiveNamespace.mutate(
+      { namespaces: [] },
+      { onSettled: () => setNamespaces([]) },
+    )
   }, [setSearchParams, setActiveNamespace])
   const initialBookmarkReconciledRef = useRef(false)
   const scopeActives = useMemo(() => namespaceScope?.actives ?? [], [namespaceScope?.actives])
