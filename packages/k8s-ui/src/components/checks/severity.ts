@@ -47,14 +47,6 @@ export const SEVERITY_RAIL_CLASS: Record<CheckSeverity, string> = {
   low: 'border-l-slate-300 dark:border-l-slate-600 hover:bg-theme-hover/40',
 }
 
-// Soft glow ring for the drawer's severity header band.
-export const SEVERITY_GLOW_CLASS: Record<CheckSeverity, string> = {
-  critical: 'bg-red-50 ring-red-100 dark:bg-red-950/30 dark:ring-red-900/50',
-  high: 'bg-orange-50 ring-orange-100 dark:bg-orange-950/30 dark:ring-orange-900/50',
-  medium: 'bg-amber-50 ring-amber-100 dark:bg-amber-950/30 dark:ring-amber-900/50',
-  low: 'bg-slate-50 ring-slate-200 dark:bg-slate-900/40 dark:ring-slate-800',
-}
-
 // Category accent — a quiet tag (severity is the loud one). Security is the
 // headline beat, so it gets the most distinct hue.
 const CATEGORY_BADGE_CLASS: Record<string, string> = {

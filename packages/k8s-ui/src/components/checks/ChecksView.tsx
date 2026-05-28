@@ -72,7 +72,6 @@ interface FleetCheck {
   totalResources: number
   totalFindings: number
   clusters: Check[]
-  haystack: string
 }
 
 export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceClick, clusterLabel, clusterLabelById, clusterFilter: clusterFilterProp, onClusterFilterChange, emptyAction, onHideCheck, onHideCategory }: ChecksViewProps) {
@@ -171,7 +170,6 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
         totalResources: group.reduce((n, c) => n + c.affectedResources, 0),
         totalFindings: group.reduce((n, c) => n + c.affectedFindings, 0),
         clusters,
-        haystack: '',
       })
     }
     // Worst-first across the whole queue (severity, then blast radius, then title).
