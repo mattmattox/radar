@@ -772,19 +772,17 @@ function AppInner() {
   // Defer state-clear until the mutation lands. setNamespaces([]) immediately
   // would refetch under the new empty key while the server still holds the
   // previous per-user pref, caching that stale scope under the new key with
-  // no key change to trigger a later refresh. URL drops synchronously so the
-  // URL→state sync doesn't re-hydrate the previous pick.
+  // no key change to trigger a later refresh. Touching the URL synchronously
+  // here would also trip the URL→state sync at L878 into firing the clear
+  // (and a duplicate mutation) ahead of onSettled, so the state→URL effect
+  // below propagates state=[] → URL after onSettled instead.
   const clearAllNamespaces = useCallback(() => {
-    const params = new URLSearchParams(window.location.search)
-    params.delete('namespaces')
-    params.delete('namespace')
-    setSearchParams(params, { replace: true })
     if (namespaces.length === 0) return
     setActiveNamespace.mutate(
       { namespaces: [] },
       { onSettled: () => setNamespaces([]) },
     )
-  }, [namespaces.length, setSearchParams, setActiveNamespace])
+  }, [namespaces.length, setActiveNamespace])
   const initialBookmarkReconciledRef = useRef(false)
   const scopeActives = useMemo(() => namespaceScope?.actives ?? [], [namespaceScope?.actives])
   const namespaceScopeKey = useMemo(() => namespaceScope ? [...scopeActives].sort().join(',') : null, [namespaceScope, scopeActives])
