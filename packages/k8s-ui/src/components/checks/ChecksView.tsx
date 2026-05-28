@@ -43,6 +43,17 @@ export interface ChecksViewProps {
   /** Display label for a check's source cluster. Omit (single-cluster OSS) to
    *  drop the cluster sub-level + cluster filter entirely. */
   clusterLabel?: (check: Check) => string | undefined
+  /** Controlled cluster facet. When `onClusterFilterChange` is supplied the
+   *  selection is owned by the host (e.g. synced to a `?clusters=` URL param);
+   *  otherwise ChecksView keeps it in internal state. `clusterFilter` is the
+   *  current selection (cluster IDs); ignored unless controlled. */
+  clusterFilter?: string[]
+  onClusterFilterChange?: (clusterIds: string[]) => void
+  /** Resolve a cluster ID → display label for the selected-cluster chips.
+   *  Needed because a filter can target a cluster with no checks (offline /
+   *  errored / clean) that won't appear in the in-data cluster options; the
+   *  host knows the name regardless. Falls back to the id when unresolved. */
+  clusterLabelById?: (clusterId: string) => string | undefined
   /** Empty-state CTA when there's no data. */
   emptyAction?: ReactNode
   /** Optional per-check "hide" actions (OSS local tuning; Hub omits — Policy
@@ -64,13 +75,34 @@ interface FleetCheck {
   haystack: string
 }
 
-export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceClick, clusterLabel, emptyAction, onHideCheck, onHideCategory }: ChecksViewProps) {
+export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceClick, clusterLabel, clusterLabelById, clusterFilter: clusterFilterProp, onClusterFilterChange, emptyAction, onHideCheck, onHideCategory }: ChecksViewProps) {
   const [severityFilter, setSeverityFilter] = useState<Set<CheckSeverity>>(new Set())
   const [categoryFilter, setCategoryFilter] = useState<Set<string>>(new Set())
   const [frameworkFilter, setFrameworkFilter] = useState<Set<string>>(new Set())
-  const [clusterFilter, setClusterFilter] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
+
+  // Cluster facet is controlled when the host opts in (onClusterFilterChange);
+  // otherwise it lives in internal state. Either way the rest of the component
+  // reads `clusterFilter` (a Set) and writes via `setClusterFilter`, which
+  // accepts both value and updater forms like a useState setter.
+  const [clusterFilterInternal, setClusterFilterInternal] = useState<Set<string>>(new Set())
+  const clusterControlled = onClusterFilterChange !== undefined
+  const clusterFilterKey = (clusterFilterProp ?? []).join(',')
+  const clusterFilter = useMemo(
+    () => (clusterControlled ? new Set(clusterFilterProp ?? []) : clusterFilterInternal),
+    // clusterFilterKey collapses array identity churn from the host to its contents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [clusterControlled, clusterFilterKey, clusterFilterInternal],
+  )
+  const setClusterFilter = (action: React.SetStateAction<Set<string>>) => {
+    if (clusterControlled) {
+      const next = typeof action === 'function' ? action(clusterFilter) : action
+      onClusterFilterChange!([...next])
+    } else {
+      setClusterFilterInternal(action)
+    }
+  }
 
   // Clusters present in the data (id → label), for the cluster facet. Empty
   // when the host doesn't supply clusterLabel (single-cluster OSS).
@@ -151,14 +183,19 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
     })
   }, [checks, catalog, severityFilter, categoryFilter, frameworkFilter, clusterFilter, searchLower, clusterLabel])
 
-  const { totals, totalFindings } = useMemo(() => {
+  const { totals, totalFindings, clusterCount } = useMemo(() => {
     const totals: Record<CheckSeverity, number> = { critical: 0, high: 0, medium: 0, low: 0 }
     let totalFindings = 0
+    // Distinct clusters spanned by the *filtered* queue — so the header count
+    // tracks the cluster facet rather than the full fleet (a deep-link or
+    // facet pick to one cluster reads "1 cluster", not the unfiltered total).
+    const clusterIds = new Set<string>()
     for (const fc of fleetChecks) {
       totals[fc.severity] += 1
       totalFindings += fc.totalFindings
+      for (const c of fc.clusters) clusterIds.add(c.subject.cluster_id)
     }
-    return { totals, totalFindings }
+    return { totals, totalFindings, clusterCount: clusterIds.size }
   }, [fleetChecks])
 
   const toggle = <T,>(setter: React.Dispatch<React.SetStateAction<Set<T>>>, v: T) =>
@@ -188,7 +225,9 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
             <span className="text-sm text-theme-text-secondary">
               {fleetChecks.length === 1 ? 'check' : 'checks'}
               {totalFindings > fleetChecks.length && <span className="text-theme-text-tertiary"> · {totalFindings} findings</span>}
-              {clusterOptions.length > 1 && <span className="text-theme-text-tertiary"> · {clusterOptions.length} clusters</span>}
+              {clusterOptions.length > 1 && clusterCount > 0 && (
+                <span className="text-theme-text-tertiary"> · {clusterCount} {clusterCount === 1 ? 'cluster' : 'clusters'}</span>
+              )}
             </span>
           </div>
           <div className="relative">
@@ -235,6 +274,40 @@ export function ChecksView({ checks, catalog, anyData, resourceHref, onResourceC
             <>
               <span className="mx-1.5 h-5 w-px bg-theme-border" />
               <ClusterFilter options={clusterOptions} selected={clusterFilter} onToggle={(id) => toggle(setClusterFilter, id)} onClear={() => setClusterFilter(new Set())} />
+            </>
+          )}
+          {/* Selected clusters as removable chips. The dropdown is the
+              add/discover affordance (clusters are high-cardinality); the chips
+              make the *active* selection visible + clearable. Gated on the
+              selection itself — NOT on multiCluster — because a deep-link can
+              filter to a cluster while ≤1 cluster currently has checks (so the
+              dropdown is hidden); the chip is then the only thing that reveals
+              and clears the filter, which is exactly the deep-link case it's
+              for. Own leading divider when the dropdown isn't rendering. */}
+          {clusterFilter.size > 0 && (
+            <>
+              {!multiCluster && <span className="mx-1.5 h-5 w-px bg-theme-border" />}
+              {[...clusterFilter].map((id) => {
+                const label = clusterLabelById?.(id) ?? clusterOptions.find((o) => o.id === id)?.label ?? id
+                return (
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 rounded-full border border-[var(--color-radar-accent)]/30 bg-[var(--color-radar-accent)]/10 py-1 pl-2.5 pr-1 text-xs text-theme-text-primary"
+                  >
+                    <span className="min-w-0 max-w-[12rem] truncate">
+                      <ClusterName name={label} />
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => toggle(setClusterFilter, id)}
+                      aria-label={`Remove ${label} filter`}
+                      className="rounded-full p-0.5 text-theme-text-tertiary transition-colors hover:bg-theme-hover hover:text-theme-text-primary"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                )
+              })}
             </>
           )}
         </div>
@@ -695,7 +768,7 @@ function ClusterFilter({
           active ? 'border-theme-border bg-theme-elevated text-theme-text-primary' : 'border-theme-border-light text-theme-text-secondary hover:bg-theme-hover/60',
         ].join(' ')}
       >
-        Clusters{active ? ` · ${selected.size}` : ''}
+        Clusters
         <ChevronDown className="h-3 w-3" />
       </button>
       {menu &&
