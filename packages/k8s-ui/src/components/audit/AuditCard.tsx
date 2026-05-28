@@ -12,6 +12,10 @@ export interface AuditCardData {
 interface AuditCardProps {
   data: AuditCardData
   onNavigate: () => void
+  /** When provided, the card renders as `<a href>` instead of `<button>`.
+   *  Restores ⌘-click / "Copy link" / hover URL preview. `onNavigate` still
+   *  fires for analytics-style hooks. */
+  navHref?: string
 }
 
 type SeverityLevel = 'success' | 'warning' | 'error'
@@ -30,20 +34,17 @@ const ACCENT_BG: Record<SeverityLevel, string> = {
   error: 'bg-red-500/10',
 }
 
-export function AuditCard({ data, onNavigate }: AuditCardProps) {
+export function AuditCard({ data, onNavigate, navHref }: AuditCardProps) {
   const total = data.passing + data.warning + data.danger
   const issueCount = data.warning + data.danger
   const allPassing = issueCount === 0
   const level = getSeverityLevel(data)
   const accentColor = SEVERITY_TEXT[level]
   const accentBg = ACCENT_BG[level]
+  const cardClass = 'group h-[260px] rounded-xl bg-theme-surface shadow-theme-sm hover:-translate-y-1 hover:shadow-theme-md transition-all duration-200 text-left animate-fade-in-up focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-theme-text-primary/20'
 
-  return (
-    <button
-      onClick={onNavigate}
-      className="group h-[260px] rounded-xl bg-theme-surface shadow-theme-sm hover:-translate-y-1 hover:shadow-theme-md transition-all duration-200 text-left animate-fade-in-up"
-    >
-      <div className="flex flex-col h-full w-full">
+  const body = (
+    <div className="flex flex-col h-full w-full">
         <div className="flex items-center justify-between px-5 py-3 border-b border-theme-border/50">
           <div className="flex items-center gap-2">
             <ClipboardCheck className={clsx('w-4 h-4', accentColor)} />
@@ -125,6 +126,19 @@ export function AuditCard({ data, onNavigate }: AuditCardProps) {
           </span>
         </div>
       </div>
+  )
+
+  if (navHref) {
+    return (
+      <a href={navHref} onClick={onNavigate} className={clsx('block', cardClass)}>
+        {body}
+      </a>
+    )
+  }
+
+  return (
+    <button onClick={onNavigate} className={cardClass}>
+      {body}
     </button>
   )
 }
