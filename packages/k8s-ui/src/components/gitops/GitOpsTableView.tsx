@@ -158,7 +158,7 @@ export interface GitOpsTableViewProps {
   // Destination cell. Fleet-only; OSS leaves undefined. Caller routes to
   // the destination cluster's workloads view (filtered by the Argo
   // instance label) — the chip itself stops row-click propagation.
-  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp, event?: ReactMouseEvent) => void
+  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp) => void
   /** Anchor equivalent of `onDestinationClick`. Same rationale as
    *  `rowHrefFor` — real `<a href>` for the destination chip. */
   destinationHrefFor?: (row: GitOpsRow, destination: FleetDestinationStamp) => string
@@ -1039,7 +1039,7 @@ function GitOpsTable({
   rows: GitOpsRow[]
   onOpen: (row: GitOpsRow, event?: ReactMouseEvent) => void
   hrefFor?: (row: GitOpsRow) => string
-  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp, event?: ReactMouseEvent) => void
+  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp) => void
   destinationHrefFor?: (row: GitOpsRow, destination: FleetDestinationStamp) => string
 }) {
   return (
@@ -1319,7 +1319,7 @@ function DestinationCell({
   destinationHrefFor,
 }: {
   row: GitOpsRow
-  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp, event?: ReactMouseEvent) => void
+  onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp) => void
   destinationHrefFor?: (row: GitOpsRow, destination: FleetDestinationStamp) => string
 }) {
   const dest = row._destination
@@ -1351,11 +1351,6 @@ function DestinationCell({
       return (
         <a
           href={destHref}
-          onClick={(e) => {
-            e.stopPropagation()
-            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
-            if (onDestinationClick) onDestinationClick(row, dest, e)
-          }}
           className={chipClass + ' focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40'}
           title={title}
         >
