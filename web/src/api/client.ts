@@ -237,7 +237,7 @@ export interface DashboardCRDCount {
 }
 
 // Re-export shared types from k8s-ui — single source of truth
-import type { AuditCardData, AuditFinding, ResourceGroup, CheckMeta, Check } from '@skyhook-io/k8s-ui'
+import type { AuditCardData, AuditFinding, ResourceGroup, CheckMeta, Check, Issue } from '@skyhook-io/k8s-ui'
 export type DashboardAudit = AuditCardData
 export type { AuditFinding, ResourceGroup, CheckMeta, Check }
 
@@ -334,6 +334,21 @@ export function useAudit(namespaces: string[] = []) {
     queryFn: () => fetchJSON(`/audit${params}`),
     staleTime: 30000,
     refetchInterval: 60000,
+    placeholderData: (prev) => prev,
+  })
+}
+
+// Live cluster Issues — the grouped triage queue (radar's /api/issues =
+// internal/issues.Compose+Classify+Group). Single-cluster here; the Hub fleet
+// view fans the same shape across clusters. keepPreviousData semantics via
+// placeholderData so the queue doesn't flash empty on the 30s refresh.
+export function useIssues(namespaces: string[] = []) {
+  const params = namespaces.length > 0 ? `?namespaces=${namespaces.join(',')}` : ''
+  return useQuery<{ issues: Issue[] }>({
+    queryKey: ['issues', namespaces],
+    queryFn: () => fetchJSON(`/issues${params}`),
+    staleTime: 30000,
+    refetchInterval: 30000,
     placeholderData: (prev) => prev,
   })
 }
