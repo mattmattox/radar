@@ -3378,9 +3378,13 @@ export function ResourcesView({
   // the required name column. Keep a real table minimum and let the container
   // scroll horizontally when the viewport is too narrow.
   const tableMinWidth = useMemo(() => {
-    const initialWidth = compareMode ? COMPARE_COLUMN_WIDTH : 0
-    return columns.reduce((sum, col) => sum + (columnWidths[col.key] || getColumnMinWidth(col)), initialWidth)
-  }, [columns, columnWidths, compareMode])
+    const compareColumnWidth = compareMode ? COMPARE_COLUMN_WIDTH : 0
+    const baseMinWidth = columns.reduce((sum, col) => sum + (columnWidths[col.key] || getColumnMinWidth(col)), compareColumnWidth)
+    const flexibleNameColumn = columns.find(col => col.key === 'name' && !columnWidths[col.key])
+
+    if (!hasResizedColumns || !flexibleNameColumn) return baseMinWidth
+    return baseMinWidth + getColumnMinWidth(flexibleNameColumn)
+  }, [columns, columnWidths, compareMode, hasResizedColumns])
 
   // Stable virtuoso components — memoized to avoid remounting the table on every render
   const virtuosoComponents = useMemo(() => ({
