@@ -17,15 +17,23 @@ import (
 // is hashed into it).
 const crashLoopReason = "CrashLoopBackOff"
 
-// isStableCrashLoop reports whether a container has restarted at least once AND
-// its last termination recorded a crash-class outcome (CrashLoopBackOff / a
-// generic Error / a non-zero exit code). This is the MONOTONIC crashloop
-// signal: it reads only the stable history fields (RestartCount +
-// LastTerminationState), never the instantaneous State (Waiting/Running/
-// Terminated) the kubelet flips between polls. OOMKilled is intentionally
-// excluded — it has its own category/severity path upstream.
-func isStableCrashLoop(cs *corev1.ContainerStatus) bool {
+// isStableCrashLoop reports whether a container is in an ACTIVE crashloop: it
+// has restarted with a crash-class last termination (CrashLoopBackOff / generic
+// Error / non-zero exit), AND it has not since recovered. It reads the stable
+// history fields (RestartCount + LastTerminationState) rather than the
+// instantaneous State the kubelet flips between polls — so a real loop's brief
+// "Running" blip doesn't downgrade the verdict — but it must NOT fire on a
+// container that crashed once and is now running healthily: RestartCount and
+// LastTerminationState persist for the life of the container, so without the
+// recovery guard below a pod that restarted once at startup would read as a
+// crashloop forever. A container Running continuously past the kubelet's max
+// CrashLoopBackOff backoff (5m) has outlived the loop — it recovered. OOMKilled
+// is intentionally excluded — it has its own category/severity path upstream.
+func isStableCrashLoop(cs *corev1.ContainerStatus, now time.Time) bool {
 	if cs.RestartCount == 0 {
+		return false
+	}
+	if r := cs.State.Running; r != nil && !r.StartedAt.IsZero() && now.Sub(r.StartedAt.Time) > 5*time.Minute {
 		return false
 	}
 	t := cs.LastTerminationState.Terminated
@@ -47,14 +55,14 @@ func isStableCrashLoop(cs *corev1.ContainerStatus) bool {
 
 // podHasStableCrashLoop reports whether any main or init container is in a
 // stable crashloop (see isStableCrashLoop).
-func podHasStableCrashLoop(pod *corev1.Pod) bool {
+func podHasStableCrashLoop(pod *corev1.Pod, now time.Time) bool {
 	for i := range pod.Status.ContainerStatuses {
-		if isStableCrashLoop(&pod.Status.ContainerStatuses[i]) {
+		if isStableCrashLoop(&pod.Status.ContainerStatuses[i], now) {
 			return true
 		}
 	}
 	for i := range pod.Status.InitContainerStatuses {
-		if isStableCrashLoop(&pod.Status.InitContainerStatuses[i]) {
+		if isStableCrashLoop(&pod.Status.InitContainerStatuses[i], now) {
 			return true
 		}
 	}
@@ -78,7 +86,7 @@ func ClassifyPodHealth(pod *corev1.Pod, now time.Time) string {
 	// flap critical↔warning poll-to-poll; the stable history fields don't
 	// oscillate, so neither does the verdict. Checked before the per-state
 	// scan below so a momentary "Running" can't downgrade it.
-	if podHasStableCrashLoop(pod) {
+	if podHasStableCrashLoop(pod, now) {
 		return "error"
 	}
 
@@ -167,7 +175,11 @@ func PodProblemReason(pod *corev1.Pod) string {
 	// row's category stays `crashloop` across the whole oscillation. We only
 	// override when the raw reason isn't already a more-specific, stable
 	// signal (ImagePullBackOff, OOMKilled, an init failure, …) — those win.
-	if podHasStableCrashLoop(pod) && isPhaseOrCrashReason(reason) {
+	// time.Now() is fine here: PodProblemReason is only called on pods already
+	// classified as problems (recovered pods are filtered upstream by
+	// ClassifyPodHealth), so the recovery guard inside podHasStableCrashLoop
+	// never fires on this path — it's just reusing the same active-crashloop test.
+	if podHasStableCrashLoop(pod, time.Now()) && isPhaseOrCrashReason(reason) {
 		return crashLoopReason
 	}
 	return reason

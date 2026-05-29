@@ -230,6 +230,39 @@ func TestStableCrashLoop_PreservesSpecificReasons(t *testing.T) {
 	}
 }
 
+// TestClassifyPodHealth_RecoveredAfterCrashIsHealthy pins the recovery guard: a
+// container that crashed earlier (RestartCount>0 + a crash in
+// LastTerminationState — both persist for the life of the container) but has
+// since been Running continuously past the kubelet's max CrashLoopBackOff
+// backoff (5m) has recovered. Its stale history fields must NOT keep it flagged
+// as a crashloop error — otherwise every pod that restarted once at startup
+// reads red forever.
+func TestClassifyPodHealth_RecoveredAfterCrashIsHealthy(t *testing.T) {
+	now := time.Now()
+	crash := corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}}
+
+	recovered := &corev1.Pod{Status: corev1.PodStatus{
+		Phase: corev1.PodRunning,
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Ready:                true,
+			RestartCount:         2,
+			State:                corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-30 * time.Minute))}},
+			LastTerminationState: crash,
+		}},
+	}}
+	if got := ClassifyPodHealth(recovered, now); got != "healthy" {
+		t.Errorf("recovered-after-crash pod (Running 30m) = %q, want healthy", got)
+	}
+
+	// Control: identical crash history but Running only 30s — still inside the
+	// loop's backoff window, so it must stay error (the flap-fix is preserved).
+	looping := recovered.DeepCopy()
+	looping.Status.ContainerStatuses[0].State.Running.StartedAt = metav1.NewTime(now.Add(-30 * time.Second))
+	if got := ClassifyPodHealth(looping, now); got != "error" {
+		t.Errorf("just-restarted crashloop (Running 30s) = %q, want error", got)
+	}
+}
+
 func TestClassifyNodeHealth(t *testing.T) {
 	tests := []struct {
 		name              string
