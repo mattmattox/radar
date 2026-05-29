@@ -264,7 +264,8 @@ func isTransientFluxReason(r string) bool {
 //   - Argo:        Progressing, Reconciling
 //   - cert-manager: Issuing, Pending
 //   - Crossplane:  Reconciling, Creating
-//   - generic:     Pending, InProgress, Initializing, Waiting, Unknown
+//   - generic:     Pending, InProgress, Initializing, Waiting (NOT Unknown —
+//                  ambiguous, not in-progress; it stays loud/unhealthy)
 var transientConditionReasons = map[string]bool{
 	// Flux
 	"Progressing":              true,
@@ -282,7 +283,11 @@ var transientConditionReasons = map[string]bool{
 	"InProgress":   true,
 	"Initializing": true,
 	"Waiting":      true,
-	"Unknown":      true,
+	// "Unknown" is deliberately NOT here: it means "the controller hasn't
+	// reported a verdict", which is ambiguous, not in-progress. Treating it as
+	// transient would silently downgrade a genuinely-stuck object to a warning;
+	// the surrounding logic errs loud on reasons it doesn't recognize, so an
+	// Unknown False-condition stays unhealthy.
 }
 
 // IsTransientConditionReason reports whether a condition reason denotes an
