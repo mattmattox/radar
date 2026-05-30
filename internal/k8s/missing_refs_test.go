@@ -344,6 +344,53 @@ func TestDetectPodMissingRefs_SkipsTerminalPods(t *testing.T) {
 	}
 }
 
+func TestDetectPodMissingRefs_OwnerGrouped(t *testing.T) {
+	defer ResetTestState()
+	now := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	tru := true
+	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Name: "web-abc", Namespace: "prod", CreationTimestamp: now,
+		OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "Deployment", Name: "web", Controller: &tru}},
+	}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "web-abc-1", Namespace: "prod", CreationTimestamp: now,
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-abc", Controller: &tru}},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:    "c",
+			EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "nope"}}}},
+		}}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	client := fake.NewClientset(rs, pod)
+	if err := InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	cache := GetResourceCache()
+	deadline := time.Now().Add(2 * time.Second)
+	var got *Problem
+	for time.Now().Before(deadline) {
+		got = nil
+		for _, p := range DetectMissingRefs(cache, "") {
+			if p.Kind == "Pod" && p.Reason == "Missing ConfigMap" {
+				pp := p
+				got = &pp
+			}
+		}
+		if got != nil && got.OwnerKind != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got == nil {
+		t.Fatal("expected a Missing ConfigMap pod problem")
+	}
+	if got.OwnerGroup != "apps" || got.OwnerKind != "Deployment" || got.OwnerName != "web" {
+		t.Errorf("owner = %s/%s/%s, want apps/Deployment/web (pod missing-refs must fold under the workload)", got.OwnerGroup, got.OwnerKind, got.OwnerName)
+	}
+}
+
 func TestTopOwnerForPodResolved(t *testing.T) {
 	defer ResetTestState()
 	tru := true

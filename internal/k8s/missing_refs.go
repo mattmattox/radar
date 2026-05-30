@@ -139,8 +139,15 @@ func detectPodMissingRefs(cache *ResourceCache, namespace string, now time.Time)
 		age := now.Sub(p.CreationTimestamp.Time)
 		seen := map[string]bool{}
 
+		// Carry the resolved workload owner so missing-ref pod issues fold under
+		// their controller — 50 pods missing the same ConfigMap is ONE workload
+		// issue, not 50 pod rows. Mirrors the owner resolution on the
+		// DetectProblems / scheduling pod paths.
+		ownerGroup, ownerKind, ownerName := podOwnerKindName(cache, p)
 		emit := func(reason, message string) {
-			out = append(out, missingRefProblem("Pod", "", p.Namespace, p.Name, reason, message, age))
+			pr := missingRefProblem("Pod", "", p.Namespace, p.Name, reason, message, age)
+			pr.OwnerGroup, pr.OwnerKind, pr.OwnerName = ownerGroup, ownerKind, ownerName
+			out = append(out, pr)
 		}
 
 		// Volumes: persistentVolumeClaim, configMap, secret

@@ -219,7 +219,7 @@ func buildTopPodItems(store *MetricsHistoryStore, namespace string) (items []Top
 			skippedNoMetrics++
 			continue
 		}
-		entry := topPodFromObject(pod)
+		entry := topPodFromObject(cache, pod)
 		applyPodUsage(&entry, m)
 		items = append(items, entry)
 	}
@@ -387,7 +387,7 @@ func topNodeMetricsOnly(m TopNodeMetrics) TopMetricsItem {
 	}
 }
 
-func topPodFromObject(pod *corev1.Pod) TopMetricsItem {
+func topPodFromObject(cache *ResourceCache, pod *corev1.Pod) TopMetricsItem {
 	item := TopMetricsItem{
 		Kind:      "Pod",
 		Namespace: pod.Namespace,
@@ -396,7 +396,7 @@ func topPodFromObject(pod *corev1.Pod) TopMetricsItem {
 		Status:    string(pod.Status.Phase),
 		Restarts:  podRestartCount(pod),
 		Node:      pod.Spec.NodeName,
-		Owner:     topOwnerForPod(pod),
+		Owner:     topOwnerForPodResolved(cache, pod),
 	}
 	for _, c := range pod.Spec.Containers {
 		if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
