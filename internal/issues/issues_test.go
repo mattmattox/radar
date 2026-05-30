@@ -655,8 +655,8 @@ func TestCompose_LimitTruncates(t *testing.T) {
 }
 
 func TestCompose_DeterministicOrderForTies(t *testing.T) {
-	// Same severity + same last-seen → tiebreak on (kind, ns, name).
-	// All hits are critical, all DurationSeconds=0, so LastSeen ties.
+	// Same severity + same onset → tiebreak on (kind, ns, name).
+	// All hits are critical, all DurationSeconds=0, so FirstSeen ties.
 	p := &fakeProvider{
 		problems: []k8s.Detection{
 			{Kind: "Service", Namespace: "ns", Name: "z", Severity: "critical"},

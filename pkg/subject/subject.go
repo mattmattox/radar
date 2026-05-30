@@ -1,9 +1,12 @@
-// Package subject is the ONE unified resolver consumed by internal/issues AND
-// pkg/topology. It folds the upstream owner-walk (internal/k8s/top_metrics.go:
-// topOwnerForPod), the owner-else-self collapse (internal/issues/identity.go:
-// enrichIdentity + grouping.go:foldGroup), the label-first grouping
-// (pkg/topology/pod_grouping.go:determineGroupKey), and the GitOps/Helm
-// precedence engine (pkg/topology/managedby.go) into a single API:
+// Package subject is the shared resource-identity + grouping vocabulary for the
+// platform. internal/issues is its production consumer today: it keys on
+// ScopeForKind + StableID at depth-0 (see internal/issues/identity.go). The
+// Tier-1 owner-walk and Tier-2 AppOverlay engine are the canonical model that
+// pkg/topology's currently-independent logic (top_metrics.go:topOwnerForPod,
+// pod_grouping.go:determineGroupKey, managedby.go) is meant to migrate ONTO —
+// staged for #823, not yet wired. Until that lands this package is the agreed
+// vocabulary, NOT a second live "truth": topology still resolves its own
+// grouping, so don't treat subject.Resolve as the running topology path yet.
 //
 //	Tier-1 Subject (owner-collapsed root controller, deterministic, label-free)
 //	Tier-2 AppOverlay (declared-key 8-tier precedence, provenance/confidence/conflicts)

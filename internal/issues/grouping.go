@@ -148,15 +148,18 @@ func sortRefs(refs []Ref) {
 	})
 }
 
-// lessIssue is the canonical issue sort: severity desc, last_seen desc, then
-// category / kind / namespace / name for a stable total order. Shared by the
-// flat compose path and the grouped fold so both surfaces order identically.
+// lessIssue is the canonical issue sort: severity desc, then ONSET (first_seen
+// desc) — deliberately NOT last_seen, which bumps to compose-time on every poll
+// and would reshuffle same-severity rows on each refetch. Then category / kind /
+// namespace / name for a stable total order. Matches the shared UI comparator
+// (k8s-ui issues/types.ts:compareIssues) so /api/issues, MCP, and the UI all
+// return one stable queue.
 func lessIssue(a, b Issue) bool {
 	if a.Severity != b.Severity {
 		return SeverityRank(a.Severity) > SeverityRank(b.Severity)
 	}
-	if !a.LastSeen.Equal(b.LastSeen) {
-		return a.LastSeen.After(b.LastSeen)
+	if !a.FirstSeen.Equal(b.FirstSeen) {
+		return a.FirstSeen.After(b.FirstSeen)
 	}
 	if a.Kind != b.Kind {
 		return a.Kind < b.Kind

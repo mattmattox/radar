@@ -22,9 +22,11 @@
 // operational or critical posture?" at every callsite.
 //
 // The Issue type is what /api/issues and the hub's fleet_issues MCP
-// tool emit. Severity is normalized to a 3-tier vocabulary
-// (critical/warning/info) so consumers don't need to translate
-// between the parallel severity scales the underlying sources use.
+// tool emit. Severity is normalized to a 2-tier vocabulary
+// (critical/warning) so consumers don't need to translate between the
+// parallel severity scales the underlying sources use. Info-level
+// detections are posture/inert noise and are dropped at compose (see
+// compose.go) — the issue stream is "what's broken now", not an audit.
 package issues
 
 import (

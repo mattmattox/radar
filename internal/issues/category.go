@@ -200,14 +200,25 @@ func Classify(in classifyInput) Category {
 		switch {
 		case strings.Contains(g, "cert-manager.io"):
 			return CategoryCertificateNotReady
-		case strings.Contains(g, "argoproj.io") || strings.Contains(g, "fluxcd"):
-			// Argo Rollout is a progressive-delivery workload, not a sync
-			// operation — a stalled Rollout is rollout_stalled, not a GitOps
-			// sync failure. Everything else in these groups is reconciler sync.
-			if in.Kind == "Rollout" {
+		case strings.Contains(g, "argoproj.io"):
+			switch in.Kind {
+			case "Application":
+				return CategoryGitOpsSyncFailed
+			case "Rollout":
+				// Progressive-delivery workload, not a sync operation.
 				return CategoryRolloutStalled
 			}
-			return CategoryGitOpsSyncFailed
+			// AppProject/ApplicationSet/etc. are control-plane CRDs, not a sync.
+			return CategoryOperatorConditionFail
+		case strings.Contains(g, "fluxcd"):
+			switch in.Kind {
+			case "Kustomization", "HelmRelease":
+				return CategoryGitOpsSyncFailed
+			}
+			// Source CRDs (GitRepository/OCIRepository/Bucket/HelmChart/
+			// HelmRepository) failing to fetch is a source/reconcile failure,
+			// not a sync — don't inherit the applier's category.
+			return CategoryOperatorConditionFail
 		default:
 			return CategoryOperatorConditionFail
 		}

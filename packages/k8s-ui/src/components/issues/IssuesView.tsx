@@ -70,13 +70,9 @@ export function IssuesView({ issues, anyData, resourceHref, onResourceClick, clu
     <ol className="flex flex-col gap-1.5">
       {sorted.map((issue) => {
         // Stable identity for the React key + open-accordion state, so a row
-        // survives auto-refresh in place. Falls back to subject identity when a
-        // source omits the deterministic id (e.g. a pre-classifier cluster) —
-        // otherwise those rows collide on a shared key and a mounted/expanded
-        // one can be dropped.
-        const rowKey = `${issue.cluster_id ?? ''}:${
-          issue.id || `${issue.group ?? ''}|${issue.kind}|${issue.namespace ?? ''}|${issue.name}|${issue.category}`
-        }`;
+        // survives auto-refresh in place. cluster_id scopes the id across the
+        // fleet (the hub renders issues from many clusters in one list).
+        const rowKey = `${issue.cluster_id ?? ''}:${issue.id}`;
         return (
           <IssueRow
             key={rowKey}
