@@ -11,6 +11,8 @@ package checks
 
 import (
 	"sort"
+
+	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
 // Severity is the canonical Checks severity ladder. Distinct from the raw
@@ -256,11 +258,10 @@ func BuildChecks(findings []EffectiveFinding, catalog map[string]CheckMeta, clus
 	return checks
 }
 
-// refKey dedups resources within a check: group|Kind|namespace|name (mirrors
-// pkg/audit.ResourceKey). ClusterID is constant per BuildChecks call, so it
-// isn't part of the intra-check key.
+// refKey dedups resources within a check. ClusterID is constant per
+// BuildChecks call, so it isn't part of the intra-check key.
 func refKey(r ResourceRef) string {
-	return r.Group + "|" + r.Kind + "|" + r.Namespace + "|" + r.Name
+	return resourceid.ResourceKey(r.Group, r.Kind, r.Namespace, r.Name)
 }
 
 func sortEffectiveFindings(findings []EffectiveFinding) {

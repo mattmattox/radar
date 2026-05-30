@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 
+	"github.com/skyhook-io/radar/pkg/resourceid"
 	"github.com/skyhook-io/radar/pkg/timeutil"
 )
 
@@ -940,7 +941,7 @@ func buildResults(findings []Finding) *ScanResults {
 	// point of truth here instead of every Finding{} literal.
 	for i := range findings {
 		if findings[i].Group == "" {
-			findings[i].Group = GroupForBuiltinKind(findings[i].Kind)
+			findings[i].Group = resourceid.GroupForBuiltinKind(findings[i].Kind)
 		}
 	}
 

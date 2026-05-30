@@ -62,23 +62,6 @@ func GroupByResource(findings []Finding) []ResourceGroup {
 	return groups
 }
 
-// GroupForBuiltinKind maps a built-in Kubernetes Kind to the API group
-// the audit suite scans it under. Returns "" for kinds the suite
-// doesn't recognize — those don't get a populated Finding.Group, which
-// means cross-group collision risk is bounded to the listed built-ins
-// vs. third-party CRDs sharing the same Kind name.
-//
-// Kept here (next to ResourceKey) so the Kind→Group mapping lives in
-// one place rather than every Finding{} emission site. buildResults
-// populates Finding.Group via this helper before the index is built;
-// per-check code stays terse and group-agnostic.
-//
-// Also reused by internal/issues to resolve Group on Detection-sourced
-// rows that pre-date group-aware emission — keeps the (Kind→Group)
-// table in one place across packages.
-func GroupForBuiltinKind(kind string) string {
-	return resourceid.GroupForBuiltinKind(kind)
-}
 
 // ApplySettings filters audit results based on ignored namespaces (with wildcard
 // patterns like *-system) and disabled checks. This is the shared implementation

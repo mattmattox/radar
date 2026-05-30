@@ -39,33 +39,3 @@ func TestIndexByResource_NoCrossGroupCollision(t *testing.T) {
 		t.Errorf("knative lookup: got %+v, want 1 finding with CheckID=knative-finding", knative)
 	}
 }
-
-// TestGroupForBuiltinKind pins the (Kind→Group) table used by
-// buildResults to populate Finding.Group for emission sites that leave
-// it empty. Centralising the table here keeps per-check code terse;
-// drift between this table and the actual API group a check scans
-// would silently mis-key findings.
-func TestGroupForBuiltinKind(t *testing.T) {
-	cases := map[string]string{
-		"Pod":                     "",
-		"Service":                 "",
-		"ConfigMap":               "",
-		"Secret":                  "",
-		"Deployment":              "apps",
-		"StatefulSet":             "apps",
-		"DaemonSet":               "apps",
-		"ReplicaSet":              "apps",
-		"Job":                     "batch",
-		"CronJob":                 "batch",
-		"HorizontalPodAutoscaler": "autoscaling",
-		"Ingress":                 "networking.k8s.io",
-		"NetworkPolicy":           "networking.k8s.io",
-		"PodDisruptionBudget":     "policy",
-		"UnknownCRD":              "",
-	}
-	for kind, want := range cases {
-		if got := GroupForBuiltinKind(kind); got != want {
-			t.Errorf("GroupForBuiltinKind(%q) = %q, want %q", kind, got, want)
-		}
-	}
-}

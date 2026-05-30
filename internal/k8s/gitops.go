@@ -152,11 +152,12 @@ func argoErrorCondition(app *unstructured.Unstructured) (condType, message strin
 }
 
 // detectFluxProblems flags Flux Kustomizations/HelmReleases whose Ready condition
-// is False for a genuine (non-in-progress) reason. Unlike the shared
-// packages.IsTransientConditionReason set used for health display, this uses a
-// NARROW in-progress set so genuinely-stuck states it treats as transient
-// (ArtifactFailed, ChartNotReady) DO surface as issues. Skips suspended objects
-// and stale-generation conditions (controller hasn't observed the current spec).
+// is False for a genuine (non-in-progress) reason. Unlike the broad
+// conditions.IsTransientConditionReason set used for health display, this uses a
+// NARROW in-progress set (conditions.IsInProgressForIssues) so genuinely-stuck
+// states the health path treats as transient (ArtifactFailed, ChartNotReady) DO
+// surface as issues. Skips suspended objects and stale-generation conditions
+// (controller hasn't observed the current spec).
 func detectFluxProblems(items []*unstructured.Unstructured, kind, group string, now time.Time) []Detection {
 	var out []Detection
 	for _, obj := range items {
