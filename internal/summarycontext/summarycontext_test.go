@@ -31,10 +31,10 @@ import (
 // behavior — needed so the cluster-scoped-filter regression test can
 // pin the actual bug.
 type fakeIssuesProvider struct {
-	problems []k8s.Problem
+	problems []k8s.Detection
 }
 
-func (f *fakeIssuesProvider) DetectProblems(namespaces []string) []k8s.Problem {
+func (f *fakeIssuesProvider) DetectProblems(namespaces []string) []k8s.Detection {
 	if len(namespaces) == 0 {
 		return f.problems
 	}
@@ -42,7 +42,7 @@ func (f *fakeIssuesProvider) DetectProblems(namespaces []string) []k8s.Problem {
 	for _, ns := range namespaces {
 		allowed[ns] = true
 	}
-	out := make([]k8s.Problem, 0, len(f.problems))
+	out := make([]k8s.Detection, 0, len(f.problems))
 	for _, p := range f.problems {
 		if p.Namespace == "" {
 			continue
@@ -53,10 +53,10 @@ func (f *fakeIssuesProvider) DetectProblems(namespaces []string) []k8s.Problem {
 	}
 	return out
 }
-func (f *fakeIssuesProvider) DetectCAPIProblems(_ []string) []k8s.Problem   { return nil }
-func (f *fakeIssuesProvider) DetectGitOpsProblems(_ []string) []k8s.Problem { return nil }
-func (f *fakeIssuesProvider) DetectMissingRefs(_ []string) []k8s.Problem    { return nil }
-func (f *fakeIssuesProvider) DetectScheduling(_ []string) []k8s.Problem     { return nil }
+func (f *fakeIssuesProvider) DetectCAPIProblems(_ []string) []k8s.Detection   { return nil }
+func (f *fakeIssuesProvider) DetectGitOpsProblems(_ []string) []k8s.Detection { return nil }
+func (f *fakeIssuesProvider) DetectMissingRefs(_ []string) []k8s.Detection    { return nil }
+func (f *fakeIssuesProvider) DetectScheduling(_ []string) []k8s.Detection     { return nil }
 func (f *fakeIssuesProvider) WarningEvents(_ []string, _ time.Duration) []*corev1.Event {
 	return nil
 }
@@ -106,7 +106,7 @@ func TestBuildIssueIndex_GroupAware(t *testing.T) {
 	// Inject via a fake issues.Provider rather than the cache plumbing —
 	// keeps the test focused on the index-key arithmetic.
 	p := &fakeIssuesProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Service", Group: "", Namespace: "prod", Name: "api", Reason: "Endpoints", Severity: "warning"},
 			{Kind: "Service", Group: "serving.knative.dev", Namespace: "prod", Name: "api", Reason: "RevisionFailed", Severity: "warning"},
 			{Kind: "Service", Group: "serving.knative.dev", Namespace: "prod", Name: "api", Reason: "RouteNotReady", Severity: "warning"},
@@ -128,9 +128,9 @@ func TestBuildIssueIndex_GroupAware(t *testing.T) {
 // out counts for tail resources. The fix is Limit:NoLimit — the index
 // is a bucketed count, not a paginated list.
 func TestBuildIssueIndex_BeyondMaxLimit(t *testing.T) {
-	probs := make([]k8s.Problem, 0, issues.MaxLimit+50)
+	probs := make([]k8s.Detection, 0, issues.MaxLimit+50)
 	for i := 0; i < issues.MaxLimit+50; i++ {
-		probs = append(probs, k8s.Problem{
+		probs = append(probs, k8s.Detection{
 			Kind: "Pod", Namespace: "prod", Name: fmtPodName(i), Reason: "ImagePullBackOff", Severity: "warning",
 		})
 	}
@@ -171,7 +171,7 @@ func TestCanonicalSingular(t *testing.T) {
 // dropped because Compose's per-namespace problem walk never sees them.
 func TestBuildIssueIndex_ClusterScopedIssueSurfacedWhenUnfiltered(t *testing.T) {
 	p := &fakeIssuesProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			// Cluster-scoped Node issue: namespace="" — the actual shape
 			// k8s.DetectProblems emits for NodeNotReady / DiskPressure etc.
 			{Kind: "Node", Namespace: "", Name: "worker-1", Reason: "NotReady", Severity: "critical"},
@@ -209,7 +209,7 @@ func TestBuildIssueIndex_ClusterScopedIssueSurfacedWhenUnfiltered(t *testing.T) 
 // Kind (Pascal "Application") so the index and the query agree.
 func TestBuildIssueIndex_CRDPlural_NonZeroCount(t *testing.T) {
 	p := &fakeIssuesProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Application", Group: "argoproj.io", Namespace: "argocd", Name: "storefront", Reason: "SyncFailed", Severity: "critical"},
 		},
 	}
@@ -243,7 +243,7 @@ func TestBuildIssueIndex_CRDPlural_NonZeroCount(t *testing.T) {
 // filter drops them.
 func TestNewSearchSummaryContextBuilder_BuildsDualIndex(t *testing.T) {
 	p := &fakeIssuesProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Node", Group: "", Namespace: "", Name: "worker-1", Reason: "NotReady", Severity: "critical"},
 			{Kind: "Pod", Group: "", Namespace: "prod", Name: "api-7", Reason: "ImagePullBackOff", Severity: "warning"},
 		},

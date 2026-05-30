@@ -125,7 +125,7 @@ func TestDetectGitOpsProblems(t *testing.T) {
 
 	problems := DetectGitOpsProblems(dynCache, discovery, "")
 
-	bySubject := map[string]Problem{}
+	bySubject := map[string]Detection{}
 	for _, p := range problems {
 		bySubject[p.Name] = p
 	}

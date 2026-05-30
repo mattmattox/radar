@@ -135,9 +135,9 @@ func TestGroupIssues_Deterministic(t *testing.T) {
 }
 
 func TestComposeWithStats_GroupedCapsOnGroups(t *testing.T) {
-	var probs []k8s.Problem
+	var probs []k8s.Detection
 	for i := 0; i < 5; i++ {
-		probs = append(probs, k8s.Problem{
+		probs = append(probs, k8s.Detection{
 			Kind: "Pod", Namespace: "ns", Name: fmt.Sprintf("web-%d", i),
 			Severity: "critical", Reason: "ImagePullBackOff",
 			OwnerKind: "Deployment", OwnerName: "web",

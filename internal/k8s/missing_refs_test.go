@@ -206,7 +206,7 @@ func TestDetectMissingRefs(t *testing.T) {
 	// 4 from the new ones (imagePullSecret, headless Service, TLS Secret,
 	// backend port match).
 	deadline := time.Now().Add(2 * time.Second)
-	var problems []Problem
+	var problems []Detection
 	for time.Now().Before(deadline) {
 		problems = DetectMissingRefs(cache, "")
 		if len(problems) >= 12 {
@@ -369,7 +369,7 @@ func TestDetectPodMissingRefs_OwnerGrouped(t *testing.T) {
 	}
 	cache := GetResourceCache()
 	deadline := time.Now().Add(2 * time.Second)
-	var got *Problem
+	var got *Detection
 	for time.Now().Before(deadline) {
 		got = nil
 		for _, p := range DetectMissingRefs(cache, "") {
@@ -602,7 +602,7 @@ func webhookWithURL(name string) map[string]any {
 
 // --- helpers ---
 
-func findProblem(ps []Problem, kind, ns, name, reason string) bool {
+func findProblem(ps []Detection, kind, ns, name, reason string) bool {
 	for _, p := range ps {
 		if p.Kind == kind && p.Namespace == ns && p.Name == name && p.Reason == reason {
 			return true

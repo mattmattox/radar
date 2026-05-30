@@ -15,21 +15,21 @@ import (
 // pre-stages what the corresponding method returns. Test cases assemble
 // one of these and pass it to Compose.
 type fakeProvider struct {
-	problems       []k8s.Problem
-	missingRefs    []k8s.Problem
-	scheduling     []k8s.Problem
-	capiProblems   []k8s.Problem
-	gitopsProblems []k8s.Problem
+	problems       []k8s.Detection
+	missingRefs    []k8s.Detection
+	scheduling     []k8s.Detection
+	capiProblems   []k8s.Detection
+	gitopsProblems []k8s.Detection
 	dynamic        map[schema.GroupVersionResource][]*unstructured.Unstructured
 	kinds          map[schema.GroupVersionResource]string
 	namespaced     map[schema.GroupVersionResource]bool
 }
 
-func (f *fakeProvider) DetectProblems(_ []string) []k8s.Problem       { return f.problems }
-func (f *fakeProvider) DetectMissingRefs(_ []string) []k8s.Problem    { return f.missingRefs }
-func (f *fakeProvider) DetectScheduling(_ []string) []k8s.Problem     { return f.scheduling }
-func (f *fakeProvider) DetectCAPIProblems(_ []string) []k8s.Problem   { return f.capiProblems }
-func (f *fakeProvider) DetectGitOpsProblems(_ []string) []k8s.Problem { return f.gitopsProblems }
+func (f *fakeProvider) DetectProblems(_ []string) []k8s.Detection       { return f.problems }
+func (f *fakeProvider) DetectMissingRefs(_ []string) []k8s.Detection    { return f.missingRefs }
+func (f *fakeProvider) DetectScheduling(_ []string) []k8s.Detection     { return f.scheduling }
+func (f *fakeProvider) DetectCAPIProblems(_ []string) []k8s.Detection   { return f.capiProblems }
+func (f *fakeProvider) DetectGitOpsProblems(_ []string) []k8s.Detection { return f.gitopsProblems }
 func (f *fakeProvider) WatchedDynamic() []schema.GroupVersionResource {
 	out := make([]schema.GroupVersionResource, 0, len(f.dynamic))
 	for g := range f.dynamic {
@@ -53,7 +53,7 @@ func (f *fakeProvider) NamespacedForGVR(gvr schema.GroupVersionResource) (bool, 
 
 func TestCompose_NormalizesProblemSeverity(t *testing.T) {
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Deployment", Namespace: "ns", Name: "a", Severity: "critical", Reason: "down"},
 			{Kind: "Deployment", Namespace: "ns", Name: "b", Severity: "high", Reason: "slow"},
 			{Kind: "Deployment", Namespace: "ns", Name: "c", Severity: "medium", Reason: "warn"},
@@ -76,9 +76,9 @@ func TestCompose_PopulatesCategoryAndGroup(t *testing.T) {
 	// Every composed row carries the derived symptom category + its rollup
 	// group, classified from the detection signal across all sources.
 	p := &fakeProvider{
-		problems:    []k8s.Problem{{Kind: "Pod", Namespace: "ns", Name: "img", Severity: "high", Reason: "ImagePullBackOff"}},
-		scheduling:  []k8s.Problem{{Kind: "Pod", Namespace: "ns", Name: "sched", Severity: "high", Reason: "Unschedulable"}},
-		missingRefs: []k8s.Problem{{Kind: "Pod", Namespace: "ns", Name: "ref", Severity: "high", Reason: "Missing ConfigMap"}},
+		problems:    []k8s.Detection{{Kind: "Pod", Namespace: "ns", Name: "img", Severity: "high", Reason: "ImagePullBackOff"}},
+		scheduling:  []k8s.Detection{{Kind: "Pod", Namespace: "ns", Name: "sched", Severity: "high", Reason: "Unschedulable"}},
+		missingRefs: []k8s.Detection{{Kind: "Pod", Namespace: "ns", Name: "ref", Severity: "high", Reason: "Missing ConfigMap"}},
 	}
 	got := map[string]Issue{}
 	for _, i := range Compose(p, Filters{}) {
@@ -106,7 +106,7 @@ func TestCompose_GroupsMemberPodsUnderOwner(t *testing.T) {
 	// ID (the future collapse target); a third pod failing differently gets
 	// its own. Owner + scope are propagated onto every member row.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Namespace: "ns", Name: "web-a", Severity: "critical", Reason: "ImagePullBackOff", OwnerKind: "Deployment", OwnerName: "web"},
 			{Kind: "Pod", Namespace: "ns", Name: "web-b", Severity: "critical", Reason: "ImagePullBackOff", OwnerKind: "Deployment", OwnerName: "web"},
 			{Kind: "Pod", Namespace: "ns", Name: "web-c", Severity: "critical", Reason: "CrashLoopBackOff", OwnerKind: "Deployment", OwnerName: "web"},
@@ -136,7 +136,7 @@ func TestCompose_GroupedKindFilterMatchesSubject(t *testing.T) {
 	// that issue (the public filter sees the subject), and kind=Pod must NOT —
 	// filtering the flat Pod evidence before grouping would invert both.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Namespace: "ns", Name: "web-a", Severity: "critical", Reason: "CrashLoopBackOff", OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web"},
 			{Kind: "Pod", Namespace: "ns", Name: "web-b", Severity: "critical", Reason: "CrashLoopBackOff", OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web"},
 		},
@@ -161,7 +161,7 @@ func TestCompose_DropsInfoSeverityFromQueue(t *testing.T) {
 	// singleton-StatefulSet headless-DNS trivia) — excluded from the live issue
 	// stream, which stays critical|warning.
 	p := &fakeProvider{
-		missingRefs: []k8s.Problem{
+		missingRefs: []k8s.Detection{
 			{Kind: "StatefulSet", Group: "apps", Namespace: "ns", Name: "inert", Severity: "info", Reason: "Missing headless Service"},
 			{Kind: "Pod", Namespace: "ns", Name: "real", Severity: "critical", Reason: "Missing ConfigMap"},
 		},
@@ -178,12 +178,12 @@ func TestCompose_PodSchedulingWinsOverProblem(t *testing.T) {
 	// The scheduling row is richer, so the generic problem row for the SAME
 	// pod must be dropped — without collapsing unrelated rows.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Namespace: "ns", Name: "stuck", Severity: "high", Reason: "Pending"},
 			{Kind: "Pod", Namespace: "ns", Name: "other", Severity: "high", Reason: "CrashLoopBackOff"},
 			{Kind: "Deployment", Namespace: "ns", Name: "stuck", Severity: "critical", Reason: "down"},
 		},
-		scheduling: []k8s.Problem{
+		scheduling: []k8s.Detection{
 			{Kind: "Pod", Namespace: "ns", Name: "stuck", Severity: "high", Reason: "VolumeMount"},
 		},
 	}
@@ -226,7 +226,7 @@ func TestCompose_SuppressesWorkloadDegradedWhenChildSymptomExists(t *testing.T) 
 	// specific child symptom names the root cause on the same subject — keep
 	// the crashloop, drop the workload_degraded.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			// Parent rollup on the Deployment itself.
 			{Kind: "Deployment", Namespace: "ns", Name: "web", Group: "apps", Severity: "critical", Reason: "1/3 available"},
 			// Child symptom on a member pod, owned by the same Deployment.
@@ -259,7 +259,7 @@ func TestCompose_KeepsCriticalParentWhenOnlyChildIsWarning(t *testing.T) {
 	// incident from critical to warning. The severity gate in
 	// dedupeWorkloadDegradedOverChild only suppresses on an equal-or-worse child.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Deployment", Namespace: "ns", Name: "web", Group: "apps", Severity: "critical", Reason: "0/5 available"},
 			// Child classifies to container_waiting at WARNING severity.
 			{Kind: "Pod", Namespace: "ns", Name: "web-abc", Severity: "warning", Reason: "ContainerCreating", OwnerKind: "Deployment", OwnerName: "web"},
@@ -294,7 +294,7 @@ func TestCompose_KeepsWorkloadDegradedWhenNoChildSymptom(t *testing.T) {
 	// failing in a classifiable way) must KEEP its workload_degraded row — the
 	// dedup only suppresses the parent when a child names the cause.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Deployment", Namespace: "ns", Name: "web", Group: "apps", Severity: "critical", Reason: "1/3 available"},
 			// An unrelated pod under a DIFFERENT owner — must not suppress web's row.
 			{Kind: "Pod", Namespace: "ns", Name: "api-xyz", Severity: "critical", Reason: "CrashLoopBackOff", OwnerKind: "Deployment", OwnerName: "api"},
@@ -315,7 +315,7 @@ func TestCompose_KeepsWorkloadDegradedWhenNoChildSymptom(t *testing.T) {
 func TestCompose_SuppressesRolloutStalledWhenChildSymptomExists(t *testing.T) {
 	// rollout_stalled is also a parent rollup — same suppression rule.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Deployment", Namespace: "ns", Name: "web", Group: "apps", Severity: "critical", Reason: "Rollout stuck"},
 			{Kind: "Pod", Namespace: "ns", Name: "web-abc", Severity: "critical", Reason: "ImagePullBackOff", OwnerKind: "Deployment", OwnerName: "web"},
 		},
@@ -339,10 +339,10 @@ func TestCompose_SchedulingComposedByDefault(t *testing.T) {
 		return n
 	}
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Deployment", Namespace: "prod", Name: "api", Severity: "critical", Reason: "Unavailable"},
 		},
-		scheduling: []k8s.Problem{
+		scheduling: []k8s.Detection{
 			{Kind: "Pod", Namespace: "prod", Name: "web-x", Severity: "high", Reason: "Unschedulable", Message: "no node has kubernetes.io/arch=arm64"},
 		},
 	}
@@ -357,10 +357,10 @@ func TestCompose_SchedulingComposedByDefault(t *testing.T) {
 
 func TestCompose_MissingRefsComposedByDefault(t *testing.T) {
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Service", Namespace: "prod", Name: "api", Severity: "warning", Reason: "Selector matches no pods"},
 		},
-		missingRefs: []k8s.Problem{
+		missingRefs: []k8s.Detection{
 			{Kind: "Pod", Namespace: "prod", Name: "web", Severity: "critical", Reason: "Missing PVC"},
 		},
 	}
@@ -551,7 +551,7 @@ func TestCompose_CAPIGroupSkippedByGenericFallback(t *testing.T) {
 
 func TestCompose_DropsUnauthorizedClusterScopedIssues(t *testing.T) {
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Deployment", Namespace: "team-a", Name: "api", Severity: "critical", Reason: "down"},
 			{Kind: "Node", Name: "worker-1", Severity: "critical", Reason: "not ready"},
 		},
@@ -604,7 +604,7 @@ func TestCompose_DropsUnauthorizedClusterScopedCRDConditions(t *testing.T) {
 
 func TestCompose_SeveritySortedDescending(t *testing.T) {
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Name: "warn1", Severity: "high"},
 			{Kind: "Pod", Name: "crit1", Severity: "critical"},
 			{Kind: "Pod", Name: "warn2", Severity: "medium"},
@@ -618,7 +618,7 @@ func TestCompose_SeveritySortedDescending(t *testing.T) {
 
 func TestCompose_SeverityFilter(t *testing.T) {
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Name: "a", Severity: "critical"},
 			{Kind: "Pod", Name: "b", Severity: "medium"},
 		},
@@ -631,7 +631,7 @@ func TestCompose_SeverityFilter(t *testing.T) {
 
 func TestCompose_KindFilter(t *testing.T) {
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Name: "p", Severity: "critical"},
 			{Kind: "Deployment", Name: "d", Severity: "critical"},
 		},
@@ -643,9 +643,9 @@ func TestCompose_KindFilter(t *testing.T) {
 }
 
 func TestCompose_LimitTruncates(t *testing.T) {
-	probs := make([]k8s.Problem, 0, 50)
+	probs := make([]k8s.Detection, 0, 50)
 	for i := 0; i < 50; i++ {
-		probs = append(probs, k8s.Problem{Kind: "Pod", Name: "p", Severity: "critical"})
+		probs = append(probs, k8s.Detection{Kind: "Pod", Name: "p", Severity: "critical"})
 	}
 	p := &fakeProvider{problems: probs}
 	out := Compose(p, Filters{Limit: 10})
@@ -658,7 +658,7 @@ func TestCompose_DeterministicOrderForTies(t *testing.T) {
 	// Same severity + same last-seen → tiebreak on (kind, ns, name).
 	// All hits are critical, all DurationSeconds=0, so LastSeen ties.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Service", Namespace: "ns", Name: "z", Severity: "critical"},
 			{Kind: "Pod", Namespace: "ns", Name: "a", Severity: "critical"},
 			{Kind: "Pod", Namespace: "ns", Name: "b", Severity: "critical"},
@@ -694,7 +694,7 @@ func TestFlattenNamespacedProblems_DropsClusterScopedEntries(t *testing.T) {
 	// namespace-bounded caller asking for {ns1, ns2} would see Node
 	// problems twice AND see them at all (RBAC violation if the user
 	// lacks `list nodes` at cluster scope).
-	perNs := [][]k8s.Problem{
+	perNs := [][]k8s.Detection{
 		{
 			{Kind: "Pod", Namespace: "ns1", Name: "p1", Severity: "critical"},
 			{Kind: "Node", Name: "node-1", Severity: "high"}, // empty Namespace
@@ -721,7 +721,7 @@ func TestFlattenNamespacedProblems_DropsClusterScopedEntries(t *testing.T) {
 func TestFlattenNamespacedProblems_PreservesNamespacedAcrossSlices(t *testing.T) {
 	// Namespaced rows from different per-namespace calls all survive
 	// — no over-zealous dedup.
-	perNs := [][]k8s.Problem{
+	perNs := [][]k8s.Detection{
 		{{Kind: "Pod", Namespace: "ns1", Name: "a"}},
 		{{Kind: "Pod", Namespace: "ns2", Name: "a"}}, // same name, different ns
 		{{Kind: "Service", Namespace: "ns3", Name: "svc"}},
@@ -736,7 +736,7 @@ func TestFlattenNamespacedProblems_EmptyInputReturnsNil(t *testing.T) {
 	if out := flattenNamespacedProblems(nil); len(out) != 0 {
 		t.Errorf("nil input should produce empty output, got %+v", out)
 	}
-	if out := flattenNamespacedProblems([][]k8s.Problem{}); len(out) != 0 {
+	if out := flattenNamespacedProblems([][]k8s.Detection{}); len(out) != 0 {
 		t.Errorf("empty input should produce empty output, got %+v", out)
 	}
 }

@@ -16,8 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// Problem is a transport-neutral cluster issue.
-type Problem struct {
+// Detection is a transport-neutral cluster issue.
+type Detection struct {
 	Kind            string
 	Namespace       string
 	Name            string
@@ -64,8 +64,8 @@ func podOwnerKindName(cache *ResourceCache, pod *corev1.Pod) (group, kind, name 
 // Covers: Deployments, StatefulSets, DaemonSets, HPAs, CronJobs, Nodes.
 // Does NOT include pods (consumers handle pod problems differently).
 // namespace="" scans all namespaces.
-func DetectProblems(cache *ResourceCache, namespace string) []Problem {
-	var problems []Problem
+func DetectProblems(cache *ResourceCache, namespace string) []Detection {
+	var problems []Detection
 	now := time.Now()
 
 	// Deployment problems: unavailableReplicas > 0
@@ -86,7 +86,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 						break
 					}
 				}
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind:            "Deployment",
 					Namespace:       d.Namespace,
 					Name:            d.Name,
@@ -106,7 +106,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 					if !cond.LastTransitionTime.IsZero() {
 						durDur = now.Sub(cond.LastTransitionTime.Time)
 					}
-					problems = append(problems, Problem{
+					problems = append(problems, Detection{
 						Kind:            "Deployment",
 						Namespace:       d.Namespace,
 						Name:            d.Name,
@@ -136,7 +136,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 		for _, ss := range ssets {
 			if ss.Status.ReadyReplicas < ss.Status.Replicas {
 				ageDur := now.Sub(ss.CreationTimestamp.Time)
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind:            "StatefulSet",
 					Namespace:       ss.Namespace,
 					Name:            ss.Name,
@@ -163,7 +163,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 		for _, ds := range dsets {
 			if ds.Status.NumberUnavailable > 0 {
 				ageDur := now.Sub(ds.CreationTimestamp.Time)
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind:            "DaemonSet",
 					Namespace:       ds.Namespace,
 					Name:            ds.Name,
@@ -202,7 +202,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 			}
 			restartCount, lastTermReason := PodRestartContext(pod)
 			ownerGroup, ownerKind, ownerName := podOwnerKindName(cache, pod)
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind:                 "Pod",
 				Namespace:            pod.Namespace,
 				Name:                 pod.Name,
@@ -256,7 +256,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 					reason = "Backing workload scaled to 0"
 					message = "selector matches a Deployment/StatefulSet that is intentionally scaled to 0 replicas"
 				}
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind:            "Service",
 					Namespace:       svc.Namespace,
 					Name:            svc.Name,
@@ -277,7 +277,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 				}
 			}
 			if ready == 0 {
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind:            "Service",
 					Namespace:       svc.Namespace,
 					Name:            svc.Name,
@@ -290,7 +290,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 				})
 			}
 			if missing := unresolvedNamedTargetPorts(svc, selected); len(missing) > 0 {
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind:            "Service",
 					Namespace:       svc.Namespace,
 					Name:            svc.Name,
@@ -323,7 +323,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 			if hp.Problem == "cannot-scale" {
 				severity = "critical"
 			}
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind:      "HorizontalPodAutoscaler",
 				Namespace: hp.Namespace,
 				Name:      hp.Name,
@@ -344,7 +344,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 			cronjobs, _ = cjLister.List(labels.Everything())
 		}
 		for _, cp := range DetectCronJobProblems(cronjobs) {
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind:      "CronJob",
 				Namespace: cp.Namespace,
 				Name:      cp.Name,
@@ -367,7 +367,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 					break
 				}
 			}
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind:       "Node",
 				Name:       np.NodeName,
 				Severity:   np.Severity,
@@ -390,7 +390,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 		for _, pvc := range pvcs {
 			ageDur := now.Sub(pvc.CreationTimestamp.Time)
 			if pvc.Status.Phase == corev1.ClaimLost {
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind:            "PersistentVolumeClaim",
 					Namespace:       pvc.Namespace,
 					Name:            pvc.Name,
@@ -406,7 +406,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 			}
 			if pvc.Status.Phase == corev1.ClaimPending {
 				if ageDur > 5*time.Minute {
-					problems = append(problems, Problem{
+					problems = append(problems, Detection{
 						Kind:            "PersistentVolumeClaim",
 						Namespace:       pvc.Namespace,
 						Name:            pvc.Name,
@@ -441,7 +441,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 				if reason == "" {
 					reason = "Failed"
 				}
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind:            "Job",
 					Namespace:       job.Namespace,
 					Name:            job.Name,
@@ -458,7 +458,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Problem {
 			}
 			if job.Status.Active > 0 && job.Status.Succeeded == 0 && job.Status.Failed == 0 {
 				if ageDur > time.Hour {
-					problems = append(problems, Problem{
+					problems = append(problems, Detection{
 						Kind:            "Job",
 						Namespace:       job.Namespace,
 						Name:            job.Name,
@@ -617,12 +617,12 @@ func failedJobCondition(job *batchv1.Job) *batchv1.JobCondition {
 // Checks both status.phase and the rich condition system (Ready, InfrastructureReady,
 // ControlPlaneReady, BootstrapReady, NodeHealthy, TopologyReconciled).
 // Returns nil if CAPI is not installed in the cluster.
-func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceDiscovery, namespace string) []Problem {
+func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceDiscovery, namespace string) []Detection {
 	if dynamicCache == nil || discovery == nil {
 		return nil
 	}
 
-	var problems []Problem
+	var problems []Detection
 	now := time.Now()
 
 	// Helper: list CAPI resources by kind
@@ -703,7 +703,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 		// Phase-based: Failed
 		phase, _, _ := unstructured.NestedString(cl.Object, "status", "phase")
 		if strings.EqualFold(phase, "failed") {
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind: "Cluster", Namespace: cl.GetNamespace(), Name: cl.GetName(), Group: capiGroup,
 				Severity: "critical", Reason: "Cluster in Failed phase",
 				Age: FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
@@ -728,7 +728,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 			if d == 0 {
 				d = ageDur
 			}
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind: "Cluster", Namespace: cl.GetNamespace(), Name: cl.GetName(), Group: capiGroup,
 				Severity: severity, Reason: displayReason, Message: msg,
 				Age: FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
@@ -748,7 +748,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 		if strings.EqualFold(phase, "failed") {
 			// Include the condition message for richer context
 			_, _, msg, _, _ := findFalseCondition(m, "Ready", "InfrastructureReady", "BootstrapReady")
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind: "Machine", Namespace: m.GetNamespace(), Name: m.GetName(), Group: capiGroup,
 				Severity: "critical", Reason: "Machine in Failed phase", Message: msg,
 				Age: FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
@@ -764,7 +764,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 			if reason != "" {
 				displayReason += " (" + reason + ")"
 			}
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind: "Machine", Namespace: m.GetNamespace(), Name: m.GetName(), Group: capiGroup,
 				Severity: "high", Reason: displayReason, Message: msg,
 				Age: FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
@@ -790,7 +790,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 			if d == 0 {
 				d = ageDur
 			}
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind: "Machine", Namespace: m.GetNamespace(), Name: m.GetName(), Group: capiGroup,
 				Severity: severity, Reason: displayReason, Message: msg,
 				Age: FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
@@ -813,7 +813,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 				if reason != "" {
 					displayReason += " (" + reason + ")"
 				}
-				problems = append(problems, Problem{
+				problems = append(problems, Detection{
 					Kind: "MachineDeployment", Namespace: md.GetNamespace(), Name: md.GetName(), Group: capiGroup,
 					Severity: "high", Reason: displayReason, Message: msg,
 					Age: FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
@@ -846,7 +846,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 			if d == 0 {
 				d = ageDur
 			}
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind: "KubeadmControlPlane", Namespace: kcp.GetNamespace(), Name: kcp.GetName(), Group: capiCPGroup,
 				Severity: severity, Reason: displayReason, Message: msg,
 				Age: FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
@@ -863,7 +863,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 		healthy, _, _ := unstructured.NestedInt64(mhc.Object, "status", "currentHealthy")
 		if expected > 0 && healthy < expected {
 			ageDur := now.Sub(mhc.GetCreationTimestamp().Time)
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind: "MachineHealthCheck", Namespace: mhc.GetNamespace(), Name: mhc.GetName(), Group: capiGroup,
 				Severity:        "high",
 				Reason:          fmt.Sprintf("Remediating: %d/%d healthy", healthy, expected),
@@ -895,7 +895,7 @@ const (
 // skips exactly the kinds handled here (isCuratedCRDKind) so there is no
 // double-report, while leaving sibling kinds (e.g. Argo Rollout) to the generic
 // path.
-func DetectGitOpsProblems(dynamicCache *DynamicResourceCache, discovery *ResourceDiscovery, namespace string) []Problem {
+func DetectGitOpsProblems(dynamicCache *DynamicResourceCache, discovery *ResourceDiscovery, namespace string) []Detection {
 	if dynamicCache == nil || discovery == nil {
 		return nil
 	}
@@ -913,15 +913,15 @@ func DetectGitOpsProblems(dynamicCache *DynamicResourceCache, discovery *Resourc
 		return items
 	}
 
-	var problems []Problem
+	var problems []Detection
 	problems = append(problems, detectArgoAppProblems(list("Application", argoGroup), now)...)
 	problems = append(problems, detectFluxProblems(list("Kustomization", fluxKustGrp), "Kustomization", fluxKustGrp, now)...)
 	problems = append(problems, detectFluxProblems(list("HelmRelease", fluxHelmGrp), "HelmRelease", fluxHelmGrp, now)...)
 	return problems
 }
 
-func gitopsProblem(kind, group, ns, name, severity, reason, message string, age time.Duration) Problem {
-	return Problem{
+func gitopsProblem(kind, group, ns, name, severity, reason, message string, age time.Duration) Detection {
+	return Detection{
 		Kind:            kind,
 		Group:           group,
 		Namespace:       ns,
@@ -944,8 +944,8 @@ func gitopsProblem(kind, group, ns, name, severity, reason, message string, age 
 // always flag a ComparisonError/InvalidSpecError condition (the sync=Unknown
 // app-path-not-found case the generic path also can't see). One row per app,
 // most-specific cause first.
-func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []Problem {
-	var out []Problem
+func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []Detection {
+	var out []Detection
 	for _, app := range apps {
 		ns, name := app.GetNamespace(), app.GetName()
 		age := now.Sub(app.GetCreationTimestamp().Time)
@@ -1026,8 +1026,8 @@ func argoErrorCondition(app *unstructured.Unstructured) (condType, message strin
 // NARROW in-progress set so genuinely-stuck states it treats as transient
 // (ArtifactFailed, ChartNotReady) DO surface as issues. Skips suspended objects
 // and stale-generation conditions (controller hasn't observed the current spec).
-func detectFluxProblems(items []*unstructured.Unstructured, kind, group string, now time.Time) []Problem {
-	var out []Problem
+func detectFluxProblems(items []*unstructured.Unstructured, kind, group string, now time.Time) []Detection {
+	var out []Detection
 	for _, obj := range items {
 		if suspend, ok, _ := unstructured.NestedBool(obj.Object, "spec", "suspend"); ok && suspend {
 			continue

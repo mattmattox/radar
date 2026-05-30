@@ -433,11 +433,11 @@ func sortedKeys(m map[string]string) []string {
 // (arch/zone/taint/resources) instead of just "Pending". namespace="" scans
 // all namespaces. Post-bind (ContainerCreating/CNI/volume) and admission
 // (quota with no Pod) failures are handled by separate detectors.
-func DetectSchedulingProblems(cache *ResourceCache, namespace string) []Problem {
+func DetectSchedulingProblems(cache *ResourceCache, namespace string) []Detection {
 	if cache == nil {
 		return nil
 	}
-	var problems []Problem
+	var problems []Detection
 	now := time.Now()
 	nodes := schedulingNodeFacts(cache)
 
@@ -462,7 +462,7 @@ func DetectSchedulingProblems(cache *ResourceCache, namespace string) []Problem 
 				dur = now.Sub(cond.LastTransitionTime.Time)
 			}
 			ownerGroup, ownerKind, ownerName := podOwnerKindName(cache, pod)
-			problems = append(problems, Problem{
+			problems = append(problems, Detection{
 				Kind:            "Pod",
 				Namespace:       pod.Namespace,
 				Name:            pod.Name,
@@ -665,14 +665,14 @@ const admissionFailureWindow = 30 * time.Minute
 
 // DetectAdmissionProblems flags pod-template rejections at admission time.
 // namespace="" scans all namespaces.
-func DetectAdmissionProblems(cache *ResourceCache, namespace string) []Problem {
+func DetectAdmissionProblems(cache *ResourceCache, namespace string) []Detection {
 	if cache == nil {
 		return nil
 	}
 	return detectAdmissionFailures(cache, namespace)
 }
 
-func detectAdmissionFailures(cache *ResourceCache, namespace string) []Problem {
+func detectAdmissionFailures(cache *ResourceCache, namespace string) []Detection {
 	if cache.Events() == nil {
 		return nil
 	}
@@ -725,12 +725,12 @@ func detectAdmissionFailures(cache *ResourceCache, namespace string) []Problem {
 		order = append(order, key)
 	}
 
-	problems := make([]Problem, 0, len(order))
+	problems := make([]Detection, 0, len(order))
 	for _, key := range order {
 		c := latest[key]
 		obj := c.ev.InvolvedObject
 		ageDur := now.Sub(eventFirstTime(c.ev))
-		problems = append(problems, Problem{
+		problems = append(problems, Detection{
 			Kind:            obj.Kind,
 			Namespace:       obj.Namespace,
 			Name:            obj.Name,
@@ -862,7 +862,7 @@ var postBindSeverity = map[string]string{
 
 // DetectPostBindProblems flags pods stuck in ContainerCreating due to CNI/IP
 // or volume failures. namespace="" scans all namespaces.
-func DetectPostBindProblems(cache *ResourceCache, namespace string) []Problem {
+func DetectPostBindProblems(cache *ResourceCache, namespace string) []Detection {
 	if cache == nil || cache.Events() == nil {
 		return nil
 	}
@@ -915,7 +915,7 @@ func DetectPostBindProblems(cache *ResourceCache, namespace string) []Problem {
 		order = append(order, key)
 	}
 
-	problems := make([]Problem, 0, len(order))
+	problems := make([]Detection, 0, len(order))
 	for _, key := range order {
 		c := latest[key]
 		pod := stuck[key]
@@ -925,7 +925,7 @@ func DetectPostBindProblems(cache *ResourceCache, namespace string) []Problem {
 		}
 		ageDur := now.Sub(pod.CreationTimestamp.Time)
 		ownerGroup, ownerKind, ownerName := podOwnerKindName(cache, pod)
-		problems = append(problems, Problem{
+		problems = append(problems, Detection{
 			Kind:            "Pod",
 			Namespace:       pod.Namespace,
 			Name:            pod.Name,
