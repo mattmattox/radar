@@ -180,15 +180,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 			dsets, _ = dsLister.List(labels.Everything())
 		}
 		for _, ds := range dsets {
-			// numberUnavailable counts pods that exist-but-aren't-ready; a DS
-			// that can't even schedule on tainted/full nodes bumps
-			// desiredNumberScheduled vs numberAvailable WITHOUT populating
-			// numberUnavailable, so available-vs-desired is the robust signal.
-			unavailable := ds.Status.NumberUnavailable
-			if gap := ds.Status.DesiredNumberScheduled - ds.Status.NumberAvailable; gap > unavailable {
-				unavailable = gap
-			}
-			if unavailable > 0 {
+			if ds.Status.NumberUnavailable > 0 {
 				ageDur := now.Sub(ds.CreationTimestamp.Time)
 				problems = append(problems, Detection{
 					Kind:            "DaemonSet",
@@ -196,7 +188,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					Name:            ds.Name,
 					Group:           "apps",
 					Severity:        "critical",
-					Reason:          fmt.Sprintf("%d unavailable", unavailable),
+					Reason:          fmt.Sprintf("%d unavailable", ds.Status.NumberUnavailable),
 					Age:             FormatAge(ageDur),
 					AgeSeconds:      int64(ageDur.Seconds()),
 					Duration:        FormatAge(ageDur),
