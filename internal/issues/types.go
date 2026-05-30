@@ -37,15 +37,18 @@ import (
 // Filters.Filter.
 type CELFilter = filter.Filter
 
-// Severity is the normalized 3-tier severity. Mapping rules:
+// Severity is the normalized issue severity. The public Issues contract is
+// critical|warning only:
 //
 //	critical = problem.critical
-//	warning  = problem.<any non-critical> | CRD-condition False
-//	info     = reserved (currently unused)
+//	warning  = problem.<any non-critical except info> | CRD-condition False
 //
-// problem severities other than "critical" all collapse to warning — see
-// fromProblem. Today that's "high"/"medium", but the mapping is non-critical
-// by exclusion, not by an explicit allow-list.
+// problem severities other than "critical" collapse to warning — see fromProblem
+// (the mapping is non-critical by exclusion, not an explicit allow-list). The one
+// exception is problem.info: inert/posture findings (deprecated-RBAC residue,
+// singleton-StatefulSet headless-DNS trivia) are DROPPED at the Problem→Issue
+// boundary in Compose and never become Issues — they belong to audit/posture,
+// not the live "what's broken now" stream.
 type Severity string
 
 const (

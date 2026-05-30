@@ -46,7 +46,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	// they asked for" → return empty rather than leak cluster-wide rows.
 	namespaces := s.parseNamespacesForUser(r)
 	if noNamespaceAccess(namespaces) {
-		s.writeJSON(w, map[string]any{"issues": []any{}, "total": 0})
+		s.writeJSON(w, map[string]any{"issues": []any{}, "total": 0, "total_matched": 0})
 		return
 	}
 
