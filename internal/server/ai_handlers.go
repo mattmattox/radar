@@ -548,7 +548,7 @@ func computeIssueSummaryForResource(cache *k8s.ResourceCache, group, kind, names
 	// across runs even when multiple rows tie on severity. Mirrors the
 	// stable sort applied in computeAuditSummaryForResource.
 	sort.Slice(matched, func(i, j int) bool {
-		ri, rj := composeSeverityRank(matched[i].Severity), composeSeverityRank(matched[j].Severity)
+		ri, rj := issues.SeverityRank(matched[i].Severity), issues.SeverityRank(matched[j].Severity)
 		if ri != rj {
 			return ri > rj
 		}
@@ -563,17 +563,6 @@ func computeIssueSummaryForResource(cache *k8s.ResourceCache, group, kind, names
 		TopReason:       topReason,
 		BySource:        bySource,
 	}
-}
-
-// composeSeverityRank orders issues.Severity for highest-wins rollup.
-func composeSeverityRank(s issues.Severity) int {
-	switch s {
-	case issues.SeverityCritical:
-		return 2
-	case issues.SeverityWarning:
-		return 1
-	}
-	return 0
 }
 
 // computeAuditSummaryForResource looks up audit findings for the subject

@@ -108,7 +108,7 @@ func computeMCPIssueSummary(cache *k8s.ResourceCache, group, kind, namespace, na
 	}
 	// (severity desc, Reason asc) — deterministic across runs.
 	sort.Slice(matched, func(i, j int) bool {
-		ri, rj := mcpComposeSeverityRank(matched[i].Severity), mcpComposeSeverityRank(matched[j].Severity)
+		ri, rj := issues.SeverityRank(matched[i].Severity), issues.SeverityRank(matched[j].Severity)
 		if ri != rj {
 			return ri > rj
 		}
@@ -120,16 +120,6 @@ func computeMCPIssueSummary(cache *k8s.ResourceCache, group, kind, namespace, na
 		TopReason:       matched[0].Reason,
 		BySource:        bySource,
 	}
-}
-
-func mcpComposeSeverityRank(s issues.Severity) int {
-	switch s {
-	case issues.SeverityCritical:
-		return 2
-	case issues.SeverityWarning:
-		return 1
-	}
-	return 0
 }
 
 // computeMCPAuditSummary looks up audit findings for the subject resource
@@ -230,4 +220,3 @@ func mcpTopologyForContext(namespace string) (*topo.Topology, topo.ResourceProvi
 	}
 	return topology, provider, dyn, true
 }
-

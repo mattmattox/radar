@@ -30,7 +30,7 @@ func resourceKey(group, kind, namespace, name string) string {
 // topmost owner when one was resolved (member pods collapse under their
 // workload), otherwise the resource itself — issues' owner is pre-resolved by
 // the detectors, so this is a depth-0 use of the shared Subject identity. Must
-// run after classifyIssue (the category is part of the ID). subject.IssueID is
+// run after classifyIssue (the category is part of the ID). subject.StableID is
 // byte-identical to the previous local hash, so no existing issue re-keys.
 func enrichIdentity(i *Issue) {
 	subjRef := Ref{Group: i.Group, Kind: i.Kind, Namespace: i.Namespace, Name: i.Name}
@@ -38,5 +38,5 @@ func enrichIdentity(i *Issue) {
 		subjRef = i.Owner
 	}
 	i.GroupingScope = subject.ScopeForKind(subjRef.Kind)
-	i.ID = subject.IssueID(i.GroupingScope, resourceKey(subjRef.Group, subjRef.Kind, subjRef.Namespace, subjRef.Name), string(i.Category))
+	i.ID = subject.StableID(i.GroupingScope, resourceKey(subjRef.Group, subjRef.Kind, subjRef.Namespace, subjRef.Name), string(i.Category))
 }

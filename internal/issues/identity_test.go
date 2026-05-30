@@ -12,7 +12,7 @@ import (
 // keys the ID off it, using the shared resolver.
 func TestEnrichIdentity_SubjectIsOwnerElseSelf(t *testing.T) {
 	// A pod with a resolved owner groups under the owner — the ID is keyed on
-	// the workload, not the pod. The expected value uses subject.IssueID (what
+	// the workload, not the pod. The expected value uses subject.StableID (what
 	// enrichIdentity now calls), confirming the migration re-keys nothing.
 	pod := Issue{
 		Source: SourceProblem, Kind: "Pod", Namespace: "ns", Name: "web-abc-1", Reason: "ImagePullBackOff",
@@ -23,7 +23,7 @@ func TestEnrichIdentity_SubjectIsOwnerElseSelf(t *testing.T) {
 	if pod.GroupingScope != ScopeWorkload {
 		t.Errorf("scope = %q, want workload", pod.GroupingScope)
 	}
-	if want := subject.IssueID(ScopeWorkload, resourceKey("apps", "Deployment", "ns", "web"), string(CategoryImagePullFailed)); pod.ID != want {
+	if want := subject.StableID(ScopeWorkload, resourceKey("apps", "Deployment", "ns", "web"), string(CategoryImagePullFailed)); pod.ID != want {
 		t.Errorf("ID = %q, want owner-keyed %q", pod.ID, want)
 	}
 
@@ -31,7 +31,7 @@ func TestEnrichIdentity_SubjectIsOwnerElseSelf(t *testing.T) {
 	solo := Issue{Source: SourceProblem, Kind: "Pod", Namespace: "ns", Name: "solo", Reason: "CrashLoopBackOff"}
 	classifyIssue(&solo)
 	enrichIdentity(&solo)
-	if want := subject.IssueID(ScopeWorkload, resourceKey("", "Pod", "ns", "solo"), string(CategoryCrashLoop)); solo.ID != want {
+	if want := subject.StableID(ScopeWorkload, resourceKey("", "Pod", "ns", "solo"), string(CategoryCrashLoop)); solo.ID != want {
 		t.Errorf("standalone pod ID = %q, want self-keyed %q", solo.ID, want)
 	}
 }
