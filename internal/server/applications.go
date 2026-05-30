@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -15,39 +16,59 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/packages"
 	"github.com/skyhook-io/radar/pkg/subject"
+	"github.com/skyhook-io/radar/pkg/topology"
 )
 
 // Applications is the workload-centric twin of /api/packages. Where packages
 // answers "what software is installed" (chart/GitOps-declaration centric, the
 // Add-ons surface), Applications answers "what are MY services and what version
-// runs where" — the unit is a logical app: the set of workloads sharing a
-// pkg/subject Tier-2 app-overlay key, anchored on the container image:tag (the
-// real running version, not a chart version that's empty for git-based apps).
+// runs where" — the unit is a logical app.
 //
-// Why a separate path (not the packages feed): collectWorkloadInputs only
-// admits Helm-labeled workloads and carries no image, so the packages feed
-// structurally cannot represent a non-Helm app's services or their versions.
-// See ADDONS-AND-APPLICATIONS-PLAN.md §8.3 (the row-identity change) — this is
-// that change done on the right entities.
+// What defines an app boundary: the K8s STRUCTURAL relationship graph is the
+// spine. A workload's app is its topmost EdgeManages ancestor — the root that
+// collapses native owner chains (Pod→RS→Deployment), in-cluster GitOps managers
+// (an ArgoCD Application / Flux Kustomization / Flux HelmRelease that manages a
+// set of workloads), and generic-CRD owners. The pkg/subject Tier-2 label
+// overlay (app.kubernetes.io/part-of, Argo/Flux/Helm signals) then CONSOLIDATES
+// roots the graph can't connect — hub-spoke Argo (controller in another
+// cluster), native-Helm release annotations — with a confidence score. Roots
+// and overlay keys are unioned per workload; satellites (Services/Ingress/
+// config/scalers/PDBs) are ATTACHED to an app via the same graph but never
+// merge two apps that merely share one (the over-merge guardrail). Nothing is
+// hidden: a singleton workload with no signal is its own raw row, and add-on
+// machinery is classified with evidence rather than dropped.
 
 // applicationsResponse is the GET /api/applications body.
 type applicationsResponse struct {
 	Applications []appRow `json:"applications"`
 }
 
-// appRow is one logical app in this cluster: workloads collapsed by app-overlay
-// key. Raw-always: a workload with no app signal (no overlay) is its own row
-// keyed by "<ns>/<kind>/<name>" — nothing is hidden.
+// appRow is one logical app in this cluster.
 type appRow struct {
-	Key        string         `json:"key"`                  // overlay key, or "<ns>/<kind>/<name>" raw
-	Name       string         `json:"name"`                 // display name
-	Namespace  string         `json:"namespace,omitempty"`  // overlay namespace (grouping scope)
-	Tier       int            `json:"tier,omitempty"`       // pkg/subject overlay tier (0 = raw, no overlay)
-	Confidence string         `json:"confidence,omitempty"` // high | medium | low
-	Health     string         `json:"health"`               // worst-of across workloads
-	Versions   []string       `json:"versions,omitempty"`   // distinct image tags (the running version)
-	Workloads  []appWorkload  `json:"workloads"`
-	Events     []appEvent     `json:"events,omitempty"`     // recent Warning events across the app's workloads/pods
+	Key         string `json:"key"`                  // overlay key, structural-root key, or "<ns>/<kind>/<name>" raw
+	Name        string `json:"name"`                 // display name
+	Namespace   string `json:"namespace,omitempty"`  // grouping scope
+	Tier        int    `json:"tier,omitempty"`       // pkg/subject overlay tier (0 = raw, no signal)
+	Confidence  string `json:"confidence,omitempty"` // high | medium | low
+	Category    string `json:"category,omitempty"`   // "app" (your service) | "addon" (3rd-party platform machinery)
+	AddonReason string `json:"addonReason,omitempty"`// evidence when Category == "addon" — never hidden, always explained
+	Health      string `json:"health"`               // worst-of across workloads
+	Versions    []string          `json:"versions,omitempty"` // distinct image tags (the running version)
+	Workloads   []appWorkload     `json:"workloads"`
+	Events      []appEvent        `json:"events,omitempty"`        // recent Warning events across the app's workloads/pods
+	Relationships *appRelationships `json:"relationships,omitempty"` // structural satellites attached via topology
+}
+
+// appRelationships is the structural neighborhood of an app, derived from the
+// topology graph: what fronts it (Services/Ingress/Routes) and what supports it
+// (config, autoscalers, disruption budgets). Counts where names add no value.
+type appRelationships struct {
+	Services  []string `json:"services,omitempty"`
+	Ingresses []string `json:"ingresses,omitempty"`
+	Routes    []string `json:"routes,omitempty"`
+	Configs   int      `json:"configs,omitempty"`
+	Scalers   int      `json:"scalers,omitempty"`
+	PDBs      int      `json:"pdbs,omitempty"`
 }
 
 // appEvent is a recent k8s Warning event correlated to an app's workloads/pods
@@ -70,10 +91,10 @@ type appWorkload struct {
 	Image     string `json:"image,omitempty"`   // full primary-container image ref
 	Version   string `json:"version,omitempty"` // image tag (digest-only → empty)
 	Health    string `json:"health"`
-	Ready     int    `json:"ready"`             // ready/available replicas
-	Desired   int    `json:"desired"`           // desired replicas
-	Restarts  int    `json:"restarts"`          // total container restarts across the workload's pods
-	Reason    string `json:"reason,omitempty"`  // last-terminated reason of the worst pod (CrashLoopBackOff/OOMKilled/…)
+	Ready     int    `json:"ready"`            // ready/available replicas
+	Desired   int    `json:"desired"`          // desired replicas
+	Restarts  int    `json:"restarts"`         // total container restarts across the workload's pods
+	Reason    string `json:"reason,omitempty"` // last-terminated reason of the worst pod (CrashLoopBackOff/OOMKilled/…)
 }
 
 // handleListApplications serves GET /api/applications.
@@ -96,52 +117,184 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 	s.writeJSON(w, resp)
 }
 
-// ListApplications enumerates the cluster's app workloads, resolves each to its
-// pkg/subject app-overlay, and groups them into logical apps. Add-on workloads
-// (cert-manager et al.) are excluded — they belong to the Add-ons surface.
+// appGraph bundles the topology graph and the primitives derived from it that
+// the collection pass needs. A nil graph (build failure / no cache) degrades
+// cleanly: every workload becomes its own structural root and carries no
+// satellites — identity then rests on the label overlay alone, raw-always.
+type appGraph struct {
+	topo     *topology.Topology
+	idx      *topology.RelationshipsIndex
+	provider topology.ResourceProvider
+	dp       topology.DynamicProvider
+	byID     map[string]topology.Node
+	byKNN    map[string]string // lower(kind)|ns|name → node ID
+}
+
+// ListApplications builds the structural topology graph, resolves each app
+// workload to its graph root + label overlay, and groups them into logical
+// apps. Add-on machinery is classified (not dropped); nothing is hidden.
 func ListApplications(ctx context.Context, namespaces []string) (*applicationsResponse, error) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil, errResourceCacheUnavailable
 	}
-	wls := collectAppWorkloads(cache, namespaces)
+	g := buildAppGraph(cache, namespaces)
+	wls := collectAppWorkloads(cache, namespaces, g)
 	return &applicationsResponse{Applications: groupApplications(wls)}, nil
 }
 
-// appWorkloadInput is the pre-grouping shape: a workload plus its resolved
-// overlay (nil when no app signal at/above tier 7).
+// buildAppGraph constructs the same resources-view topology the /api/topology
+// handler builds, then indexes it for root walks and satellite lookups.
+func buildAppGraph(cache *k8s.ResourceCache, namespaces []string) *appGraph {
+	g := &appGraph{byID: map[string]topology.Node{}, byKNN: map[string]string{}}
+	provider := k8s.NewTopologyResourceProvider(cache)
+	if provider == nil {
+		return g
+	}
+	g.provider = provider
+	g.dp = k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
+
+	opts := topology.DefaultBuildOptions()
+	opts.Namespaces = namespaces
+	b := topology.NewBuilder(provider)
+	if g.dp != nil {
+		b = b.WithDynamic(g.dp)
+	}
+	topo, err := b.Build(opts)
+	if err != nil || topo == nil {
+		return g
+	}
+	g.topo = topo
+	g.idx = topology.IndexByResource(topo)
+	for _, n := range topo.Nodes {
+		g.byID[n.ID] = n
+		ns, _ := n.Data["namespace"].(string)
+		g.byKNN[knnKey(string(n.Kind), ns, n.Name)] = n.ID
+	}
+	return g
+}
+
+func knnKey(kind, ns, name string) string {
+	return strings.ToLower(kind) + "|" + ns + "|" + name
+}
+
+// structuralRoot walks incoming EdgeManages edges from startID to the topmost
+// ancestor — the same walk pkg/topology uses for managed-by synthesis. The
+// topmost node is the app's structural root: a manager (ArgoCD Application,
+// Flux Kustomization/HelmRelease, generic-CRD owner) when one manages the
+// workload in-cluster, otherwise the workload's own top controller.
+func (g *appGraph) structuralRoot(startID string) (topology.Node, bool) {
+	cur := startID
+	top, ok := g.byID[cur]
+	if g.idx == nil {
+		return top, ok
+	}
+	visited := map[string]bool{cur: true}
+	for {
+		next := ""
+		incoming, _ := g.idx.EdgesFor(cur)
+		for _, e := range incoming {
+			if e.Type == topology.EdgeManages {
+				next = e.Source
+				break
+			}
+		}
+		if next == "" || visited[next] {
+			break
+		}
+		visited[next] = true
+		if n, exists := g.byID[next]; exists {
+			top = n
+			ok = true
+		}
+		cur = next
+	}
+	return top, ok
+}
+
+// rootOf returns the structural-root key ("<ns>/<Kind>/<name>") and root Kind
+// for a workload, falling back to the workload itself when the graph is absent.
+func (g *appGraph) rootOf(kind, ns, name string) (rootKey, rootKind string) {
+	rootKey = ns + "/" + kind + "/" + name
+	rootKind = kind
+	if g.topo == nil {
+		return
+	}
+	nodeID, found := g.byKNN[knnKey(kind, ns, name)]
+	if !found {
+		return
+	}
+	rn, ok := g.structuralRoot(nodeID)
+	if !ok {
+		return
+	}
+	rns, _ := rn.Data["namespace"].(string)
+	return rns + "/" + string(rn.Kind) + "/" + rn.Name, string(rn.Kind)
+}
+
+// relationshipsFor pulls the workload's structural satellites from the graph.
+func (g *appGraph) relationshipsFor(kind, ns, name string) *appRelationships {
+	if g.topo == nil {
+		return nil
+	}
+	rel := topology.GetRelationshipsWithIndex(kind, ns, name, g.topo, g.provider, g.dp, g.idx)
+	if rel == nil {
+		return nil
+	}
+	out := &appRelationships{Configs: len(rel.ConfigRefs), Scalers: len(rel.Scalers), PDBs: len(rel.PDBs)}
+	for _, s := range rel.Services {
+		out.Services = append(out.Services, s.Name)
+	}
+	for _, i := range rel.Ingresses {
+		out.Ingresses = append(out.Ingresses, i.Name)
+	}
+	for _, r := range rel.Routes {
+		out.Routes = append(out.Routes, r.Name)
+	}
+	if len(out.Services) == 0 && len(out.Ingresses) == 0 && len(out.Routes) == 0 &&
+		out.Configs == 0 && out.Scalers == 0 && out.PDBs == 0 {
+		return nil
+	}
+	return out
+}
+
+// appWorkloadInput is the pre-grouping shape: one workload plus the signals
+// that decide which app it belongs to (structural root + label overlay) and how
+// it is classified.
 type appWorkloadInput struct {
-	wl      appWorkload
-	overlay *subject.AppOverlay
-	events  []appEvent
+	wl       appWorkload
+	overlay  *subject.AppOverlay
+	events   []appEvent
+	rels     *appRelationships
+	rootKey  string
+	rootKind string
+	addon    bool
+	addonWhy string
 }
 
 // collectAppWorkloads walks Deployments/StatefulSets/DaemonSets, captures the
-// primary container image, resolves the app-overlay, and drops add-on workloads.
-func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string) []appWorkloadInput {
+// primary container image + replica health, resolves each to its structural
+// root and label overlay, and classifies add-on machinery. Pods and Warning
+// events are indexed once per namespace and joined, not re-listed per workload.
+func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGraph) []appWorkloadInput {
 	var out []appWorkloadInput
 
+	podsByNS := indexPodsByNamespace(cache, namespaces)
+	eventsByObj := indexWarningEventsByObject(cache, namespaces)
+
 	add := func(kind, ns, name string, lbls, anns map[string]string, image string, health packages.Health, ready, desired int, selector *metav1.LabelSelector) {
-		// Cluster plumbing (kube-proxy, kindnet, CNI, local-path) is never a
-		// user service — exclude system namespaces outright.
+		// Cluster plumbing (kube-proxy, kindnet, CNI, local-path) is K8s control
+		// plane, never a user service — exclude these namespaces outright. This
+		// is a namespace-scoped infra filter, distinct from add-on NAME matching
+		// below, which only classifies (never hides) user-namespace workloads.
 		if systemNamespaces[ns] {
 			return
 		}
-		// Add-ons live on their own surface — keep 3rd-party platform machinery
-		// out of "your services". (Interim chart/name match; consolidate with
-		// the SPA's KNOWN_ADDON list + OSS catalog later — plan §12 Q3.)
-		if isAddonWorkload(lbls, name) {
-			return
-		}
-		// One pod fetch powers both restarts (crashloop signal) and the Warning
-		// event feed (image-pull / scheduling / mount failures restarts miss).
-		var pods []*corev1.Pod
-		if selector != nil {
-			pods = cache.GetPodsForWorkload(ns, selector)
-		}
+		pods := podsForSelector(podsByNS[ns], selector)
 		restarts, reason := podsRestarts(pods)
 		meta := metav1.ObjectMeta{Namespace: ns, Name: name, Labels: lbls, Annotations: anns}
-		ov := subject.ResolveOverlay(&meta, false)
+		rootKey, rootKind := g.rootOf(kind, ns, name)
+		addon, why := packages.ClassifyAddon(lbls["helm.sh/chart"], lbls["app.kubernetes.io/name"], lbls["app.kubernetes.io/part-of"], name)
 		out = append(out, appWorkloadInput{
 			wl: appWorkload{
 				Kind:      kind,
@@ -155,8 +308,13 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string) []appWor
 				Restarts:  restarts,
 				Reason:    reason,
 			},
-			overlay: ov,
-			events:  podsEvents(cache, ns, name, pods),
+			overlay:  subject.ResolveOverlay(&meta, false),
+			events:   eventsForWorkload(eventsByObj[ns], name, pods),
+			rels:     g.relationshipsFor(kind, ns, name),
+			rootKey:  rootKey,
+			rootKind: rootKind,
+			addon:    addon,
+			addonWhy: why,
 		})
 	}
 
@@ -221,53 +379,60 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string) []appWor
 	return out
 }
 
-// groupApplications collapses workloads by app-overlay key. Workloads with no
-// overlay (raw-always) become their own single-workload row keyed on identity.
+// --- grouping ------------------------------------------------------------
+
+// groupApplications partitions workloads into logical apps. Each workload
+// contributes atoms — its structural-root key, its overlay key, and a canonical
+// ArgoCD key (so tracking-id and instance label modes collapse) — that are
+// union-found together. Workloads sharing any atom (transitively) are one app.
+// Satellites are attached but never used to merge: two apps that share a Service
+// stay two apps.
 func groupApplications(inputs []appWorkloadInput) []appRow {
-	rows := map[string]*appRow{}
-	order := []string{}
+	d := newDSU()
 	for _, in := range inputs {
-		var key, name, ns string
-		var tier int
-		var conf string
-		if in.overlay != nil {
-			win := in.overlay.Winner
-			key = win.Key
-			name = appNameFromKey(win.Key)
-			ns = namespaceFromKey(win.Key)
-			tier = int(win.Tier)
-			conf = string(win.Confidence)
-		} else {
-			// Raw-always: identifiable on its own, never hidden.
-			key = in.wl.Namespace + "/" + in.wl.Kind + "/" + in.wl.Name
-			name = in.wl.Name
-			ns = in.wl.Namespace
-		}
-		r, ok := rows[key]
-		if !ok {
-			r = &appRow{Key: key, Name: name, Namespace: ns, Tier: tier, Confidence: conf}
-			rows[key] = r
-			order = append(order, key)
-		}
-		r.Workloads = append(r.Workloads, in.wl)
-		r.Events = append(r.Events, in.events...)
-		r.Health = string(worstAppHealth(packages.Health(r.Health), packages.Health(in.wl.Health)))
-		if v := in.wl.Version; v != "" && !contains(r.Versions, v) {
-			r.Versions = append(r.Versions, v)
+		atoms := inputAtoms(in)
+		for i := 1; i < len(atoms); i++ {
+			d.union(atoms[0], atoms[i])
 		}
 	}
-	out := make([]appRow, 0, len(order))
-	for _, k := range order {
-		r := rows[k]
+
+	rows := map[string]*appRow{}
+	order := []string{}
+	members := map[string][]appWorkloadInput{}
+	for _, in := range inputs {
+		comp := d.find("S:" + in.rootKey)
+		if _, ok := members[comp]; !ok {
+			order = append(order, comp)
+		}
+		members[comp] = append(members[comp], in)
+	}
+
+	for _, comp := range order {
+		ins := members[comp]
+		r := &appRow{}
+		identifyApp(r, ins)
+		for _, in := range ins {
+			r.Workloads = append(r.Workloads, in.wl)
+			r.Events = append(r.Events, in.events...)
+			r.Health = string(worstAppHealth(packages.Health(r.Health), packages.Health(in.wl.Health)))
+			if v := in.wl.Version; v != "" && !slices.Contains(r.Versions, v) {
+				r.Versions = append(r.Versions, v)
+			}
+			mergeRelationships(r, in.rels)
+		}
+		finalizeRelationships(r)
 		sort.Strings(r.Versions)
-		// Newest events first; cap the feed.
 		sort.SliceStable(r.Events, func(i, j int) bool { return r.Events[i].LastSeen > r.Events[j].LastSeen })
 		if len(r.Events) > 12 {
 			r.Events = r.Events[:12]
 		}
-		out = append(out, *r)
+		rows[comp] = r
 	}
-	// Deterministic: by name then key.
+
+	out := make([]appRow, 0, len(order))
+	for _, comp := range order {
+		out = append(out, *rows[comp])
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
@@ -277,7 +442,269 @@ func groupApplications(inputs []appWorkloadInput) []appRow {
 	return out
 }
 
+// inputAtoms returns the union-find atoms for a workload. The structural-root
+// atom is always present; overlay and canonical-Argo atoms consolidate roots
+// the graph can't connect.
+func inputAtoms(in appWorkloadInput) []string {
+	atoms := []string{"S:" + in.rootKey}
+	if a, ok := argoCanonicalAtom(in.rootKind, in.rootKey); ok {
+		atoms = append(atoms, a)
+	}
+	if in.overlay != nil {
+		atoms = append(atoms, "O:"+in.overlay.Winner.Key)
+		if a, ok := argoCanonicalAtom("Application", in.overlay.Winner.Key); ok {
+			atoms = append(atoms, a)
+		}
+	}
+	return atoms
+}
+
+// identifyApp sets a row's identity (key/name/namespace/tier/confidence) and
+// add-on classification from its member workloads. A label overlay wins (it
+// carries an explicit tier + confidence); otherwise the structural root — and
+// when that root is a GitOps manager, its kind synthesizes the tier so the
+// surface still attributes provenance (Argo/Flux) for unlabeled in-cluster apps.
+func identifyApp(r *appRow, ins []appWorkloadInput) {
+	var best *subject.Signal
+	for i := range ins {
+		if ins[i].overlay == nil {
+			continue
+		}
+		w := ins[i].overlay.Winner
+		if best == nil || w.Tier < best.Tier || (w.Tier == best.Tier && w.Key < best.Key) {
+			sig := w
+			best = &sig
+		}
+	}
+	if best != nil {
+		r.Key = best.Key
+		r.Name = appNameFromKey(best.Key)
+		r.Namespace = namespaceFromKey(best.Key)
+		r.Tier = int(best.Tier)
+		r.Confidence = string(best.Confidence)
+	} else {
+		root := pickRoot(ins)
+		r.Key = root.rootKey
+		r.Name = appNameFromKey(root.rootKey)
+		r.Namespace = namespaceFromKey(root.rootKey)
+		if t, c, ok := managerTier(root.rootKind); ok {
+			r.Tier = t
+			r.Confidence = c
+		}
+	}
+
+	r.Category = "app"
+	for _, in := range ins {
+		if in.addon {
+			r.Category = "addon"
+			r.AddonReason = in.addonWhy
+			break
+		}
+	}
+}
+
+// pickRoot prefers a GitOps-manager root over a raw workload root for identity.
+func pickRoot(ins []appWorkloadInput) appWorkloadInput {
+	for _, in := range ins {
+		if _, _, ok := managerTier(in.rootKind); ok {
+			return in
+		}
+	}
+	return ins[0]
+}
+
+// managerTier maps a structural manager-root kind to the overlay tier it stands
+// in for, so an in-cluster GitOps-managed app without labels still attributes.
+func managerTier(kind string) (tier int, confidence string, ok bool) {
+	switch kind {
+	case string(topology.KindHelmRelease):
+		return int(subject.TierFluxHelmRelease), string(subject.ConfidenceHigh), true
+	case string(topology.KindKustomization):
+		return int(subject.TierFluxKustomize), string(subject.ConfidenceHigh), true
+	case string(topology.KindApplication):
+		return int(subject.TierArgoTrackingID), string(subject.ConfidenceHigh), true
+	}
+	return 0, "", false
+}
+
+// argoCanonicalAtom extracts a tracking-mode-independent atom from an ArgoCD
+// Application key. ResolveOverlay emits "<ns>/Application/<name>" for tracking-id
+// (tier 3) but "/Application/<name>" (empty ns) for the instance label (tier 4);
+// the in-cluster Application node's structural key is "<argo-ns>/Application/<name>".
+// Reducing all three to the app name unions them so the declaration and its
+// workloads collapse into one app regardless of which Argo tracking mode is used.
+func argoCanonicalAtom(kind, key string) (string, bool) {
+	if kind != string(topology.KindApplication) {
+		return "", false
+	}
+	const marker = "/Application/"
+	i := strings.Index(key, marker)
+	if i < 0 {
+		return "", false
+	}
+	name := key[i+len(marker):]
+	if name == "" || strings.Contains(name, "/") {
+		return "", false
+	}
+	return "A:application:" + name, true
+}
+
+func mergeRelationships(r *appRow, rel *appRelationships) {
+	if rel == nil {
+		return
+	}
+	if r.Relationships == nil {
+		r.Relationships = &appRelationships{}
+	}
+	agg := r.Relationships
+	agg.Services = append(agg.Services, rel.Services...)
+	agg.Ingresses = append(agg.Ingresses, rel.Ingresses...)
+	agg.Routes = append(agg.Routes, rel.Routes...)
+	agg.Configs += rel.Configs
+	agg.Scalers += rel.Scalers
+	agg.PDBs += rel.PDBs
+}
+
+func finalizeRelationships(r *appRow) {
+	if r.Relationships == nil {
+		return
+	}
+	r.Relationships.Services = dedupSorted(r.Relationships.Services, 20)
+	r.Relationships.Ingresses = dedupSorted(r.Relationships.Ingresses, 20)
+	r.Relationships.Routes = dedupSorted(r.Relationships.Routes, 20)
+}
+
 // --- small helpers --------------------------------------------------------
+
+// dsu is a string union-find for partitioning workloads by shared atoms.
+type dsu struct{ parent map[string]string }
+
+func newDSU() *dsu { return &dsu{parent: map[string]string{}} }
+
+func (d *dsu) find(x string) string {
+	p, ok := d.parent[x]
+	if !ok {
+		d.parent[x] = x
+		return x
+	}
+	if p != x {
+		d.parent[x] = d.find(p)
+	}
+	return d.parent[x]
+}
+
+func (d *dsu) union(a, b string) {
+	ra, rb := d.find(a), d.find(b)
+	if ra != rb {
+		d.parent[ra] = rb
+	}
+}
+
+func dedupSorted(in []string, cap int) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	if len(out) > cap {
+		out = out[:cap]
+	}
+	return out
+}
+
+// indexPodsByNamespace lists pods once per namespace and buckets them, so the
+// per-workload restart/event join is O(pods) total, not O(workloads × pods).
+func indexPodsByNamespace(cache *k8s.ResourceCache, namespaces []string) map[string][]*corev1.Pod {
+	out := map[string][]*corev1.Pod{}
+	lister := cache.Pods()
+	if lister == nil {
+		return out
+	}
+	add := func(ns string) {
+		var pods []*corev1.Pod
+		if ns == "" {
+			pods, _ = lister.List(labels.Everything())
+		} else {
+			pods, _ = lister.Pods(ns).List(labels.Everything())
+		}
+		for _, p := range pods {
+			out[p.Namespace] = append(out[p.Namespace], p)
+		}
+	}
+	if namespaces == nil {
+		add("")
+	} else {
+		for _, ns := range namespaces {
+			add(ns)
+		}
+	}
+	return out
+}
+
+// indexWarningEventsByObject lists events once per namespace and indexes the
+// Warnings by involvedObject name, so each workload joins its events in O(1)
+// instead of re-scanning the whole namespace event stream.
+func indexWarningEventsByObject(cache *k8s.ResourceCache, namespaces []string) map[string]map[string][]*corev1.Event {
+	out := map[string]map[string][]*corev1.Event{}
+	lister := cache.Events()
+	if lister == nil {
+		return out
+	}
+	add := func(ns string) {
+		var evs []*corev1.Event
+		if ns == "" {
+			evs, _ = lister.List(labels.Everything())
+		} else {
+			evs, _ = lister.Events(ns).List(labels.Everything())
+		}
+		for _, e := range evs {
+			if e.Type != "Warning" {
+				continue
+			}
+			m := out[e.Namespace]
+			if m == nil {
+				m = map[string][]*corev1.Event{}
+				out[e.Namespace] = m
+			}
+			m[e.InvolvedObject.Name] = append(m[e.InvolvedObject.Name], e)
+		}
+	}
+	if namespaces == nil {
+		add("")
+	} else {
+		for _, ns := range namespaces {
+			add(ns)
+		}
+	}
+	return out
+}
+
+// podsForSelector filters an already-listed namespace pod set by a workload's
+// selector — no extra API/cache calls.
+func podsForSelector(pods []*corev1.Pod, selector *metav1.LabelSelector) []*corev1.Pod {
+	if selector == nil || len(pods) == 0 {
+		return nil
+	}
+	sel, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		return nil
+	}
+	var out []*corev1.Pod
+	for _, p := range pods {
+		if sel.Matches(labels.Set(p.Labels)) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // primaryImage returns the first container's image (the conventional "the app"
 // container — mirrors pkg/ai/context/summary.go's first-container choice).
@@ -306,44 +733,43 @@ func podsRestarts(pods []*corev1.Pod) (int, string) {
 	return total, reason
 }
 
-// podsEvents collects recent Warning events involving the workload or its pods,
-// deduped by (object, reason) with summed counts — the "why is it broken" feed
-// (FailedScheduling, ImagePullBackOff, FailedMount, …) that restarts alone miss.
-func podsEvents(cache *k8s.ResourceCache, ns, workloadName string, pods []*corev1.Pod) []appEvent {
-	lister := cache.Events()
-	if lister == nil {
+// eventsForWorkload joins a workload's Warning events from the per-namespace
+// index (the workload object + its pods), deduped by (object, reason) with
+// summed counts — the "why is it broken" feed (FailedScheduling, ImagePullBackOff,
+// FailedMount, …) that restarts alone miss.
+func eventsForWorkload(byObject map[string][]*corev1.Event, workloadName string, pods []*corev1.Pod) []appEvent {
+	if byObject == nil {
 		return nil
 	}
-	names := map[string]bool{workloadName: true}
+	names := make([]string, 0, len(pods)+1)
+	names = append(names, workloadName)
 	for _, p := range pods {
-		names[p.Name] = true
-	}
-	evs, err := lister.Events(ns).List(labels.Everything())
-	if err != nil {
-		return nil
+		names = append(names, p.Name)
 	}
 	byKey := map[string]*appEvent{}
 	order := []string{}
-	for _, e := range evs {
-		if e.Type != "Warning" || !names[e.InvolvedObject.Name] {
-			continue
-		}
-		key := e.InvolvedObject.Kind + "/" + e.InvolvedObject.Name + "/" + e.Reason
-		c := int(e.Count)
-		if c < 1 {
-			c = 1
-		}
-		if a, ok := byKey[key]; ok {
-			a.Count += c
-			if ts := e.LastTimestamp.Format(time.RFC3339); ts > a.LastSeen {
-				a.LastSeen = ts
-				a.Message = e.Message
+	for _, n := range names {
+		for _, e := range byObject[n] {
+			key := e.InvolvedObject.Kind + "/" + e.InvolvedObject.Name + "/" + e.Reason
+			c := int(e.Count)
+			if c < 1 {
+				c = 1
 			}
-			continue
+			if a, ok := byKey[key]; ok {
+				a.Count += c
+				if ts := e.LastTimestamp.Format(time.RFC3339); ts > a.LastSeen {
+					a.LastSeen = ts
+					a.Message = e.Message
+				}
+				continue
+			}
+			byKey[key] = &appEvent{
+				Type: e.Type, Reason: e.Reason, Message: e.Message, Count: c,
+				Object: e.InvolvedObject.Kind + "/" + e.InvolvedObject.Name,
+				LastSeen: e.LastTimestamp.Format(time.RFC3339),
+			}
+			order = append(order, key)
 		}
-		ae := &appEvent{Type: e.Type, Reason: e.Reason, Message: e.Message, Count: c, Object: e.InvolvedObject.Kind + "/" + e.InvolvedObject.Name, LastSeen: e.LastTimestamp.Format(time.RFC3339)}
-		byKey[key] = ae
-		order = append(order, key)
 	}
 	out := make([]appEvent, 0, len(order))
 	for _, k := range order {
@@ -381,15 +807,6 @@ func namespaceFromKey(key string) string {
 		return key[:i]
 	}
 	return ""
-}
-
-func contains(ss []string, s string) bool {
-	for _, x := range ss {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 // worstAppHealth merges two health values (local copy of pkg/packages's
@@ -430,64 +847,3 @@ var systemNamespaces = map[string]bool{
 	"local-path-storage": true,
 }
 
-// knownAddonNames — interim add-on allowlist (mirrors radar-hub-web
-// packagesModel.KNOWN_ADDON_CHARTS; consolidate into the OSS catalog later).
-var knownAddonNames = map[string]bool{
-	"cert-manager": true, "argo-cd": true, "argocd": true, "argo-rollouts": true,
-	"argo-workflows": true, "argo-events": true, "flux": true, "flux2": true,
-	"karpenter": true, "external-secrets": true, "velero": true, "kyverno": true,
-	"kube-prometheus-stack": true, "prometheus": true, "prometheus-operator": true,
-	"grafana": true, "loki": true, "tempo": true, "mimir": true, "istio": true,
-	"istiod": true, "istio-base": true, "traefik": true, "cloudnative-pg": true,
-	"cnpg": true, "opentelemetry-operator": true, "opentelemetry-collector": true,
-	"keda": true, "cluster-api": true, "trivy-operator": true, "cilium": true,
-	"ingress-nginx": true, "nginx-ingress": true, "external-dns": true,
-	"metrics-server": true, "cluster-autoscaler": true, "sealed-secrets": true,
-	"vault": true, "fluent-bit": true, "fluentd": true, "vector": true,
-	"opencost": true, "kubecost": true, "reloader": true, "descheduler": true,
-	"aws-load-balancer-controller": true, "gatekeeper": true, "kube-state-metrics": true,
-	"coredns": true, "calico": true, "longhorn": true, "crossplane": true, "metallb": true,
-}
-
-// isAddonWorkload returns true when a workload belongs to 3rd-party platform
-// machinery (so it stays on Add-ons, not Applications). Matches the helm chart
-// name, app.kubernetes.io/name, part-of, or the workload name against the
-// allowlist — exact or hyphen-prefixed ("kube-prometheus-stack-…").
-func isAddonWorkload(lbls map[string]string, name string) bool {
-	candidates := []string{
-		chartBaseName(lbls["helm.sh/chart"]),
-		lbls["app.kubernetes.io/name"],
-		lbls["app.kubernetes.io/part-of"],
-		name,
-	}
-	for _, c := range candidates {
-		c = strings.ToLower(strings.TrimSpace(c))
-		if c == "" {
-			continue
-		}
-		if knownAddonNames[c] {
-			return true
-		}
-		for known := range knownAddonNames {
-			if strings.HasPrefix(c, known+"-") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// chartBaseName strips a trailing -<version> from a helm.sh/chart value
-// ("cert-manager-v1.14.0" → "cert-manager").
-func chartBaseName(chart string) string {
-	for i := len(chart) - 1; i >= 1; i-- {
-		if chart[i-1] != '-' {
-			continue
-		}
-		c := chart[i]
-		if (c >= '0' && c <= '9') || c == 'v' {
-			return chart[:i-1]
-		}
-	}
-	return chart
-}
