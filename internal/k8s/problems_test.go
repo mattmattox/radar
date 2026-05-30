@@ -137,7 +137,7 @@ func TestDetectProblems_PopulatesGroup(t *testing.T) {
 	}
 }
 
-func hasAllProblemTypes(problems []Problem) bool {
+func hasAllProblemTypes(problems []Detection) bool {
 	seen := map[string]bool{}
 	for _, p := range problems {
 		seen[p.Kind] = true
@@ -240,7 +240,7 @@ func TestDetectProblems_OperationalSignals(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
-	var problems []Problem
+	var problems []Detection
 	for time.Now().Before(deadline) {
 		problems = DetectProblems(cache, "prod")
 		if hasProblem(problems, "Pod", "crashy", "CrashLoopBackOff") &&
@@ -266,7 +266,7 @@ func TestDetectProblems_OperationalSignals(t *testing.T) {
 	assertProblem(t, problems, "Job", "migrate", "BackoffLimitExceeded", "critical")
 }
 
-func hasProblem(problems []Problem, kind, name, reason string) bool {
+func hasProblem(problems []Detection, kind, name, reason string) bool {
 	for _, p := range problems {
 		if p.Kind == kind && p.Name == name && p.Reason == reason {
 			return true
@@ -275,7 +275,7 @@ func hasProblem(problems []Problem, kind, name, reason string) bool {
 	return false
 }
 
-func assertProblem(t *testing.T, problems []Problem, kind, name, reason, severity string) {
+func assertProblem(t *testing.T, problems []Detection, kind, name, reason, severity string) {
 	t.Helper()
 	for _, p := range problems {
 		if p.Kind != kind || p.Name != name || p.Reason != reason {

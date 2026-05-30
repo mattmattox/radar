@@ -18,25 +18,25 @@ import (
 // in production come from the in-process radar caches; tests can
 // inject fakes without standing up an informer stack.
 type Provider interface {
-	DetectProblems(namespaces []string) []k8s.Problem
-	DetectCAPIProblems(namespaces []string) []k8s.Problem
+	DetectProblems(namespaces []string) []k8s.Detection
+	DetectCAPIProblems(namespaces []string) []k8s.Detection
 	// DetectGitOpsProblems returns failing ArgoCD Applications and Flux
 	// Kustomizations/HelmReleases — the reconciler-health failure class the
 	// generic CRD-condition fallback structurally can't read (Argo encodes
 	// health/sync outside status.conditions). Surfaced under SourceProblem.
-	DetectGitOpsProblems(namespaces []string) []k8s.Problem
+	DetectGitOpsProblems(namespaces []string) []k8s.Detection
 	// DetectMissingRefs returns dangling-reference problems (Pod→missing
 	// PVC/CM/Secret/SA, HPA→missing target, Ingress→missing backend, etc.)
 	// plus webhook-config refs. Surfaced under SourceMissingRef so agents
 	// can filter the "direct config error" category separately from the
 	// workload-state-based SourceProblem signals.
-	DetectMissingRefs(namespaces []string) []k8s.Problem
+	DetectMissingRefs(namespaces []string) []k8s.Detection
 	// DetectScheduling returns placement/admission/post-bind failures —
 	// unschedulable Pods (with the offending node constraint resolved),
 	// admission rejections (quota/LimitRange/PodSecurity/webhook, where no
 	// Pod exists), and pods stuck post-bind (CNI/volume). Surfaced under
 	// SourceScheduling so agents/UI can isolate "why won't this run".
-	DetectScheduling(namespaces []string) []k8s.Problem
+	DetectScheduling(namespaces []string) []k8s.Detection
 	// CRD-condition fallback inputs.
 	WatchedDynamic() []schema.GroupVersionResource
 	ListDynamic(gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, error)
@@ -112,7 +112,7 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	// (deprecated-RBAC residue, singleton-StatefulSet headless-DNS trivia) —
 	// classified honestly at the Problem layer for other surfaces, but NOT part
 	// of the live "what's broken now" issue stream. Issues stays critical|warning.
-	emit := func(ps []k8s.Problem, source Source) {
+	emit := func(ps []k8s.Detection, source Source) {
 		for _, pr := range ps {
 			if pr.Severity == "info" {
 				continue
@@ -422,7 +422,7 @@ func resolveGroup(group, kind string) string {
 	return bp.GroupForBuiltinKind(kind)
 }
 
-func fromProblem(p k8s.Problem, now time.Time, source Source) Issue {
+func fromProblem(p k8s.Detection, now time.Time, source Source) Issue {
 	sev := SeverityWarning
 	if p.Severity == "critical" {
 		sev = SeverityCritical

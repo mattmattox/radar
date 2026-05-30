@@ -15,9 +15,9 @@ import (
 // against the GROUPED member total, not the always-1 flat evidence count. Six
 // pods of one Deployment fold to a single grouped issue with count=6.
 func TestCompose_GroupedCELCountMatchesMemberTotal(t *testing.T) {
-	probs := make([]k8s.Problem, 0, 6)
+	probs := make([]k8s.Detection, 0, 6)
 	for i := 0; i < 6; i++ {
-		probs = append(probs, k8s.Problem{
+		probs = append(probs, k8s.Detection{
 			Kind: "Pod", Namespace: "ns", Name: fmt.Sprintf("web-%d", i),
 			Severity: "critical", Reason: "CrashLoopBackOff",
 			OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web",
@@ -41,7 +41,7 @@ func TestCompose_GroupedCELCountMatchesMemberTotal(t *testing.T) {
 func TestCompose_WithCELFilter_MatchesAndDrops(t *testing.T) {
 	// Two problem rows; a reason predicate should keep only the match.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Namespace: "ns", Name: "crash", Severity: "critical", Reason: "CrashLoopBackOff"},
 			{Kind: "Pod", Namespace: "ns", Name: "oom", Severity: "critical", Reason: "OOMKilled"},
 		},
@@ -64,11 +64,11 @@ func TestCompose_FilterAppliedBeforeLimit(t *testing.T) {
 	// see all 50 critical problems, the filter narrows to a smaller
 	// set, and limit caps that. Wrong order (limit-before-filter)
 	// would discard issues silently.
-	probs := make([]k8s.Problem, 0, 50)
+	probs := make([]k8s.Detection, 0, 50)
 	for i := 0; i < 50; i++ {
-		probs = append(probs, k8s.Problem{Kind: "Pod", Namespace: "warn-ns", Name: "p", Severity: "high"})
+		probs = append(probs, k8s.Detection{Kind: "Pod", Namespace: "warn-ns", Name: "p", Severity: "high"})
 	}
-	probs = append(probs, k8s.Problem{Kind: "Pod", Namespace: "crit-ns", Name: "critical-one", Severity: "critical"})
+	probs = append(probs, k8s.Detection{Kind: "Pod", Namespace: "crit-ns", Name: "critical-one", Severity: "critical"})
 	p := &fakeProvider{problems: probs}
 	f, err := filter.CompileIssueFilter(`severity == "critical"`)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestCompose_WithCELFilter_SourceBinding(t *testing.T) {
 		}},
 	}}
 	p := &fakeProvider{
-		problems: []k8s.Problem{{Kind: "Deployment", Namespace: "argocd", Name: "api", Severity: "critical", Reason: "down"}},
+		problems: []k8s.Detection{{Kind: "Deployment", Namespace: "argocd", Name: "api", Severity: "critical", Reason: "down"}},
 		dynamic:  map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {app}},
 		kinds:    map[schema.GroupVersionResource]string{gvr: "ScaledObject"},
 	}
@@ -120,7 +120,7 @@ func TestCompose_WithCELFilter_CategoryBinding(t *testing.T) {
 	// labels — the UI facet and agents slice on them. Guard that both
 	// compile and match against the derived classification.
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Namespace: "ns", Name: "img", Severity: "critical", Reason: "ImagePullBackOff"},
 			{Kind: "Pod", Namespace: "ns", Name: "crash", Severity: "critical", Reason: "CrashLoopBackOff"},
 		},
@@ -150,7 +150,7 @@ func TestCompose_FilterEvalError_StatsPopulated(t *testing.T) {
 	// these as known types, so the failure is at eval not compile.
 	// (Using nonsense int comparison to force the error.)
 	p := &fakeProvider{
-		problems: []k8s.Problem{
+		problems: []k8s.Detection{
 			{Kind: "Pod", Name: "p", Severity: "warning"},
 		},
 	}

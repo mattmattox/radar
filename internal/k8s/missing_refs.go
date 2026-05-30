@@ -52,13 +52,13 @@ import (
 // namespace="" scans all namespaces for namespaced sources. Cluster-scoped
 // sources (ClusterRoleBinding) are only scanned when namespace="" — passing
 // a namespace narrows the result set, matching DetectProblems' semantics.
-func DetectMissingRefs(cache *ResourceCache, namespace string) []Problem {
+func DetectMissingRefs(cache *ResourceCache, namespace string) []Detection {
 	if cache == nil {
 		return nil
 	}
 	now := time.Now()
 
-	var problems []Problem
+	var problems []Detection
 	problems = append(problems, detectPodMissingRefs(cache, namespace, now)...)
 	problems = append(problems, detectStatefulSetMissingService(cache, namespace, now)...)
 	problems = append(problems, detectHPAMissingTarget(cache, namespace, now)...)
@@ -74,7 +74,7 @@ func DetectMissingRefs(cache *ResourceCache, namespace string) []Problem {
 // critical is the default. Use missingRefProblemSev for the inert/latent
 // classes (single-replica headless Service, deprecated-RBAC residue) that don't
 // warrant a critical.
-func missingRefProblem(kind, group, ns, name, reason, message string, age time.Duration) Problem {
+func missingRefProblem(kind, group, ns, name, reason, message string, age time.Duration) Detection {
 	return missingRefProblemSev(kind, group, ns, name, "critical", reason, message, age)
 }
 
@@ -83,8 +83,8 @@ func missingRefProblem(kind, group, ns, name, reason, message string, age time.D
 // warning (latent — will break when used), info (inert/cosmetic residue). Age
 // and Duration fall back to the source resource's age — there's no separate
 // "ref broke at" event to anchor to.
-func missingRefProblemSev(kind, group, ns, name, severity, reason, message string, age time.Duration) Problem {
-	return Problem{
+func missingRefProblemSev(kind, group, ns, name, severity, reason, message string, age time.Duration) Detection {
+	return Detection{
 		Kind:            kind,
 		Group:           group,
 		Namespace:       ns,
@@ -107,7 +107,7 @@ func isTerminalPod(p *corev1.Pod) bool {
 	return p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed
 }
 
-func detectPodMissingRefs(cache *ResourceCache, namespace string, now time.Time) []Problem {
+func detectPodMissingRefs(cache *ResourceCache, namespace string, now time.Time) []Detection {
 	podLister := cache.Pods()
 	if podLister == nil {
 		return nil
@@ -124,7 +124,7 @@ func detectPodMissingRefs(cache *ResourceCache, namespace string, now time.Time)
 	pvcLister := cache.PersistentVolumeClaims()
 	saLister := cache.ServiceAccounts()
 
-	var out []Problem
+	var out []Detection
 	for _, p := range pods {
 		// Terminal pods aren't a config error to fix: a Succeeded pod (or a
 		// Failed one a Job won't retry) already ran to its end. Its referenced
@@ -310,7 +310,7 @@ func detectPodMissingRefs(cache *ResourceCache, namespace string, now time.Time)
 	return out
 }
 
-func detectHPAMissingTarget(cache *ResourceCache, namespace string, now time.Time) []Problem {
+func detectHPAMissingTarget(cache *ResourceCache, namespace string, now time.Time) []Detection {
 	hpaLister := cache.HorizontalPodAutoscalers()
 	if hpaLister == nil {
 		return nil
@@ -322,7 +322,7 @@ func detectHPAMissingTarget(cache *ResourceCache, namespace string, now time.Tim
 		hpas, _ = hpaLister.List(labels.Everything())
 	}
 
-	var out []Problem
+	var out []Detection
 	for _, h := range hpas {
 		ref := h.Spec.ScaleTargetRef
 		if ref.Name == "" {
@@ -373,7 +373,7 @@ func workloadExists(cache *ResourceCache, kind, namespace, name string) (verifia
 	return false, false
 }
 
-func detectIngressMissingBackend(cache *ResourceCache, namespace string, now time.Time) []Problem {
+func detectIngressMissingBackend(cache *ResourceCache, namespace string, now time.Time) []Detection {
 	ingLister := cache.Ingresses()
 	if ingLister == nil {
 		return nil
@@ -391,7 +391,7 @@ func detectIngressMissingBackend(cache *ResourceCache, namespace string, now tim
 		ings, _ = ingLister.List(labels.Everything())
 	}
 
-	var out []Problem
+	var out []Detection
 	for _, ing := range ings {
 		age := now.Sub(ing.CreationTimestamp.Time)
 		seenSvc := map[string]bool{}
@@ -484,7 +484,7 @@ func detectIngressMissingBackend(cache *ResourceCache, namespace string, now tim
 	return out
 }
 
-func detectStatefulSetMissingService(cache *ResourceCache, namespace string, now time.Time) []Problem {
+func detectStatefulSetMissingService(cache *ResourceCache, namespace string, now time.Time) []Detection {
 	stsLister := cache.StatefulSets()
 	if stsLister == nil {
 		return nil
@@ -500,7 +500,7 @@ func detectStatefulSetMissingService(cache *ResourceCache, namespace string, now
 		stss, _ = stsLister.List(labels.Everything())
 	}
 
-	var out []Problem
+	var out []Detection
 	for _, sts := range stss {
 		// spec.serviceName names the headless Service that creates per-pod
 		// DNS records. It's required by the StatefulSet API, so an empty
@@ -548,7 +548,7 @@ func detectStatefulSetMissingService(cache *ResourceCache, namespace string, now
 // pkg/k8score/transform.go to avoid retaining heavy schema/caBundle data,
 // so reading those refs from the cache is impossible. Would need a direct
 // API list bypassing the transform — tracked as a follow-up.
-func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourceCache, discovery *ResourceDiscovery, namespace string) []Problem {
+func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourceCache, discovery *ResourceDiscovery, namespace string) []Detection {
 	if cache == nil || dynamicCache == nil || discovery == nil {
 		return nil
 	}
@@ -576,7 +576,7 @@ func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 		return items
 	}
 
-	emit := func(kind, group, name, source, svcNS, svcName string, age time.Duration) Problem {
+	emit := func(kind, group, name, source, svcNS, svcName string, age time.Duration) Detection {
 		return missingRefProblem(kind, group, "", name,
 			"Missing webhook backend Service",
 			fmt.Sprintf("%s references Service %q in namespace %q which does not exist (webhook will not be invoked; admission rules silently bypassed when failurePolicy=Ignore, or admission halted when failurePolicy=Fail)",
@@ -584,8 +584,8 @@ func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 			age)
 	}
 
-	checkWebhookList := func(items []*unstructured.Unstructured, ownerKind, ownerGroup, webhookPath string) []Problem {
-		var problems []Problem
+	checkWebhookList := func(items []*unstructured.Unstructured, ownerKind, ownerGroup, webhookPath string) []Detection {
+		var problems []Detection
 		for _, item := range items {
 			webhooks, found, err := unstructured.NestedSlice(item.Object, webhookPath)
 			if err != nil || !found {
@@ -622,7 +622,7 @@ func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 		return problems
 	}
 
-	var out []Problem
+	var out []Detection
 	out = append(out, checkWebhookList(
 		listByKind("ValidatingWebhookConfiguration", "admissionregistration.k8s.io"),
 		"ValidatingWebhookConfiguration", "admissionregistration.k8s.io", "webhooks",
@@ -634,7 +634,7 @@ func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 	return out
 }
 
-func detectPVCMissingStorageClass(cache *ResourceCache, namespace string, now time.Time) []Problem {
+func detectPVCMissingStorageClass(cache *ResourceCache, namespace string, now time.Time) []Detection {
 	pvcLister := cache.PersistentVolumeClaims()
 	if pvcLister == nil {
 		return nil
@@ -651,7 +651,7 @@ func detectPVCMissingStorageClass(cache *ResourceCache, namespace string, now ti
 		pvcs, _ = pvcLister.List(labels.Everything())
 	}
 
-	var out []Problem
+	var out []Detection
 	for _, pvc := range pvcs {
 		// nil or empty storageClassName defers to the cluster default — that's
 		// not a ref error. Only flag when a concrete name is set + missing.
@@ -682,7 +682,7 @@ func danglingRoleBindingSeverity(bindingName, roleRefName string) string {
 	return "warning"
 }
 
-func detectRoleBindingMissingRole(cache *ResourceCache, namespace string, now time.Time) []Problem {
+func detectRoleBindingMissingRole(cache *ResourceCache, namespace string, now time.Time) []Detection {
 	roleLister := cache.Roles()
 	crLister := cache.ClusterRoles()
 	rbLister := cache.RoleBindings()
@@ -706,7 +706,7 @@ func detectRoleBindingMissingRole(cache *ResourceCache, namespace string, now ti
 		return false, false
 	}
 
-	var out []Problem
+	var out []Detection
 
 	if rbLister != nil {
 		var rbs []*rbacv1.RoleBinding
