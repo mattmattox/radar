@@ -485,6 +485,19 @@ func TestCompose_CRDConditionNoiseFloorSuppression(t *testing.T) {
 			wantHit: true,
 		},
 		{
+			// ArtifactFailed/ChartNotReady are in the shared health-display
+			// transient set (soften the badge to degraded) but are genuine stuck
+			// failures — the Issues queue must surface, not suppress them.
+			name:    "artifact-failed is a genuine failure, not transient — kept",
+			obj:     mk(map[string]any{"name": "artifact", "namespace": "flux"}, nil, falseReady("ArtifactFailed")),
+			wantHit: true,
+		},
+		{
+			name:    "chart-not-ready is a genuine failure, not transient — kept",
+			obj:     mk(map[string]any{"name": "chart", "namespace": "flux"}, nil, falseReady("ChartNotReady")),
+			wantHit: true,
+		},
+		{
 			name: "failed with current generation kept",
 			obj: mk(
 				map[string]any{"name": "broken2", "namespace": "flux", "generation": int64(5)},

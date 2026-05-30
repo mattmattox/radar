@@ -130,7 +130,16 @@ export function subjectRef(issue: Issue): IssueResourceRef {
 /** memberRef threads the issue's cluster_id onto a member ref (members carry
  *  no cluster_id of their own — every member shares the issue's cluster). */
 export function memberRef(issue: Issue, member: IssueResourceRef): IssueResourceRef {
-  return { ...member, cluster_id: issue.cluster_id };
+  // Normalize the same wire-omitted optionals subjectRef does: Go's Ref.Group /
+  // Ref.Namespace are omitempty, so core-API members (Pods) arrive with group /
+  // namespace undefined — left raw they'd interpolate "undefined" into host
+  // deep-links / React keys and break callbacks that assume a string.
+  return {
+    ...member,
+    group: member.group ?? '',
+    namespace: member.namespace ?? '',
+    cluster_id: issue.cluster_id,
+  };
 }
 
 /**
