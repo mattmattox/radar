@@ -145,6 +145,18 @@ func (p *CacheProvider) ListDynamic(gvr schema.GroupVersionResource, namespace s
 	return p.dynamic.List(gvr, namespace)
 }
 
+// ListDynamicAllNamespaces unions the GVR's cached objects across every watched
+// scope. Safe only on the cluster-wide-intent path (the caller has already
+// confirmed no namespace filter, which the handler only leaves empty for
+// cluster-wide-authorized callers) — ListWatched does not itself apply per-user
+// RBAC, so it must not back a namespace-scoped request.
+func (p *CacheProvider) ListDynamicAllNamespaces(gvr schema.GroupVersionResource) ([]*unstructured.Unstructured, error) {
+	if p.dynamic == nil {
+		return nil, nil
+	}
+	return p.dynamic.ListWatched(gvr)
+}
+
 func (p *CacheProvider) KindForGVR(gvr schema.GroupVersionResource) string {
 	if p.discovery == nil {
 		return ""

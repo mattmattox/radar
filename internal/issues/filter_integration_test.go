@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"fmt"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -9,6 +10,29 @@ import (
 	"github.com/skyhook-io/radar/internal/filter"
 	"github.com/skyhook-io/radar/internal/k8s"
 )
+
+// TestCompose_GroupedCELCountMatchesMemberTotal pins that `count > N` evaluates
+// against the GROUPED member total, not the always-1 flat evidence count. Six
+// pods of one Deployment fold to a single grouped issue with count=6.
+func TestCompose_GroupedCELCountMatchesMemberTotal(t *testing.T) {
+	probs := make([]k8s.Problem, 0, 6)
+	for i := 0; i < 6; i++ {
+		probs = append(probs, k8s.Problem{
+			Kind: "Pod", Namespace: "ns", Name: fmt.Sprintf("web-%d", i),
+			Severity: "critical", Reason: "CrashLoopBackOff",
+			OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web",
+		})
+	}
+	p := &fakeProvider{problems: probs}
+	f, err := filter.CompileIssueFilter(`count > 5`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := ComposeWithStats(p, Filters{Grouped: true, Filter: f})
+	if len(out) != 1 || out[0].Count != 6 {
+		t.Fatalf("count>5 should match the 6-pod grouped issue (count=6), got %+v", out)
+	}
+}
 
 // Filter integration tests — exercise ComposeWithStats with a compiled
 // CEL filter, covering match/drop, eval-error stats, and the

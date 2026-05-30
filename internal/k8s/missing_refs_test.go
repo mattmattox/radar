@@ -303,6 +303,89 @@ func TestDetectMissingRefs(t *testing.T) {
 	}
 }
 
+func TestDetectPodMissingRefs_SkipsTerminalPods(t *testing.T) {
+	defer ResetTestState()
+	now := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	mkPod := func(name string, phase corev1.PodPhase) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "prod", CreationTimestamp: now},
+			Spec:       corev1.PodSpec{ServiceAccountName: "missing-sa"},
+			Status:     corev1.PodStatus{Phase: phase},
+		}
+	}
+	client := fake.NewClientset(
+		mkPod("live", corev1.PodRunning),
+		mkPod("done", corev1.PodSucceeded),
+		mkPod("failed", corev1.PodFailed),
+	)
+	if err := InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	cache := GetResourceCache()
+	deadline := time.Now().Add(2 * time.Second)
+	flagged := map[string]bool{}
+	for time.Now().Before(deadline) {
+		flagged = map[string]bool{}
+		for _, p := range DetectMissingRefs(cache, "") {
+			if p.Reason == "Missing ServiceAccount" {
+				flagged[p.Name] = true
+			}
+		}
+		if flagged["live"] {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !flagged["live"] {
+		t.Error("running pod with a missing ServiceAccount should be flagged")
+	}
+	if flagged["done"] || flagged["failed"] {
+		t.Errorf("terminal pods (Succeeded/Failed) must be skipped by missing-ref detection: %+v", flagged)
+	}
+}
+
+func TestTopOwnerForPodResolved(t *testing.T) {
+	defer ResetTestState()
+	tru := true
+	depRS := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Name: "web-abc123", Namespace: "ns",
+		OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "Deployment", Name: "web", Controller: &tru}},
+	}}
+	rolloutRS := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Name: "canary-xyz789", Namespace: "ns",
+		OwnerReferences: []metav1.OwnerReference{{APIVersion: "argoproj.io/v1alpha1", Kind: "Rollout", Name: "canary", Controller: &tru}},
+	}}
+	client := fake.NewClientset(depRS, rolloutRS)
+	if err := InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	cache := GetResourceCache()
+	mkPod := func(rs string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Namespace:       "ns",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: rs, Controller: &tru}},
+		}}
+	}
+	// Wait for the ReplicaSet informer to populate (resolver returns the real
+	// Deployment once cached; before that it falls back to the hash-strip guess).
+	deadline := time.Now().Add(2 * time.Second)
+	var dep *TopOwnerInfo
+	for time.Now().Before(deadline) {
+		dep = topOwnerForPodResolved(cache, mkPod("web-abc123"))
+		if dep != nil && dep.Name == "web" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if dep == nil || dep.Kind != "Deployment" || dep.Name != "web" {
+		t.Errorf("Deployment-owned pod resolved to %+v, want Deployment/web", dep)
+	}
+	ro := topOwnerForPodResolved(cache, mkPod("canary-xyz789"))
+	if ro == nil || ro.Kind != "Rollout" || ro.Name != "canary" || ro.Group != "argoproj.io" {
+		t.Errorf("Rollout-owned pod resolved to %+v, want argoproj.io/Rollout/canary (NOT a phantom Deployment)", ro)
+	}
+}
+
 func TestDanglingRoleBindingSeverity(t *testing.T) {
 	cases := []struct {
 		name, binding, roleRef, want string

@@ -56,7 +56,7 @@ func (f *fakeIssuesProvider) DetectProblems(namespaces []string) []k8s.Problem {
 func (f *fakeIssuesProvider) DetectCAPIProblems(_ []string) []k8s.Problem   { return nil }
 func (f *fakeIssuesProvider) DetectGitOpsProblems(_ []string) []k8s.Problem { return nil }
 func (f *fakeIssuesProvider) DetectMissingRefs(_ []string) []k8s.Problem    { return nil }
-func (f *fakeIssuesProvider) DetectScheduling(_ []string) []k8s.Problem   { return nil }
+func (f *fakeIssuesProvider) DetectScheduling(_ []string) []k8s.Problem     { return nil }
 func (f *fakeIssuesProvider) WarningEvents(_ []string, _ time.Duration) []*corev1.Event {
 	return nil
 }
@@ -64,9 +64,12 @@ func (f *fakeIssuesProvider) WatchedDynamic() []schema.GroupVersionResource { re
 func (f *fakeIssuesProvider) ListDynamic(_ schema.GroupVersionResource, _ string) ([]*unstructured.Unstructured, error) {
 	return nil, nil
 }
-func (f *fakeIssuesProvider) KindForGVR(_ schema.GroupVersionResource) string { return "" }
+func (f *fakeIssuesProvider) ListDynamicAllNamespaces(_ schema.GroupVersionResource) ([]*unstructured.Unstructured, error) {
+	return nil, nil
+}
+func (f *fakeIssuesProvider) KindForGVR(_ schema.GroupVersionResource) string  { return "" }
 func (f *fakeIssuesProvider) KyvernoFindings() []policyreports.SubjectFindings { return nil }
-func (f *fakeIssuesProvider) KyvernoStatus() string                              { return "" }
+func (f *fakeIssuesProvider) KyvernoStatus() string                            { return "" }
 
 func fmtPodName(i int) string { return fmt.Sprintf("pod-%05d", i) }
 

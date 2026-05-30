@@ -165,6 +165,42 @@ func TestDetectGitOpsProblems(t *testing.T) {
 	}
 }
 
+func TestDetectFluxProblems_HelmRelease(t *testing.T) {
+	now := time.Now()
+	hr := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "helm.toolkit.fluxcd.io/v2",
+		"kind":       "HelmRelease",
+		"metadata":   map[string]any{"name": "hr", "namespace": "flux"},
+		"status": map[string]any{"conditions": []any{
+			map[string]any{"type": "Ready", "status": "False", "reason": "InstallFailed", "message": "chart install failed"},
+		}},
+	}}
+	got := detectFluxProblems([]*unstructured.Unstructured{hr}, "HelmRelease", fluxHelmGrp, now)
+	if len(got) != 1 || got[0].Kind != "HelmRelease" || got[0].Reason != "InstallFailed" {
+		t.Fatalf("want 1 HelmRelease InstallFailed problem, got %+v", got)
+	}
+}
+
+func TestDetectArgoAppProblems_EnabledFalseIsManual(t *testing.T) {
+	now := time.Now()
+	// automated present but enabled:false => manual => Missing/OutOfSync must NOT flag.
+	disabled := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
+		"metadata": map[string]any{"name": "auto-off", "namespace": "argocd"},
+		"spec":     map[string]any{"syncPolicy": map[string]any{"automated": map[string]any{"enabled": false}}},
+		"status":   map[string]any{"health": map[string]any{"status": "Missing"}, "sync": map[string]any{"status": "OutOfSync"}},
+	}}
+	if got := detectArgoAppProblems([]*unstructured.Unstructured{disabled}, now); len(got) != 0 {
+		t.Errorf("automated.enabled:false is manual — Missing/OutOfSync must NOT flag, got %+v", got)
+	}
+	// automated present without enabled (the common case) => automated => flags.
+	enabled := disabled.DeepCopy()
+	_ = unstructured.SetNestedMap(enabled.Object, map[string]any{}, "spec", "syncPolicy", "automated")
+	if got := detectArgoAppProblems([]*unstructured.Unstructured{enabled}, now); len(got) != 1 {
+		t.Errorf("automated present (no enabled key) should flag Missing, got %+v", got)
+	}
+}
+
 func TestEstimateCronMinInterval(t *testing.T) {
 	day := 24 * time.Hour
 	cases := []struct {

@@ -40,6 +40,9 @@ func (f *fakeProvider) WatchedDynamic() []schema.GroupVersionResource {
 func (f *fakeProvider) ListDynamic(gvr schema.GroupVersionResource, _ string) ([]*unstructured.Unstructured, error) {
 	return f.dynamic[gvr], nil
 }
+func (f *fakeProvider) ListDynamicAllNamespaces(gvr schema.GroupVersionResource) ([]*unstructured.Unstructured, error) {
+	return f.dynamic[gvr], nil
+}
 func (f *fakeProvider) KindForGVR(gvr schema.GroupVersionResource) string {
 	return f.kinds[gvr]
 }
@@ -124,6 +127,48 @@ func TestCompose_GroupsMemberPodsUnderOwner(t *testing.T) {
 	}
 	if got["web-a"].GroupingScope != ScopeWorkload {
 		t.Errorf("scope = %q, want workload", got["web-a"].GroupingScope)
+	}
+}
+
+func TestCompose_GroupedKindFilterMatchesSubject(t *testing.T) {
+	// A crashlooping Deployment is evidenced by Pod rows that fold under the
+	// Deployment subject. On the GROUPED surface, kind=Deployment must return
+	// that issue (the public filter sees the subject), and kind=Pod must NOT —
+	// filtering the flat Pod evidence before grouping would invert both.
+	p := &fakeProvider{
+		problems: []k8s.Problem{
+			{Kind: "Pod", Namespace: "ns", Name: "web-a", Severity: "critical", Reason: "CrashLoopBackOff", OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web"},
+			{Kind: "Pod", Namespace: "ns", Name: "web-b", Severity: "critical", Reason: "CrashLoopBackOff", OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web"},
+		},
+	}
+	out := Compose(p, Filters{Grouped: true, Kinds: []string{"Deployment"}})
+	if len(out) != 1 {
+		t.Fatalf("kind=Deployment (grouped) must match the pod-evidenced Deployment issue, got %d: %+v", len(out), out)
+	}
+	if out[0].Kind != "Deployment" || out[0].Name != "web" {
+		t.Errorf("subject = %s/%s, want Deployment/web", out[0].Kind, out[0].Name)
+	}
+	if out[0].Count != 2 {
+		t.Errorf("count = %d, want 2 (both pods folded)", out[0].Count)
+	}
+	if got := Compose(p, Filters{Grouped: true, Kinds: []string{"Pod"}}); len(got) != 0 {
+		t.Errorf("kind=Pod (grouped) must NOT match a Deployment-subject issue, got %d", len(got))
+	}
+}
+
+func TestCompose_DropsInfoSeverityFromQueue(t *testing.T) {
+	// info-severity problems are inert/posture (deprecated-RBAC residue,
+	// singleton-StatefulSet headless-DNS trivia) — excluded from the live issue
+	// stream, which stays critical|warning.
+	p := &fakeProvider{
+		missingRefs: []k8s.Problem{
+			{Kind: "StatefulSet", Group: "apps", Namespace: "ns", Name: "inert", Severity: "info", Reason: "Missing headless Service"},
+			{Kind: "Pod", Namespace: "ns", Name: "real", Severity: "critical", Reason: "Missing ConfigMap"},
+		},
+	}
+	out := Compose(p, Filters{})
+	if len(out) != 1 || out[0].Name != "real" {
+		t.Fatalf("only the critical row should surface; info must be dropped. got %+v", out)
 	}
 }
 
@@ -700,6 +745,14 @@ func (c *countingProvider) ListDynamic(gvr schema.GroupVersionResource, ns strin
 	}
 	c.listCalls[gvr]++
 	return c.fakeProvider.ListDynamic(gvr, ns)
+}
+
+func (c *countingProvider) ListDynamicAllNamespaces(gvr schema.GroupVersionResource) ([]*unstructured.Unstructured, error) {
+	if c.listCalls == nil {
+		c.listCalls = map[schema.GroupVersionResource]int{}
+	}
+	c.listCalls[gvr]++
+	return c.fakeProvider.ListDynamicAllNamespaces(gvr)
 }
 
 // TestDetectGenericCRDIssues_SkipsListWhenKindFiltered pins the
