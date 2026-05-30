@@ -40,10 +40,10 @@ func TestIsClusterOnlyKind(t *testing.T) {
 
 func TestClusterOnlyKindGVR(t *testing.T) {
 	cases := []struct {
-		kind       string
-		wantGroup  string
-		wantRes    string
-		wantOK     bool
+		kind      string
+		wantGroup string
+		wantRes   string
+		wantOK    bool
 	}{
 		{"nodes", "", "nodes", true},
 		{"node", "", "nodes", true},
