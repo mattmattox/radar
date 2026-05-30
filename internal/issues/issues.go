@@ -40,6 +40,12 @@ type Provider interface {
 	// CRD-condition fallback inputs.
 	WatchedDynamic() []schema.GroupVersionResource
 	ListDynamic(gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, error)
+	// ListDynamicAllNamespaces unions a namespaced CRD's objects across every
+	// watched scope (cluster-wide and/or per-namespace informers). Used ONLY on
+	// the cluster-wide-intent path (no namespace filter ⇒ caller is cluster-wide
+	// authorized), where a plain ListDynamic(gvr,"") would read only a
+	// cluster-wide informer and silently drop namespace-scoped contents.
+	ListDynamicAllNamespaces(gvr schema.GroupVersionResource) ([]*unstructured.Unstructured, error)
 	KindForGVR(gvr schema.GroupVersionResource) string
 }
 
@@ -101,57 +107,52 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	// `source` survives only as an output label on each row (+ CEL filter),
 	// not as an input filter — detection provenance is not a triage axis.
 
-	// ---- Source: problem (radar's hardcoded checks) -----------------
-	for _, p := range p.DetectProblems(f.Namespaces) {
-		out = append(out, fromProblem(p, now, SourceProblem))
+	// ---- 1. Collect flat evidence from every curated source ----------
+	// emit drops info-severity problems: those are inert/posture findings
+	// (deprecated-RBAC residue, singleton-StatefulSet headless-DNS trivia) —
+	// classified honestly at the Problem layer for other surfaces, but NOT part
+	// of the live "what's broken now" issue stream. Issues stays critical|warning.
+	emit := func(ps []k8s.Problem, source Source) {
+		for _, pr := range ps {
+			if pr.Severity == "info" {
+				continue
+			}
+			out = append(out, fromProblem(pr, now, source))
+		}
 	}
-	for _, p := range p.DetectCAPIProblems(f.Namespaces) {
-		out = append(out, fromProblem(p, now, SourceProblem))
-	}
-	for _, p := range p.DetectGitOpsProblems(f.Namespaces) {
-		out = append(out, fromProblem(p, now, SourceProblem))
-	}
+	emit(p.DetectProblems(f.Namespaces), SourceProblem)       // hardcoded per-kind checks
+	emit(p.DetectCAPIProblems(f.Namespaces), SourceProblem)   // Cluster API
+	emit(p.DetectGitOpsProblems(f.Namespaces), SourceProblem) // Argo/Flux reconciler health
+	emit(p.DetectMissingRefs(f.Namespaces), SourceMissingRef) // dangling by-name refs
+	emit(p.DetectScheduling(f.Namespaces), SourceScheduling)  // placement/admission/post-bind
+	out = append(out, detectGenericCRDIssues(p, f)...)        // generic CRD .status.conditions
 
-	// ---- Source: missing_ref (dangling-ref detection) --------------
-	// Direct by-name reference targets that don't exist (Pod → missing
-	// PVC / CM / Secret / SA, HPA → missing scaleTargetRef, Ingress →
-	// missing backend Service, etc.).
-	for _, p := range p.DetectMissingRefs(f.Namespaces) {
-		out = append(out, fromProblem(p, now, SourceMissingRef))
-	}
-
-	// ---- Source: scheduling (placement + admission + post-bind) -----
-	// Why a Pod can't reach Running, decomposed: unschedulable (with the
-	// offending node label/taint named), admission-rejected (quota/
-	// PodSecurity/webhook — no Pod object exists), or stuck post-bind
-	// (CNI/volume).
-	for _, p := range p.DetectScheduling(f.Namespaces) {
-		out = append(out, fromProblem(p, now, SourceScheduling))
-	}
-
-	// ---- Source: condition (generic CRD .status.conditions fallback) ----
-	out = append(out, detectGenericCRDIssues(p, f)...)
-
-	// Apply remaining filters (severity, kind, namespace) post-compose
-	// since each source has its own native filtering surface and
-	// pushing filters down individually would multiply branching.
-	out = applyFilters(out, f)
+	// ---- 2. Evidence-level transforms (operate on flat rows) ---------
+	// RBAC gating on the underlying resource, and dedup that compares child
+	// symptoms against parent rollups across member pods — both need the flat
+	// rows, so they run BEFORE grouping and BEFORE the public filters.
 	out = applyClusterScopedAccess(out, f)
 	out = dedupePodSchedulingOverProblem(out)
 	out = dedupeWorkloadDegradedOverChild(out)
 
-	// Optional CEL filter — evaluated last so it sees the normalized
-	// row shape. Eval errors count as non-match (matches "missing
-	// field" semantics; agent gets zero hits + a clean response,
-	// rather than a 500). Runtime causes: missing-field traversal,
-	// type mismatches on dyn-typed nested fields, cost-limit
-	// overruns. Parse/type errors against the declared bindings
-	// fail at compile and never reach here. ComposeStats surfaces
-	// the count + first sample back to the handler so the agent can
-	// distinguish "filter excluded everything" from "cluster has
-	// nothing matching."
+	// ---- 3. Shape: fold to the public grouped model ------------------
+	// A grouped row's Kind/Name is the SUBJECT (the owner a 50-pod crashloop
+	// rolls up to) and Count is the member total. Folding before the public
+	// filters is what makes kind= match the subject and count> match the fan-out
+	// — filtering the flat evidence first would drop a pod-evidenced Deployment
+	// issue under kind=Deployment and always see Count=1.
+	if f.Grouped {
+		out = GroupIssues(out)
+	}
+
+	// ---- 4. Public filters on the shaped rows ------------------------
+	out = applyFilters(out, f) // severity + kind, against subject (grouped) or evidence (flat)
 	var stats ComposeStats
 	if f.Filter != nil {
+		// CEL evaluated last so it sees the public shape. Eval errors count as
+		// non-match ("missing field" semantics: zero hits + clean response, not
+		// a 500); ComposeStats forwards the count + first sample so the caller
+		// can distinguish "filter excluded everything" from "nothing matched."
 		filtered := out[:0]
 		var firstErr error
 		errCount := 0
@@ -178,14 +179,10 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 		out = filtered
 	}
 
-	// Grouped folds the flat evidence rows into the public issue model
-	// before the cap, so the limit counts issue groups rather than replica
-	// fan-out (a 50-pod crashloop is one issue). Flat callers keep the
-	// per-object rows. GroupIssues sorts deterministically; the flat path
-	// uses the same comparator so both orders agree.
-	if f.Grouped {
-		out = GroupIssues(out)
-	} else {
+	// ---- 5. Sort, count, cap -----------------------------------------
+	// GroupIssues already sorted deterministically; the flat path sorts here
+	// with the same comparator so both orders agree.
+	if !f.Grouped {
 		sort.SliceStable(out, func(i, j int) bool { return lessIssue(out[i], out[j]) })
 	}
 	stats.TotalMatched = len(out)
@@ -239,50 +236,68 @@ func detectGenericCRDIssues(p Provider, f Filters) []Issue {
 		if clusterScoped && f.CanReadClusterScoped != nil && !f.CanReadClusterScoped(kind, gvr.Group) {
 			continue
 		}
-		// Per-namespace iteration when scope is set; cluster-wide list
-		// otherwise. List with empty namespace returns all namespaces.
-		queryNs := []string{""}
-		if !clusterScoped && len(f.Namespaces) > 0 {
-			queryNs = f.Namespaces
-		}
-		for _, ns := range queryNs {
-			items, err := p.ListDynamic(gvr, ns)
+		// Gather candidate objects RBAC-safely:
+		//  - cluster-scoped CRD → one cluster-wide list (already access-gated above).
+		//  - namespaced CRD with an explicit namespace set → list each (the set is
+		//    auth-filtered upstream by the handler).
+		//  - namespaced CRD with NO namespace set → the caller is cluster-wide
+		//    authorized (restricted users always have their set injected), so union
+		//    across every watched scope. A plain ListDynamic(gvr,"") would read only
+		//    a cluster-wide informer and silently miss namespace-scoped ones.
+		var items []*unstructured.Unstructured
+		switch {
+		case clusterScoped:
+			its, err := p.ListDynamic(gvr, "")
 			if err != nil {
 				continue
 			}
-			for _, u := range items {
-				condType, reason, msg, since, ok := FindFalseCondition(u)
-				if !ok {
+			items = its
+		case len(f.Namespaces) > 0:
+			for _, ns := range f.Namespaces {
+				its, err := p.ListDynamic(gvr, ns)
+				if err != nil {
 					continue
 				}
-				// Noise-floor suppression: a False
-				// Ready/Available on an object that is suspended, still
-				// reconciling, or whose controller hasn't yet observed the
-				// current spec is NOT a failure — it's in-flight. Emitting a
-				// warning for it is the canonical alert-fatigue trap, since
-				// auto-refresh keeps it permanently lit. Skip those; keep
-				// genuinely-failed objects.
-				if isTransientCRDCondition(u, reason) {
-					continue
-				}
-				lastSeen := time.Now().Add(-since)
-				iss := Issue{
-					Severity:  SeverityWarning,
-					Source:    SourceCondition,
-					Kind:      kind,
-					Group:     gvr.Group,
-					Namespace: u.GetNamespace(),
-					Name:      u.GetName(),
-					Reason:    condTypeReason(condType, reason),
-					Message:   msg,
-					FirstSeen: lastSeen,
-					LastSeen:  lastSeen,
-					Count:     1,
-				}
-				classifyIssue(&iss)
-				enrichIdentity(&iss)
-				out = append(out, iss)
+				items = append(items, its...)
 			}
+		default:
+			its, err := p.ListDynamicAllNamespaces(gvr)
+			if err != nil {
+				continue
+			}
+			items = its
+		}
+		for _, u := range items {
+			condType, reason, msg, since, ok := FindFalseCondition(u)
+			if !ok {
+				continue
+			}
+			// Noise-floor suppression: a False Ready/Available on an object that
+			// is suspended, still reconciling, or whose controller hasn't yet
+			// observed the current spec is NOT a failure — it's in-flight.
+			// Emitting a warning for it is the canonical alert-fatigue trap,
+			// since auto-refresh keeps it permanently lit. Skip those; keep
+			// genuinely-failed objects.
+			if isTransientCRDCondition(u, reason) {
+				continue
+			}
+			lastSeen := time.Now().Add(-since)
+			iss := Issue{
+				Severity:  SeverityWarning,
+				Source:    SourceCondition,
+				Kind:      kind,
+				Group:     gvr.Group,
+				Namespace: u.GetNamespace(),
+				Name:      u.GetName(),
+				Reason:    condTypeReason(condType, reason),
+				Message:   msg,
+				FirstSeen: lastSeen,
+				LastSeen:  lastSeen,
+				Count:     1,
+			}
+			classifyIssue(&iss)
+			enrichIdentity(&iss)
+			out = append(out, iss)
 		}
 	}
 	return out
@@ -415,8 +430,15 @@ func fromProblem(p k8s.Problem, now time.Time, source Source) Issue {
 		LastTerminatedReason: p.LastTerminatedReason,
 	}
 	if p.OwnerKind != "" {
+		// Prefer the owner group resolved at detection (carries the real group
+		// for CRD controllers like Argo Rollout); fall back to the builtin
+		// Kind→Group table for legacy emitters that leave it empty.
+		ownerGroup := p.OwnerGroup
+		if ownerGroup == "" {
+			ownerGroup = resolveGroup("", p.OwnerKind)
+		}
 		iss.Owner = Ref{
-			Group:     resolveGroup("", p.OwnerKind),
+			Group:     ownerGroup,
 			Kind:      p.OwnerKind,
 			Namespace: p.Namespace,
 			Name:      p.OwnerName,

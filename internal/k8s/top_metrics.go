@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const (
@@ -92,8 +94,9 @@ type TopWorkloadMetrics struct {
 }
 
 type TopOwnerInfo struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
+	Group string `json:"group,omitempty"`
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
 }
 
 func NormalizeTopMetricsOptions(opts TopMetricsOptions) TopMetricsOptions {
@@ -450,21 +453,66 @@ func nodeReadyStatus(node *corev1.Node) string {
 	return "Unknown"
 }
 
+// topOwnerForPodResolved is the cache-aware owner walk. A pod's controlling
+// ReplicaSet is not necessarily owned by a Deployment — Argo Rollouts and other
+// CRD controllers create ReplicaSets directly. The pod-only topOwnerForPod
+// assumes Deployment for any ReplicaSet, which mislabels those pods as phantom
+// Deployments (broken grouping subject + dead deep-link). This resolves the
+// ReplicaSet to its OWN controller via cache and reports the real owner
+// (Deployment with its true name, an Argo Rollout, a standalone ReplicaSet, …).
+// Falls back to the pod-only heuristic when the ReplicaSet isn't cached.
+func topOwnerForPodResolved(cache *ResourceCache, pod *corev1.Pod) *TopOwnerInfo {
+	ref := controllerOrFirstOwner(pod.OwnerReferences)
+	if ref == nil {
+		return nil
+	}
+	if ref.Kind == "ReplicaSet" && cache != nil {
+		if rsl := cache.ReplicaSets(); rsl != nil {
+			if rs, err := rsl.ReplicaSets(pod.Namespace).Get(ref.Name); err == nil && rs != nil {
+				if owner := controllerOrFirstOwner(rs.OwnerReferences); owner != nil {
+					return &TopOwnerInfo{
+						Group: schema.FromAPIVersionAndKind(owner.APIVersion, owner.Kind).Group,
+						Kind:  owner.Kind,
+						Name:  owner.Name,
+					}
+				}
+				// A ReplicaSet with no controller owner is its own top owner.
+				return &TopOwnerInfo{Group: "apps", Kind: "ReplicaSet", Name: ref.Name}
+			}
+		}
+	}
+	return topOwnerForPod(pod)
+}
+
+// controllerOrFirstOwner returns the controller=true ownerReference, falling
+// back to the first reference — matching topOwnerForPod's existing preference.
+func controllerOrFirstOwner(refs []metav1.OwnerReference) *metav1.OwnerReference {
+	for i := range refs {
+		if refs[i].Controller != nil && *refs[i].Controller {
+			return &refs[i]
+		}
+	}
+	if len(refs) > 0 {
+		return &refs[0]
+	}
+	return nil
+}
+
 func topOwnerForPod(pod *corev1.Pod) *TopOwnerInfo {
 	for _, ref := range pod.OwnerReferences {
 		if ref.Controller != nil && *ref.Controller {
 			if ref.Kind == "ReplicaSet" {
-				return &TopOwnerInfo{Kind: "Deployment", Name: stripReplicaSetHash(ref.Name)}
+				return &TopOwnerInfo{Group: "apps", Kind: "Deployment", Name: stripReplicaSetHash(ref.Name)}
 			}
-			return &TopOwnerInfo{Kind: ref.Kind, Name: ref.Name}
+			return &TopOwnerInfo{Group: schema.FromAPIVersionAndKind(ref.APIVersion, ref.Kind).Group, Kind: ref.Kind, Name: ref.Name}
 		}
 	}
 	if len(pod.OwnerReferences) > 0 {
 		ref := pod.OwnerReferences[0]
 		if ref.Kind == "ReplicaSet" {
-			return &TopOwnerInfo{Kind: "Deployment", Name: stripReplicaSetHash(ref.Name)}
+			return &TopOwnerInfo{Group: "apps", Kind: "Deployment", Name: stripReplicaSetHash(ref.Name)}
 		}
-		return &TopOwnerInfo{Kind: ref.Kind, Name: ref.Name}
+		return &TopOwnerInfo{Group: schema.FromAPIVersionAndKind(ref.APIVersion, ref.Kind).Group, Kind: ref.Kind, Name: ref.Name}
 	}
 	return nil
 }
