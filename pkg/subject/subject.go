@@ -75,7 +75,7 @@ type Subject struct {
 
 // Key is the canonical group|kind|namespace|name string for s.Ref — a thin
 // pass-through to pkg/audit.ResourceKey (NOT reinvented). This is the
-// groupingKey fed to IssueID/CheckID; sharing it keeps issue grouping and audit
+// groupingKey fed to StableID; sharing it keeps issue grouping and audit
 // deep-links from drifting.
 func (s Subject) Key() string {
 	return bp.ResourceKey(s.Ref.Group, s.Ref.Kind, s.Ref.Namespace, s.Ref.Name)
@@ -137,7 +137,7 @@ const maxOwnerWalkDepth = 16
 // Pass owners=nil for the pure "resource is its own subject" path. The
 // owner-walk inputs (topo/dp/idx) are bound inside the OwnerResolver the caller
 // injects, so this signature stays layering-clean.
-func ResolveSubject(start Ref, podMeta metav1.Object, owners OwnerResolver, ops OperatorRootHook) Subject {
+func ResolveSubject(start Ref, owners OwnerResolver, ops OperatorRootHook) Subject {
 	cur := start
 	anchor := AnchorSelf
 
@@ -198,6 +198,14 @@ func refKey(r Ref) string {
 // once, then (zero, false) for anything else, since a bare Pod's
 // OwnerReferences only describe one hop. Job->CronJob and deeper chains require
 // a topology-backed OwnerResolver.
+//
+// APPROXIMATION (read before using): for a ReplicaSet owner it assumes
+// RS->Deployment by stripping the pod-template hash. That is WRONG for
+// ReplicaSets owned by an Argo Rollout or any other CRD controller — it
+// fabricates a Deployment that doesn't exist (the exact phantom-owner class
+// fixed in the cache-aware k8s.topOwnerForPodResolved path). Use this only as
+// the label-free, no-cache fallback; when a cache/topology is available, inject
+// an OwnerResolver that resolves the ReplicaSet's *real* controller instead.
 type PodOwnerResolver struct{ Pod metav1.Object }
 
 func (p PodOwnerResolver) ParentOf(child Ref) (Ref, bool) {
@@ -248,12 +256,14 @@ func StripReplicaSetHash(name string) string {
 
 // ============================ DETERMINISTIC IDs ============================
 
-// IssueID is sha256 of scope + "\x00" + groupingKey + "\x00" + category,
-// truncated [:8], hex. The exact byte layout is load-bearing: any change
-// re-keys every existing issue, so it must not be altered. category passed as
-// string.
-func IssueID(scope Scope, groupingKey, category string) string {
-	sum := sha256.Sum256([]byte(string(scope) + "\x00" + groupingKey + "\x00" + category))
+// StableID is the generic deterministic identity hash: sha256 of
+// scope + "\x00" + groupingKey + "\x00" + discriminator, truncated [:8], hex.
+// Subject produces subject identity; a surface composes its own ID from a
+// subject key + a discriminator (Issues uses category; Checks could use a
+// check-id). The exact byte layout is load-bearing — any change re-keys every
+// existing record — so it must not be altered.
+func StableID(scope Scope, groupingKey, discriminator string) string {
+	sum := sha256.Sum256([]byte(string(scope) + "\x00" + groupingKey + "\x00" + discriminator))
 	return hex.EncodeToString(sum[:8])
 }
 
@@ -271,7 +281,7 @@ type Resolved struct {
 // meta for the owner walk AND the labels/annotations for the overlay.
 func Resolve(start Ref, obj metav1.Object, owners OwnerResolver, ops OperatorRootHook, allowBareApp bool) Resolved {
 	return Resolved{
-		Subject: ResolveSubject(start, obj, owners, ops),
+		Subject: ResolveSubject(start, owners, ops),
 		App:     ResolveOverlay(obj, allowBareApp),
 	}
 }

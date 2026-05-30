@@ -74,28 +74,29 @@ const (
 	CategoryWebhookBackendDown    Category = "webhook_backend_down"
 )
 
-// Group is the coarse rollup over categories — the ~10 buckets used for the UI
-// facet + summary strip. Derived from Category via categoryGroup; never set
-// independently.
-type Group string
+// CategoryGroup is the coarse rollup over categories — the ~10 buckets used for
+// the UI facet + summary strip. Derived from Category via categoryGroup; never
+// set independently. Named distinctly from Issue.Group (the resource's API
+// group) to avoid the two colliding.
+type CategoryGroup string
 
 const (
-	GroupUnknown       Group = "unknown"
-	GroupScheduling    Group = "scheduling"
-	GroupStartup       Group = "startup"
-	GroupRuntime       Group = "runtime"
-	GroupConfiguration Group = "configuration"
-	GroupNetworking    Group = "networking"
-	GroupStorage       Group = "storage"
-	GroupScaling       Group = "scaling"
-	GroupSecurity      Group = "security"
-	GroupControlPlane  Group = "control_plane"
+	GroupUnknown       CategoryGroup = "unknown"
+	GroupScheduling    CategoryGroup = "scheduling"
+	GroupStartup       CategoryGroup = "startup"
+	GroupRuntime       CategoryGroup = "runtime"
+	GroupConfiguration CategoryGroup = "configuration"
+	GroupNetworking    CategoryGroup = "networking"
+	GroupStorage       CategoryGroup = "storage"
+	GroupScaling       CategoryGroup = "scaling"
+	GroupSecurity      CategoryGroup = "security"
+	GroupControlPlane  CategoryGroup = "control_plane"
 )
 
 // categoryGroup is the fixed category→group rollup. Server-side source of
 // truth: the UI renders whatever group the server reports, so adding a
 // category needs no frontend change.
-var categoryGroup = map[Category]Group{
+var categoryGroup = map[Category]CategoryGroup{
 	CategoryUnschedulable:            GroupScheduling,
 	CategoryQuotaExceeded:            GroupScheduling,
 	CategoryAdmissionWebhookBlocking: GroupScheduling,
@@ -129,7 +130,7 @@ var categoryGroup = map[Category]Group{
 }
 
 // GroupOf returns the rollup group for a category. Unknown/unmapped → unknown.
-func GroupOf(c Category) Group {
+func GroupOf(c Category) CategoryGroup {
 	if g, ok := categoryGroup[c]; ok {
 		return g
 	}

@@ -105,7 +105,7 @@ func foldGroup(members []Issue) Issue {
 // (member names are unique within a group, so the order is total →
 // deterministic regardless of iteration order).
 func betterRepresentative(cand, cur Issue) bool {
-	if c, r := severityRank(cand.Severity), severityRank(cur.Severity); c != r {
+	if c, r := SeverityRank(cand.Severity), SeverityRank(cur.Severity); c != r {
 		return c > r
 	}
 	if !cand.LastSeen.Equal(cur.LastSeen) {
@@ -153,7 +153,7 @@ func sortRefs(refs []Ref) {
 // flat compose path and the grouped fold so both surfaces order identically.
 func lessIssue(a, b Issue) bool {
 	if a.Severity != b.Severity {
-		return severityRank(a.Severity) > severityRank(b.Severity)
+		return SeverityRank(a.Severity) > SeverityRank(b.Severity)
 	}
 	if !a.LastSeen.Equal(b.LastSeen) {
 		return a.LastSeen.After(b.LastSeen)

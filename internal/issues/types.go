@@ -94,8 +94,8 @@ type Issue struct {
 	// CategoryGroup is its coarse rollup (GroupOf). Both are server-emitted
 	// labels so the UI renders them without its own category→group map.
 	// Distinct from Group below, which is the resource's API group.
-	Category      Category `json:"category,omitempty"`
-	CategoryGroup Group    `json:"category_group,omitempty"`
+	Category      Category      `json:"category,omitempty"`
+	CategoryGroup CategoryGroup `json:"category_group,omitempty"`
 	// ID is the deterministic, cluster-local issue identity —
 	// hash(grouping_scope, subject key, category). Shared by every row that
 	// rolls up to the same subject+category, so consumers can group on it;

@@ -32,7 +32,7 @@ func ctrlRef(kind, name, apiVersion string) metav1.OwnerReference {
 func TestResolveSubject_PodToDeploymentOwnerCollapse(t *testing.T) {
 	pod := obj("ns", "web-abc12345", nil, nil, ctrlRef("ReplicaSet", "web-5d8f9c", "apps/v1"))
 	start := Ref{Kind: "Pod", Namespace: "ns", Name: "web-abc12345"}
-	got := ResolveSubject(start, pod, PodOwnerResolver{Pod: pod}, nil)
+	got := ResolveSubject(start, PodOwnerResolver{Pod: pod}, nil)
 	want := Subject{Ref: Ref{Group: "apps", Kind: "Deployment", Namespace: "ns", Name: "web"}, Scope: ScopeWorkload, Anchor: AnchorOwnerCollapsed}
 	if got != want {
 		t.Errorf("Pod->RS->Deployment: got %+v, want %+v", got, want)
@@ -45,7 +45,7 @@ func TestResolveSubject_MultiHopJobToCronJob(t *testing.T) {
 	jobRef := Ref{Group: "batch", Kind: "Job", Namespace: "ns", Name: "backup-29384"}
 	cronRef := Ref{Group: "batch", Kind: "CronJob", Namespace: "ns", Name: "backup"}
 	owners := fakeOwners{refKey(podRef): jobRef, refKey(jobRef): cronRef}
-	got := ResolveSubject(podRef, nil, owners, nil)
+	got := ResolveSubject(podRef, owners, nil)
 	want := Subject{Ref: cronRef, Scope: ScopeWorkload, Anchor: AnchorOwnerCollapsed}
 	if got != want {
 		t.Errorf("Pod->Job->CronJob: got %+v, want %+v", got, want)
@@ -55,7 +55,7 @@ func TestResolveSubject_MultiHopJobToCronJob(t *testing.T) {
 func TestResolveSubject_BarePod(t *testing.T) {
 	pod := obj("ns", "loner", nil, nil) // no owner refs
 	start := Ref{Kind: "Pod", Namespace: "ns", Name: "loner"}
-	got := ResolveSubject(start, pod, PodOwnerResolver{Pod: pod}, nil)
+	got := ResolveSubject(start, PodOwnerResolver{Pod: pod}, nil)
 	if got.Anchor != AnchorBare || got.Ref != start {
 		t.Errorf("bare pod: got %+v, want anchor=bare ref=%+v", got, start)
 	}
@@ -64,7 +64,7 @@ func TestResolveSubject_BarePod(t *testing.T) {
 func TestResolveSubject_StaticPodOwnedByNode(t *testing.T) {
 	podRef := Ref{Kind: "Pod", Namespace: "kube-system", Name: "kube-apiserver-node1"}
 	owners := fakeOwners{refKey(podRef): {Kind: "Node", Name: "node1"}}
-	got := ResolveSubject(podRef, nil, owners, nil)
+	got := ResolveSubject(podRef, owners, nil)
 	if got.Anchor != AnchorNode {
 		t.Errorf("static pod (owner=Node): anchor %q, want node", got.Anchor)
 	}
@@ -75,7 +75,7 @@ func TestResolveSubject_StaticPodOwnedByNode(t *testing.T) {
 
 func TestResolveSubject_NonPodSelf(t *testing.T) {
 	svc := Ref{Kind: "Service", Namespace: "ns", Name: "api"}
-	got := ResolveSubject(svc, nil, nil, nil) // owners=nil: resource is its own subject
+	got := ResolveSubject(svc, nil, nil) // owners=nil: resource is its own subject
 	want := Subject{Ref: svc, Scope: ScopeService, Anchor: AnchorSelf}
 	if got != want {
 		t.Errorf("non-pod self: got %+v, want %+v", got, want)
@@ -88,7 +88,7 @@ func TestResolveSubject_OperatorCRRootHop(t *testing.T) {
 	cnpg := Ref{Group: "postgresql.cnpg.io", Kind: "Cluster", Namespace: "ns", Name: "pg"}
 	owners := fakeOwners{refKey(podRef): stsRef} // Pod->STS; STS has no further controller
 	ops := DefaultOperatorRoots{Owners: fakeLookup{refKey(stsRef): cnpg}}
-	got := ResolveSubject(podRef, nil, owners, ops)
+	got := ResolveSubject(podRef, owners, ops)
 	if got.Anchor != AnchorOperatorCR || got.Ref != cnpg {
 		t.Errorf("operator-CR hop: got %+v, want ref=%+v anchor=operator_cr", got, cnpg)
 	}
@@ -101,7 +101,7 @@ func TestResolveSubject_UnknownOperatorDegradesToWorkload(t *testing.T) {
 	unknownCR := Ref{Group: "unknown.example.io", Kind: "Widget", Namespace: "ns", Name: "x"}
 	owners := fakeOwners{refKey(podRef): stsRef}
 	ops := DefaultOperatorRoots{Owners: fakeLookup{refKey(stsRef): unknownCR}}
-	got := ResolveSubject(podRef, nil, owners, ops)
+	got := ResolveSubject(podRef, owners, ops)
 	if got.Ref != stsRef || got.Anchor != AnchorOwnerCollapsed {
 		t.Errorf("unknown operator CR must degrade to the workload: got %+v", got)
 	}
@@ -130,8 +130,8 @@ func TestStripReplicaSetHash(t *testing.T) {
 }
 
 func TestIssueID_DeterministicAndCategoryKeyed(t *testing.T) {
-	a := IssueID(ScopeWorkload, "apps|Deployment|ns|web", "crashloop")
-	if a != IssueID(ScopeWorkload, "apps|Deployment|ns|web", "crashloop") {
+	a := StableID(ScopeWorkload, "apps|Deployment|ns|web", "crashloop")
+	if a != StableID(ScopeWorkload, "apps|Deployment|ns|web", "crashloop") {
 		t.Error("IssueID must be deterministic")
 	}
 	if len(a) != 16 {
@@ -140,13 +140,13 @@ func TestIssueID_DeterministicAndCategoryKeyed(t *testing.T) {
 	// Each component must change the id. category being part of the key is what
 	// the detector-monotonicity contract depends on (a flapping category churns
 	// the id), so it must hold; subject-key and scope must also be load-bearing.
-	if IssueID(ScopeWorkload, "apps|Deployment|ns|web", "image_pull_failed") == a {
+	if StableID(ScopeWorkload, "apps|Deployment|ns|web", "image_pull_failed") == a {
 		t.Error("IssueID must change with category")
 	}
-	if IssueID(ScopeWorkload, "apps|Deployment|ns|other", "crashloop") == a {
+	if StableID(ScopeWorkload, "apps|Deployment|ns|other", "crashloop") == a {
 		t.Error("IssueID must change with the subject key")
 	}
-	if IssueID(ScopeService, "apps|Deployment|ns|web", "crashloop") == a {
+	if StableID(ScopeService, "apps|Deployment|ns|web", "crashloop") == a {
 		t.Error("IssueID must change with scope")
 	}
 }
@@ -231,9 +231,9 @@ func TestParseArgoTrackingID(t *testing.T) {
 		ns, name string
 		ok       bool
 	}{
-		{"guestbook:apps/Deployment:default/guestbook", "", "guestbook", true},               // default
-		{"argocd_guestbook:apps/Deployment:default/guestbook", "argocd", "guestbook", true},   // namespaced
-		{"legacyname", "", "", false},                                                         // no colon
+		{"guestbook:apps/Deployment:default/guestbook", "", "guestbook", true},              // default
+		{"argocd_guestbook:apps/Deployment:default/guestbook", "argocd", "guestbook", true}, // namespaced
+		{"legacyname", "", "", false}, // no colon
 		{"", "", "", false},
 	}
 	for _, c := range cases {
@@ -275,7 +275,7 @@ func TestResolveSubject_CycleTerminates(t *testing.T) {
 	a := Ref{Kind: "Foo", Namespace: "ns", Name: "a"}
 	b := Ref{Kind: "Bar", Namespace: "ns", Name: "b"}
 	owners := fakeOwners{refKey(a): b, refKey(b): a}
-	if got := ResolveSubject(a, nil, owners, nil); got.Ref.Name == "" {
+	if got := ResolveSubject(a, owners, nil); got.Ref.Name == "" {
 		t.Errorf("cycle walk produced empty subject: %+v", got)
 	}
 }
@@ -291,7 +291,7 @@ func TestResolveSubject_DepthCapStops(t *testing.T) {
 	for i := 0; i < len(refs)-1; i++ {
 		owners[refKey(refs[i])] = refs[i+1]
 	}
-	if got := ResolveSubject(refs[0], nil, owners, nil); got.Ref.Name == "" {
+	if got := ResolveSubject(refs[0], owners, nil); got.Ref.Name == "" {
 		t.Errorf("over-cap walk produced empty subject: %+v", got)
 	}
 }

@@ -87,7 +87,7 @@ func TestCompose_PopulatesCategoryAndGroup(t *testing.T) {
 	checks := []struct {
 		name     string
 		category Category
-		group    Group
+		group    CategoryGroup
 	}{
 		{"img", CategoryImagePullFailed, GroupStartup},
 		{"sched", CategoryUnschedulable, GroupScheduling},

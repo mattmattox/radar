@@ -575,7 +575,7 @@ func dedupeWorkloadDegradedOverChild(in []Issue) []Issue {
 	for _, i := range in {
 		if childCategories[i.Category] {
 			k := subjectKeyOf(subjectRef(i))
-			if r := severityRank(i.Severity); r > maxChildSev[k] {
+			if r := SeverityRank(i.Severity); r > maxChildSev[k] {
 				maxChildSev[k] = r
 			}
 		}
@@ -588,7 +588,7 @@ func dedupeWorkloadDegradedOverChild(in []Issue) []Issue {
 		if parentRollupCategories[i.Category] {
 			// Suppress only when a child at least as severe exists — never
 			// downgrade a critical rollup to a warning child.
-			if r, ok := maxChildSev[subjectKeyOf(subjectRef(i))]; ok && r >= severityRank(i.Severity) {
+			if r, ok := maxChildSev[subjectKeyOf(subjectRef(i))]; ok && r >= SeverityRank(i.Severity) {
 				continue
 			}
 		}
@@ -655,7 +655,10 @@ func applyClusterScopedAccess(in []Issue, f Filters) []Issue {
 	return out
 }
 
-func severityRank(s Severity) int {
+// SeverityRank orders the normalized issue severity, higher = worse. Shared by
+// the grouping comparators here and by the per-resource summary rollups in the
+// server/MCP layers (which previously each carried an identical local copy).
+func SeverityRank(s Severity) int {
 	switch s {
 	case SeverityCritical:
 		return 3
