@@ -103,7 +103,9 @@ export interface Issue {
   message?: string;
   first_seen?: string;
   last_seen?: string;
-  /** Number of folded member rows (≥1). */
+  /** Affected-resource fan-out, EXCLUDING the subject (the row header).
+   *  0/omitted for a single-resource issue; e.g. 50 for one Deployment's
+   *  50 crashlooping pods. Exposed to API/MCP/CEL consumers, not just here. */
   count?: number;
 
   affected?: IssueAffected;

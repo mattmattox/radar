@@ -77,10 +77,11 @@ func TestDetectGitOpsProblems(t *testing.T) {
 
 	objs := []runtime.Object{
 		// Argo — should flag.
-		argoApp("degraded", "argocd", "Degraded", "Synced", "", true, nil),              // critical HealthDegraded
-		argoApp("missing-auto", "argocd", "Missing", "OutOfSync", "", true, nil),        // high HealthMissing
-		argoApp("drift-auto", "argocd", "Healthy", "OutOfSync", "", true, nil),          // high OutOfSync
-		argoApp("comparison", "argocd", "Healthy", "Unknown", "", false, comparisonErr), // high ComparisonError (even manual)
+		argoApp("degraded", "argocd", "Degraded", "Synced", "", true, nil),                      // critical HealthDegraded
+		argoApp("missing-auto", "argocd", "Missing", "OutOfSync", "", true, nil),                // high HealthMissing
+		argoApp("drift-auto", "argocd", "Healthy", "OutOfSync", "", true, nil),                  // high OutOfSync
+		argoApp("comparison", "argocd", "Healthy", "Unknown", "", false, comparisonErr),         // high ComparisonError (even manual)
+		argoApp("degraded-and-error", "argocd", "Degraded", "Unknown", "", true, comparisonErr), // critical: Degraded outranks the error condition
 		// Argo — should NOT flag.
 		argoApp("missing-manual", "argocd", "Missing", "OutOfSync", "", false, nil), // manual app: expected un-synced
 		argoApp("suspended", "argocd", "Suspended", "OutOfSync", "", true, nil),     // intentionally paused
@@ -133,12 +134,13 @@ func TestDetectGitOpsProblems(t *testing.T) {
 	wantFlag := map[string]struct {
 		severity, reason string
 	}{
-		"degraded":        {"critical", "HealthDegraded"},
-		"missing-auto":    {"high", "HealthMissing"},
-		"drift-auto":      {"high", "OutOfSync"},
-		"comparison":      {"high", "ComparisonError"},
-		"recon-failed":    {"high", "ReconciliationFailed"},
-		"artifact-failed": {"high", "ArtifactFailed"},
+		"degraded":           {"critical", "HealthDegraded"},
+		"degraded-and-error": {"critical", "HealthDegraded"},
+		"missing-auto":       {"high", "HealthMissing"},
+		"drift-auto":         {"high", "OutOfSync"},
+		"comparison":         {"high", "ComparisonError"},
+		"recon-failed":       {"high", "ReconciliationFailed"},
+		"artifact-failed":    {"high", "ArtifactFailed"},
 	}
 	for name, want := range wantFlag {
 		p, ok := bySubject[name]

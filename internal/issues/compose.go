@@ -134,10 +134,11 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 
 	// ---- 3. Shape: fold to the public grouped model ------------------
 	// A grouped row's Kind/Name is the SUBJECT (the owner a 50-pod crashloop
-	// rolls up to) and Count is the member total. Folding before the public
-	// filters is what makes kind= match the subject and count> match the fan-out
-	// — filtering the flat evidence first would drop a pod-evidenced Deployment
-	// issue under kind=Deployment and always see Count=1.
+	// rolls up to) and Count is the affected-resource fan-out excluding that
+	// subject. Folding before the public filters is what makes kind= match the
+	// subject and count> match the fan-out — filtering the flat evidence first
+	// would drop a pod-evidenced Deployment issue under kind=Deployment and
+	// never see a fan-out count.
 	if f.Grouped {
 		out = GroupIssues(out)
 	}

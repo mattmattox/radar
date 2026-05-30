@@ -70,11 +70,11 @@ func gitopsProblem(kind, group, ns, name, severity, reason, message string, age 
 // detectArgoAppProblems reads ArgoCD Application health/sync. Precision gates,
 // all load-bearing (a manual or suspended app legitimately sits OutOfSync/Missing
 // and must NOT flag): skip Suspended/Progressing health and an in-flight sync
-// (operationState.phase=Running); flag Degraded regardless of policy (live
-// resources are unhealthy); flag Missing/OutOfSync only for auto-synced apps; and
-// always flag a ComparisonError/InvalidSpecError condition (the sync=Unknown
-// app-path-not-found case the generic path also can't see). One row per app,
-// most-specific cause first.
+// (operationState.phase=Running); flag Degraded regardless of policy (critical —
+// live resources are unhealthy, checked first so it outranks an error condition);
+// then flag a ComparisonError/InvalidSpecError/SyncError condition (the sync=
+// Unknown app-path-not-found case the generic path can't see); flag Missing/
+// OutOfSync only for auto-synced apps. One row per app, most-severe cause first.
 func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []Detection {
 	var out []Detection
 	for _, app := range apps {
@@ -88,13 +88,17 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []D
 			continue
 		}
 
-		if ct, msg, ok := argoErrorCondition(app); ok {
-			out = append(out, gitopsProblem("Application", argoGroup, ns, name, "high", ct, msg, age))
-			continue
-		}
+		// Degraded (live resources unhealthy) is the most severe state and is
+		// checked first: an app that is BOTH Degraded and carrying an error
+		// condition must stay critical, not be downgraded to the high-severity
+		// error branch below.
 		if strings.EqualFold(health, "Degraded") {
 			out = append(out, gitopsProblem("Application", argoGroup, ns, name, "critical",
 				"HealthDegraded", "Application health is Degraded (managed resources are unhealthy)", age))
+			continue
+		}
+		if ct, msg, ok := argoErrorCondition(app); ok {
+			out = append(out, gitopsProblem("Application", argoGroup, ns, name, "high", ct, msg, age))
 			continue
 		}
 		automated := argoIsAutomated(app)
@@ -143,7 +147,8 @@ func argoErrorCondition(app *unstructured.Unstructured) (condType, message strin
 			continue
 		}
 		ct, _ := cm["type"].(string)
-		if strings.Contains(ct, "Error") {
+		switch ct {
+		case "ComparisonError", "InvalidSpecError", "SyncError":
 			msg, _ := cm["message"].(string)
 			return ct, msg, true
 		}
