@@ -395,6 +395,25 @@ function AppInner() {
     }
   }, [selectedResource])
 
+  // Navigate from a detector finding (Audit / Issues) to the resources list for
+  // its kind, opening the resource. Shared by both queues — the body was
+  // duplicated verbatim at each render site.
+  const navigateToResourceList = useCallback((resource: SelectedResource) => {
+    const pluralKind = kindToPlural(resource.kind)
+    setSelectedResource({ ...resource, kind: pluralKind })
+    const newParams = new URLSearchParams(searchParams)
+    newParams.delete('kind')
+    newParams.delete('mode')
+    newParams.delete('group')
+    newParams.delete('resource')
+    if (resource.group) {
+      newParams.set('apiGroup', resource.group)
+    } else {
+      newParams.delete('apiGroup')
+    }
+    navigate({ pathname: `/resources/${pluralKind}`, search: newParams.toString() })
+  }, [searchParams, navigate])
+
   // Collapse from expanded WorkloadView back to drawer
   const handleCollapseFromExpanded = useCallback(() => {
     suppressViewClearRef.current = true
@@ -1652,21 +1671,7 @@ function AppInner() {
           <AuditView
             namespaces={namespaces}
             onBack={() => setMainView('home')}
-            onNavigateToResource={(resource) => {
-              const pluralKind = kindToPlural(resource.kind)
-              setSelectedResource({ ...resource, kind: pluralKind })
-              const newParams = new URLSearchParams(searchParams)
-              newParams.delete('kind')
-              newParams.delete('mode')
-              newParams.delete('group')
-              newParams.delete('resource')
-              if (resource.group) {
-                newParams.set('apiGroup', resource.group)
-              } else {
-                newParams.delete('apiGroup')
-              }
-              navigate({ pathname: `/resources/${pluralKind}`, search: newParams.toString() })
-            }}
+            onNavigateToResource={navigateToResourceList}
           />
         )}
 
@@ -1677,21 +1682,7 @@ function AppInner() {
           <IssuesPane
             namespaces={namespaces}
             onBack={() => setMainView('home')}
-            onNavigateToResource={(resource) => {
-              const pluralKind = kindToPlural(resource.kind)
-              setSelectedResource({ ...resource, kind: pluralKind })
-              const newParams = new URLSearchParams(searchParams)
-              newParams.delete('kind')
-              newParams.delete('mode')
-              newParams.delete('group')
-              newParams.delete('resource')
-              if (resource.group) {
-                newParams.set('apiGroup', resource.group)
-              } else {
-                newParams.delete('apiGroup')
-              }
-              navigate({ pathname: `/resources/${pluralKind}`, search: newParams.toString() })
-            }}
+            onNavigateToResource={navigateToResourceList}
           />
         )}
 
