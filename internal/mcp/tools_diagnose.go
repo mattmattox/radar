@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
+	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -55,8 +56,14 @@ type diagnoseResponse struct {
 	// ("can't start"), not the subsystem — "scheduling" alone would mislead,
 	// since it also covers admission and post-bind.
 	StartupBlockers []startupBlocker `json:"startupBlockers,omitempty"`
-	Pods            int              `json:"pods"`
-	NarrowHint      string           `json:"narrowHint,omitempty"`
+	// RelatedIssues is what Radar's issues engine already classified for this
+	// object: the grouped issues whose subject OR an affected member is the
+	// diagnosed resource (crashloop, missing refs, HPA can't-scale, GitOps
+	// failure, …). Saves the agent re-deriving from raw logs/events what the
+	// issue engine knows. Empty when nothing is wrong.
+	RelatedIssues []issues.Issue `json:"relatedIssues,omitempty"`
+	Pods          int            `json:"pods"`
+	NarrowHint    string         `json:"narrowHint,omitempty"`
 	// Warnings are state-derived advisories on the diagnosed object — e.g.,
 	// "resource is being deleted", "managed by Helm, edits may revert",
 	// "condition has been False since creation". Empty when nothing notable.
@@ -166,6 +173,10 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 		Resource:        minified,
 		ResourceContext: resCtx,
 		Pods:            len(pods),
+		// Surface the issues Radar already classified for this object (subject
+		// or affected member), scoped to its namespace — so the agent sees
+		// "crashloop + missing ConfigMap" up front, not just raw logs.
+		RelatedIssues: issues.RelatedIssues(issues.NewCacheProvider(), []string{input.Namespace}, "", kindNorm, input.Namespace, input.Name),
 	}
 
 	// Cap the log fan-out so a DaemonSet with 50 nodes doesn't trigger

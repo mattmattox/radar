@@ -113,11 +113,15 @@ func TestBuildIssueIndex_GroupAware(t *testing.T) {
 		},
 	}
 	idx := BuildIssueIndex(p, nil)
+	// The index counts GROUPED issues (consistent with the issues tool), not flat
+	// rows: the two Knative rows share subject+category and fold into one grouped
+	// issue → count 1. The core Service is a distinct group → its own key (the
+	// group-awareness this test pins: the two never coalesce across API groups).
 	if got := idx.Count("", "Service", "prod", "api"); got != 1 {
 		t.Errorf("core Service count = %d, want 1", got)
 	}
-	if got := idx.Count("serving.knative.dev", "Service", "prod", "api"); got != 2 {
-		t.Errorf("Knative Service count = %d, want 2", got)
+	if got := idx.Count("serving.knative.dev", "Service", "prod", "api"); got != 1 {
+		t.Errorf("Knative Service count = %d, want 1 (two same-category rows fold to one grouped issue)", got)
 	}
 }
 

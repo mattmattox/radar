@@ -190,11 +190,22 @@ func BuildIssueIndex(p issues.Provider, namespaces []string) IssueIndex {
 	filters := issues.Filters{
 		Namespaces: namespaces,
 		Limit:      issues.NoLimit,
+		Grouped:    true,
 	}
-	composed := issues.Compose(p, filters)
-	idx := make(IssueIndex, len(composed))
-	for _, iss := range composed {
-		idx[issueIndexKey(iss.Group, iss.Kind, iss.Namespace, iss.Name)]++
+	grouped := issues.Compose(p, filters)
+	idx := make(IssueIndex, len(grouped))
+	for _, g := range grouped {
+		// Count the GROUPED issue against its subject (the row's kind/name — the
+		// workload a fan-out folds under) AND each affected member resource, so
+		// get_resource on either the workload or an affected pod surfaces the
+		// same issue. The old flat index keyed only the evidence resource, so a
+		// Deployment with crashlooping pods read issueCount=0 even though the
+		// `issues` tool showed it as a Deployment-grouped crashloop — the
+		// drill-down contradicted the entry point.
+		idx[issueIndexKey(g.Group, g.Kind, g.Namespace, g.Name)]++
+		for _, m := range g.Members {
+			idx[issueIndexKey(m.Group, m.Kind, m.Namespace, m.Name)]++
+		}
 	}
 	return idx
 }

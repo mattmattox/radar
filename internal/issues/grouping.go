@@ -1,6 +1,34 @@
 package issues
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
+
+// RelatedIssues returns the grouped issues whose subject OR an affected member
+// is the given resource — what an agent diagnosing an object wants: "issues
+// Radar already classified here." Kind is matched case-insensitively (callers
+// may pass the K8s Kind or a normalized form); an empty group matches any.
+func RelatedIssues(p Provider, namespaces []string, group, kind, namespace, name string) []Issue {
+	grouped := Compose(p, Filters{Namespaces: namespaces, Limit: NoLimit, Grouped: true})
+	match := func(g, k, ns, n string) bool {
+		return strings.EqualFold(k, kind) && ns == namespace && n == name && (group == "" || g == group)
+	}
+	var out []Issue
+	for _, g := range grouped {
+		if match(g.Group, g.Kind, g.Namespace, g.Name) {
+			out = append(out, g)
+			continue
+		}
+		for _, m := range g.Members {
+			if match(m.Group, m.Kind, m.Namespace, m.Name) {
+				out = append(out, g)
+				break
+			}
+		}
+	}
+	return out
+}
 
 // maxInlineMembers bounds the member refs carried inline on a grouped issue.
 // Enough for a human or agent to see what folded without a second call;
