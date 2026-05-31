@@ -14,9 +14,11 @@
 // PLACEMENT NOTE: pkg/subject imports only the canonical-key helper from
 // pkg/resourceid (ResourceKey). It does NOT import internal/* or pkg/topology (the
 // plan's layering rule). The Tier-1 owner walk is parameterized over an
-// OwnerResolver interface that pkg/topology satisfies via walkTopmostOwner (it
-// injects topo/dp/idx); a pure single-pod walk is built in. Tier-2 takes only a
-// metav1.Object's labels/annotations, so it has zero topology dependency.
+// OwnerResolver interface — which a topology adapter must satisfy with a
+// CONTROLLER-ownership resolver, NOT a raw walkTopmostOwner (see OwnerResolver's
+// contract: EdgeManages also carries GitOps/Helm management edges, which are
+// Tier-2, not identity). A heuristic single-pod walk is built in. Tier-2 takes
+// only a metav1.Object's labels/annotations, so it has zero topology dependency.
 package subject
 
 import (
@@ -102,15 +104,31 @@ func ScopeForKind(kind string) Scope {
 	return ScopeUnknown
 }
 
-// OwnerResolver lets Tier-1 walk to the topmost controller WITHOUT pkg/subject
-// importing pkg/topology. pkg/topology implements it by wrapping walkTopmostOwner
-// (cycle-safe, O(depth) via the inverted index). internal/issues implements it
-// trivially (its owner is pre-resolved on k8s.Problem) or passes the built-in
-// PodOwnerResolver. Returns the immediate parent of the given ref, or
-// (zero, false) when there is no further owner. names already RS-hash-stripped
-// per impl.
+// OwnerResolver walks Tier-1 identity to the topmost controller WITHOUT
+// pkg/subject importing pkg/topology.
+//
+// CONTRACT — Kubernetes CONTROLLER ownership only. ParentOf must follow the
+// ownerReferences[].controller==true chain (Pod→ReplicaSet→Deployment,
+// Pod→Job→CronJob, generated-workload→operator-CR). It MUST NOT follow
+// declarative/application "management" relationships — an Argo Application,
+// Flux Kustomization, or HelmRelease "manages" a Deployment, but it does NOT
+// *own* it in the controller sense. Those belong in Tier-2 AppOverlay, never in
+// the Subject. Collapsing a Deployment up to its Application here would erase
+// the identity/overlay boundary the whole package exists to keep.
+//
+// CAUTION for the topology adapter (#823): do NOT wrap pkg/topology's
+// walkTopmostOwner directly — it follows every EdgeManages edge, and EdgeManages
+// is deliberately overloaded in the graph to include GitOps/Helm management
+// edges (Argo Application→resource, GitRepository→Kustomization, …). Resolve
+// from controllerReferences instead (the cache-aware k8s.topOwnerForPodResolved
+// is the reference implementation), or filter the walk to controllerRef-derived
+// edges. internal/issues passes an owner that is already controller-resolved by
+// the detectors (a depth-0/1 walk).
+//
+// Returns the immediate controller-parent of the given ref, or (zero, false)
+// when there is no further controller. Names already RS-hash-stripped per impl.
 type OwnerResolver interface {
-	// ParentOf returns the next controller up the chain, or (zero, false) at root.
+	// ParentOf returns the next CONTROLLER up the chain, or (zero, false) at root.
 	ParentOf(child Ref) (parent Ref, ok bool)
 }
 
@@ -146,6 +164,7 @@ func ResolveSubject(start Ref, owners OwnerResolver, ops OperatorRootHook) Subje
 
 	if owners != nil {
 		visited := map[string]bool{refKey(cur): true}
+		chain := []Ref{cur}
 		for i := 0; i < maxOwnerWalkDepth; i++ {
 			parent, ok := owners.ParentOf(cur)
 			if !ok {
@@ -158,9 +177,17 @@ func ResolveSubject(start Ref, owners OwnerResolver, ops OperatorRootHook) Subje
 				break
 			}
 			if visited[refKey(parent)] {
+				// Corrupt ownership cycle (e.g. A→B→A). A canonical identity must
+				// be start-independent, so collapse every member to ONE
+				// deterministic representative — the lexicographically smallest
+				// key walked — instead of returning the last hop, which would
+				// depend on where the walk began (resolving A→B but B→A).
+				cur = minRef(chain)
+				anchor = AnchorOwnerCollapsed
 				break
 			}
 			visited[refKey(parent)] = true
+			chain = append(chain, parent)
 			cur = parent
 			anchor = AnchorOwnerCollapsed
 		}
@@ -191,7 +218,20 @@ func refKey(r Ref) string {
 	return resourceid.ResourceKey(r.Group, r.Kind, r.Namespace, r.Name)
 }
 
-// PodOwnerResolver is the built-in single-pod OwnerResolver: walks
+// minRef returns the ref with the lexicographically smallest key — the
+// deterministic, start-independent representative of an ownership cycle.
+func minRef(refs []Ref) Ref {
+	best := refs[0]
+	bestKey := refKey(best)
+	for _, r := range refs[1:] {
+		if k := refKey(r); k < bestKey {
+			best, bestKey = r, k
+		}
+	}
+	return best
+}
+
+// HeuristicPodOwnerResolver is the built-in single-pod OwnerResolver: walks
 // pod.OwnerReferences (controller==true else [0]), RS->Deployment +
 // StripReplicaSetHash, Job stays Job (CronJob hop handled by the multi-hop loop
 // when a topology OwnerResolver provides the Job->CronJob parent). Exact move of
@@ -209,9 +249,9 @@ func refKey(r Ref) string {
 // fixed in the cache-aware k8s.topOwnerForPodResolved path). Use this only as
 // the label-free, no-cache fallback; when a cache/topology is available, inject
 // an OwnerResolver that resolves the ReplicaSet's *real* controller instead.
-type PodOwnerResolver struct{ Pod metav1.Object }
+type HeuristicPodOwnerResolver struct{ Pod metav1.Object }
 
-func (p PodOwnerResolver) ParentOf(child Ref) (Ref, bool) {
+func (p HeuristicPodOwnerResolver) ParentOf(child Ref) (Ref, bool) {
 	if p.Pod == nil {
 		return Ref{}, false
 	}

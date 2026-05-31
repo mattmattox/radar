@@ -32,7 +32,7 @@ func ctrlRef(kind, name, apiVersion string) metav1.OwnerReference {
 func TestResolveSubject_PodToDeploymentOwnerCollapse(t *testing.T) {
 	pod := obj("ns", "web-abc12345", nil, nil, ctrlRef("ReplicaSet", "web-5d8f9c", "apps/v1"))
 	start := Ref{Kind: "Pod", Namespace: "ns", Name: "web-abc12345"}
-	got := ResolveSubject(start, PodOwnerResolver{Pod: pod}, nil)
+	got := ResolveSubject(start, HeuristicPodOwnerResolver{Pod: pod}, nil)
 	want := Subject{Ref: Ref{Group: "apps", Kind: "Deployment", Namespace: "ns", Name: "web"}, Scope: ScopeWorkload, Anchor: AnchorOwnerCollapsed}
 	if got != want {
 		t.Errorf("Pod->RS->Deployment: got %+v, want %+v", got, want)
@@ -55,7 +55,7 @@ func TestResolveSubject_MultiHopJobToCronJob(t *testing.T) {
 func TestResolveSubject_BarePod(t *testing.T) {
 	pod := obj("ns", "loner", nil, nil) // no owner refs
 	start := Ref{Kind: "Pod", Namespace: "ns", Name: "loner"}
-	got := ResolveSubject(start, PodOwnerResolver{Pod: pod}, nil)
+	got := ResolveSubject(start, HeuristicPodOwnerResolver{Pod: pod}, nil)
 	if got.Anchor != AnchorBare || got.Ref != start {
 		t.Errorf("bare pod: got %+v, want anchor=bare ref=%+v", got, start)
 	}
@@ -269,14 +269,53 @@ func TestConfidenceForTier(t *testing.T) {
 	}
 }
 
-// TestResolveSubject_CycleTerminates exercises the visited-set guard: a corrupted
-// ownership cycle (a→b→a) must terminate with a stable subject, not hang.
-func TestResolveSubject_CycleTerminates(t *testing.T) {
+// TestResolveSubject_CycleIsDeterministic exercises the visited-set guard: a
+// corrupted ownership cycle (a↔b) must terminate AND resolve to the same
+// canonical subject regardless of where the walk starts — a canonical identity
+// can't depend on traversal order. The representative is the min-key member.
+func TestResolveSubject_CycleIsDeterministic(t *testing.T) {
 	a := Ref{Kind: "Foo", Namespace: "ns", Name: "a"}
 	b := Ref{Kind: "Bar", Namespace: "ns", Name: "b"}
 	owners := fakeOwners{refKey(a): b, refKey(b): a}
-	if got := ResolveSubject(a, owners, nil); got.Ref.Name == "" {
-		t.Errorf("cycle walk produced empty subject: %+v", got)
+
+	fromA := ResolveSubject(a, owners, nil)
+	fromB := ResolveSubject(b, owners, nil)
+	if fromA.Ref == (Ref{}) || fromA.Ref != fromB.Ref {
+		t.Fatalf("cycle subject must be start-independent: from a=%+v, from b=%+v", fromA.Ref, fromB.Ref)
+	}
+	// min(refKey) — "|Bar|ns|b" < "|Foo|ns|a", so both collapse to b.
+	want := b
+	if refKey(a) < refKey(b) {
+		want = a
+	}
+	if fromA.Ref != want {
+		t.Errorf("cycle representative = %+v, want min-key %+v", fromA.Ref, want)
+	}
+}
+
+// TestResolveSubject_StopsAtController pins the Tier-1/Tier-2 boundary: with a
+// controller-ownership resolver (Pod→ReplicaSet→Deployment, Deployment having no
+// further CONTROLLER), the Subject is the Deployment — even though an Argo
+// Application "manages" that Deployment. Application ownership is declarative,
+// not a controllerRef, so it must NEVER appear as the Subject; it belongs in
+// Tier-2 AppOverlay. A topology adapter (#823) that wrapped the GitOps-inclusive
+// EdgeManages walk would break this — hence the explicit OwnerResolver contract.
+func TestResolveSubject_StopsAtController(t *testing.T) {
+	pod := Ref{Kind: "Pod", Namespace: "ns", Name: "web-7d8-xyz"}
+	rs := Ref{Group: "apps", Kind: "ReplicaSet", Namespace: "ns", Name: "web-7d8"}
+	dep := Ref{Group: "apps", Kind: "Deployment", Namespace: "ns", Name: "web"}
+	app := Ref{Group: "argoproj.io", Kind: "Application", Namespace: "argocd", Name: "web-app"}
+
+	// Controller chain ONLY — the Application "manages" dep but is not its
+	// controllerRef, so the resolver does not return it.
+	owners := fakeOwners{refKey(pod): rs, refKey(rs): dep}
+	_ = app // present in the cluster as an overlay, never an owner here
+
+	if got := ResolveSubject(pod, owners, nil); got.Ref != dep {
+		t.Errorf("Pod subject = %+v, want Deployment %+v (Application must not collapse in)", got.Ref, dep)
+	}
+	if got := ResolveSubject(dep, owners, nil); got.Ref != dep {
+		t.Errorf("Deployment subject = %+v, want itself %+v (no controller above it)", got.Ref, dep)
 	}
 }
 
