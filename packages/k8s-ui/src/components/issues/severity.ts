@@ -73,6 +73,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   workload_degraded: 'Workload degraded',
   high_restart: 'High restart count',
   missing_config_ref: 'Missing reference',
+  pdb_blocks_evictions: 'PDB blocks evictions',
   service_no_endpoints: 'No endpoints',
   ingress_backend_missing: 'Ingress backend missing',
   dns_failure: 'DNS failure',

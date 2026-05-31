@@ -90,6 +90,7 @@ func TestDetectAdmissionProblems_FailedCreateCrossCheck(t *testing.T) {
 		rs("rs-blocked", 0), rs("rs-ok", 2),
 		evt("e1", "rs-blocked", quotaMsg, oldT), evt("e1b", "rs-blocked", webhookMsg, nowT),
 		evt("e2", "rs-ok", quotaMsg, nowT),
+		evt("e3", "rs-deleted", quotaMsg, nowT),
 	)); err != nil {
 		t.Fatalf("InitTestResourceCache: %v", err)
 	}
@@ -108,6 +109,9 @@ func TestDetectAdmissionProblems_FailedCreateCrossCheck(t *testing.T) {
 		}
 		if p.Name == "rs-ok" {
 			t.Errorf("ReplicaSet with pods created (replicas met) but not ready — e.g. now unschedulable — is not admission-blocked and must be skipped: %+v", p)
+		}
+		if p.Name == "rs-deleted" {
+			t.Errorf("deleted/replaced ReplicaSet must not surface a ghost admission issue from a lingering event: %+v", p)
 		}
 	}
 	if blockedRows != 1 {

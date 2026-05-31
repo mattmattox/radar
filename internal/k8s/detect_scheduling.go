@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -778,7 +779,7 @@ func eventFirstTime(e *corev1.Event) time.Time {
 // admissionTargetStillBlocked reports whether the controller named by a
 // FailedCreate event still has unmet replicas, i.e. the rejection is active.
 // A recovered workload has its replicas, so its lingering event is skipped.
-// Unknown kinds / not-found default to true — never drop genuine coverage.
+// Unknown kinds / unreadable listers default to true — never drop genuine coverage.
 func admissionTargetStillBlocked(cache *ResourceCache, obj corev1.ObjectReference) bool {
 	// "Blocked" means the controller still can't CREATE its pods — measured by
 	// created-count (Status.Replicas / CurrentNumberScheduled) below desired,
@@ -788,37 +789,57 @@ func admissionTargetStillBlocked(cache *ResourceCache, obj corev1.ObjectReferenc
 	switch obj.Kind {
 	case "ReplicaSet":
 		if l := cache.ReplicaSets(); l != nil {
-			if rs, err := l.ReplicaSets(obj.Namespace).Get(obj.Name); err == nil {
+			rs, err := l.ReplicaSets(obj.Namespace).Get(obj.Name)
+			if err == nil {
 				return rs.Status.Replicas < schedDesiredReplicas(rs.Spec.Replicas)
+			}
+			if apierrors.IsNotFound(err) {
+				return false
 			}
 		}
 	case "Deployment":
 		if l := cache.Deployments(); l != nil {
-			if d, err := l.Deployments(obj.Namespace).Get(obj.Name); err == nil {
+			d, err := l.Deployments(obj.Namespace).Get(obj.Name)
+			if err == nil {
 				return d.Status.Replicas < schedDesiredReplicas(d.Spec.Replicas)
+			}
+			if apierrors.IsNotFound(err) {
+				return false
 			}
 		}
 	case "StatefulSet":
 		if l := cache.StatefulSets(); l != nil {
-			if ss, err := l.StatefulSets(obj.Namespace).Get(obj.Name); err == nil {
+			ss, err := l.StatefulSets(obj.Namespace).Get(obj.Name)
+			if err == nil {
 				return ss.Status.Replicas < schedDesiredReplicas(ss.Spec.Replicas)
+			}
+			if apierrors.IsNotFound(err) {
+				return false
 			}
 		}
 	case "DaemonSet":
 		if l := cache.DaemonSets(); l != nil {
-			if ds, err := l.DaemonSets(obj.Namespace).Get(obj.Name); err == nil {
+			ds, err := l.DaemonSets(obj.Namespace).Get(obj.Name)
+			if err == nil {
 				return ds.Status.CurrentNumberScheduled < ds.Status.DesiredNumberScheduled
+			}
+			if apierrors.IsNotFound(err) {
+				return false
 			}
 		}
 	case "Job":
 		if l := cache.Jobs(); l != nil {
-			if j, err := l.Jobs(obj.Namespace).Get(obj.Name); err == nil {
+			j, err := l.Jobs(obj.Namespace).Get(obj.Name)
+			if err == nil {
 				// Only "blocked" if the Job has created NO pod yet — any of
 				// Active/Succeeded/Failed > 0 means a pod was created (so the
 				// rejection isn't admission-from-the-start), and a stale quota
 				// event shouldn't surface for it. (Trade-off: a Job that ran
 				// some pods, then gets quota-blocked mid-retry, is not flagged.)
 				return j.Status.Active == 0 && j.Status.Succeeded == 0 && j.Status.Failed == 0
+			}
+			if apierrors.IsNotFound(err) {
+				return false
 			}
 		}
 	}

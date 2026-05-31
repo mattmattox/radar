@@ -57,6 +57,7 @@ func TestClassify(t *testing.T) {
 		{"node cordoned is intentional", classifyInput{Source: SourceProblem, Kind: "Node", Reason: "Cordoned"}, CategoryUnknown},
 		{"pvc pending", classifyInput{Source: SourceProblem, Kind: "PersistentVolumeClaim", Reason: "Pending"}, CategoryPVCPending},
 		{"pvc lost is storage", classifyInput{Source: SourceProblem, Kind: "PersistentVolumeClaim", Reason: "Lost"}, CategoryPVCLost},
+		{"pdb blocks evictions", classifyInput{Source: SourceProblem, Kind: "PodDisruptionBudget", Reason: "Voluntary evictions blocked"}, CategoryPDBBlocksEvictions},
 
 		// problem / batch (Job/CronJob)
 		{"job failed condition", classifyInput{Source: SourceProblem, Kind: "Job", Reason: "BackoffLimitExceeded"}, CategoryJobFailed},

@@ -10,6 +10,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -133,6 +134,14 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					if !cond.LastTransitionTime.IsZero() {
 						durDur = now.Sub(cond.LastTransitionTime.Time)
 					}
+					message := cond.Message
+					if detail := rolloutRWOVolumeDetail(cache, d); detail != "" {
+						if message != "" {
+							message += " " + detail
+						} else {
+							message = detail
+						}
+					}
 					problems = append(problems, Detection{
 						Kind:            "Deployment",
 						Namespace:       d.Namespace,
@@ -140,7 +149,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 						Group:           "apps",
 						Severity:        "critical",
 						Reason:          "Rollout stuck",
-						Message:         cond.Message,
+						Message:         message,
 						Age:             FormatAge(now.Sub(d.CreationTimestamp.Time)),
 						AgeSeconds:      int64(now.Sub(d.CreationTimestamp.Time).Seconds()),
 						Duration:        FormatAge(durDur),
@@ -333,11 +342,11 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					continue
 				}
 				problems = append(problems, Detection{
-					Kind:            "Service",
-					Namespace:       svc.Namespace,
-					Name:            svc.Name,
-					Severity:        "critical",
-					Reason:          fmt.Sprintf("0/%d selected pods ready", len(selected)),
+					Kind:      "Service",
+					Namespace: svc.Namespace,
+					Name:      svc.Name,
+					Severity:  "critical",
+					Reason:    fmt.Sprintf("0/%d selected pods ready", len(selected)),
 					// A Service can be BOTH no-ready-endpoints AND have an
 					// unresolved named targetPort — distinct fixes (the workload
 					// vs the Service port spec). Stable per-cause fingerprints
@@ -386,19 +395,19 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 			}
 			ageDur := resourceAge(now, hpas, hp.Namespace, hp.Name)
 			problems = append(problems, Detection{
-				Kind:            "HorizontalPodAutoscaler",
-				Namespace:       hp.Namespace,
-				Name:            hp.Name,
-				Group:           "autoscaling",
-				Severity:        severity,
-				Reason:          hp.Problem,
-				Message:         hp.Reason,
+				Kind:      "HorizontalPodAutoscaler",
+				Namespace: hp.Namespace,
+				Name:      hp.Name,
+				Group:     "autoscaling",
+				Severity:  severity,
+				Reason:    hp.Problem,
+				Message:   hp.Reason,
 				// One HPA can be BOTH maxed and unable-to-scale at once — distinct
 				// problems with distinct fixes. Fingerprint on the problem kind so
 				// they don't collapse into one hpa_limited_or_failed row.
-				Fingerprint:     "hpa:" + hp.Problem,
-				Age:             FormatAge(ageDur),
-				AgeSeconds:      int64(ageDur.Seconds()),
+				Fingerprint: "hpa:" + hp.Problem,
+				Age:         FormatAge(ageDur),
+				AgeSeconds:  int64(ageDur.Seconds()),
 			})
 		}
 	}
@@ -423,6 +432,46 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				Message:    cp.Reason,
 				Age:        FormatAge(ageDur),
 				AgeSeconds: int64(ageDur.Seconds()),
+			})
+		}
+	}
+
+	// PDBs that require every selected pod to stay healthy allow zero voluntary
+	// evictions even when the workload is fully healthy. That is not an outage,
+	// but it blocks node drains and upgrades; name the policy footgun from
+	// status instead of leaving agents to infer it during a failed drain.
+	if pdbLister := cache.PodDisruptionBudgets(); pdbLister != nil {
+		var pdbs []*policyv1.PodDisruptionBudget
+		if namespace != "" {
+			pdbs, _ = pdbLister.PodDisruptionBudgets(namespace).List(labels.Everything())
+		} else {
+			pdbs, _ = pdbLister.List(labels.Everything())
+		}
+		for _, pdb := range pdbs {
+			if !pdbStructurallyBlocksEvictions(pdb) {
+				continue
+			}
+			ageDur := now.Sub(pdb.CreationTimestamp.Time)
+			durDur := ageDur
+			for _, cond := range pdb.Status.Conditions {
+				if cond.Type == policyv1.DisruptionAllowedCondition && cond.Status == metav1.ConditionFalse && !cond.LastTransitionTime.IsZero() {
+					durDur = now.Sub(cond.LastTransitionTime.Time)
+					break
+				}
+			}
+			problems = append(problems, Detection{
+				Kind:            "PodDisruptionBudget",
+				Namespace:       pdb.Namespace,
+				Name:            pdb.Name,
+				Group:           "policy",
+				Severity:        "high",
+				Reason:          "Voluntary evictions blocked",
+				Message:         pdbBlocksEvictionsMessage(pdb),
+				Fingerprint:     "pdb:zero-disruptions",
+				Age:             FormatAge(ageDur),
+				AgeSeconds:      int64(ageDur.Seconds()),
+				Duration:        FormatAge(durDur),
+				DurationSeconds: int64(durDur.Seconds()),
 			})
 		}
 	}
@@ -599,6 +648,25 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 	return problems
 }
 
+func pdbStructurallyBlocksEvictions(pdb *policyv1.PodDisruptionBudget) bool {
+	if pdb == nil || pdb.DeletionTimestamp != nil {
+		return false
+	}
+	if pdb.Generation > 0 && pdb.Status.ObservedGeneration > 0 && pdb.Status.ObservedGeneration < pdb.Generation {
+		return false
+	}
+	status := pdb.Status
+	return status.ExpectedPods > 0 &&
+		status.DisruptionsAllowed == 0 &&
+		status.CurrentHealthy >= status.ExpectedPods &&
+		status.DesiredHealthy >= status.ExpectedPods
+}
+
+func pdbBlocksEvictionsMessage(pdb *policyv1.PodDisruptionBudget) string {
+	return fmt.Sprintf("PDB selects %d healthy pod(s) and allows 0 voluntary disruptions; node drains and upgrades cannot evict these pods. Set maxUnavailable to at least 1, lower minAvailable, or scale the workload above the required healthy count.",
+		pdb.Status.ExpectedPods)
+}
+
 // sharedRWOVolumeConflicts returns the names of PVCs the Deployment's pod
 // template MOUNTS whose access modes permit only single-node attach
 // (ReadWriteOnce / ReadWriteOncePod, no ReadWriteMany) — a hard conflict for a
@@ -626,6 +694,18 @@ func sharedRWOVolumeConflicts(cache *ResourceCache, d *appsv1.Deployment) []stri
 	}
 	sort.Strings(out)
 	return out
+}
+
+func rolloutRWOVolumeDetail(cache *ResourceCache, d *appsv1.Deployment) string {
+	if d == nil || d.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType {
+		return ""
+	}
+	pvcs := sharedRWOVolumeConflicts(cache, d)
+	if len(pvcs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("This Deployment mounts ReadWriteOnce PVC %q and uses RollingUpdate; a surge pod can be blocked while the old pod still holds the volume. Use strategy: Recreate, a ReadWriteMany volume, or per-replica volumes.",
+		pvcs[0])
 }
 
 // mountedVolumeNames is the set of pod-template volume names actually mounted by

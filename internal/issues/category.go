@@ -46,7 +46,8 @@ const (
 	CategoryCronJobFailed Category = "cronjob_failed"
 
 	// configuration
-	CategoryMissingConfigRef Category = "missing_config_ref"
+	CategoryMissingConfigRef   Category = "missing_config_ref"
+	CategoryPDBBlocksEvictions Category = "pdb_blocks_evictions"
 
 	// networking
 	CategoryServiceNoEndpoints    Category = "service_no_endpoints"
@@ -121,6 +122,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryJobFailed:                GroupRuntime,
 	CategoryCronJobFailed:            GroupRuntime,
 	CategoryMissingConfigRef:         GroupConfiguration,
+	CategoryPDBBlocksEvictions:       GroupConfiguration,
 	CategoryServiceNoEndpoints:       GroupNetworking,
 	CategoryIngressBackendMissing:    GroupNetworking,
 	CategoryDNSFailure:               GroupNetworking,
@@ -316,6 +318,12 @@ func classifyProblem(in classifyInput) Category {
 		case "Lost":
 			// bound volume gone — a storage failure, not unknown.
 			return CategoryPVCLost
+		}
+		return CategoryUnknown
+
+	case "PodDisruptionBudget":
+		if in.Reason == "Voluntary evictions blocked" {
+			return CategoryPDBBlocksEvictions
 		}
 		return CategoryUnknown
 
