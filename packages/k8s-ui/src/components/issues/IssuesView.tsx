@@ -12,6 +12,7 @@ import {
 } from './severity';
 import {
   compareIssues,
+  issueMessageParts,
   memberRef,
   subjectRef,
   type Issue,
@@ -106,6 +107,7 @@ function IssueRow({
 }) {
   const cluster = clusterLabel?.(issue);
   const affected = affectedSummary(issue.affected);
+  const { headline } = issueMessageParts(issue);
 
   return (
     <li className="overflow-hidden rounded-xl border border-theme-border bg-theme-surface shadow-theme-sm">
@@ -139,7 +141,7 @@ function IssueRow({
             {issue.reason ? (
               <span className="min-w-0 flex-1 truncate text-xs text-theme-text-tertiary">
                 <span className="font-medium text-theme-text-secondary">{issue.reason}</span>
-                {issue.message ? <span> — {issue.message}</span> : null}
+                {headline ? <span> — {headline}</span> : null}
               </span>
             ) : null}
           </div>
@@ -212,13 +214,18 @@ function Diagnosis({ issue }: { issue: Issue }) {
           .filter(Boolean)
           .join(' · ')
       : null;
+  const { headline, detail } = issueMessageParts(issue);
   return (
     <section className="flex flex-col gap-1">
       <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">What's wrong</h4>
       <p className="text-sm leading-relaxed text-theme-text-primary">
         <span className="font-medium">{issue.reason}</span>
-        {issue.message ? <span className="text-theme-text-secondary"> — {issue.message}</span> : null}
+        {headline ? <span className="text-theme-text-secondary"> — {headline}</span> : null}
       </p>
+      {/* Raw source string kept as secondary detail only when we showed a
+          normalized headline above (e.g. the verbose containerd image-pull
+          error) — so the precise message is never lost, just de-emphasized. */}
+      {detail ? <p className="break-words font-mono text-xs leading-relaxed text-theme-text-tertiary">{detail}</p> : null}
       {crash ? <p className="text-xs text-theme-text-tertiary tabular-nums">{crash}</p> : null}
       {issue.first_seen ? (
         <p className="text-xs text-theme-text-tertiary tabular-nums">

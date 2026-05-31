@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { compareIssues, subjectRef, memberRef, type Issue } from './types'
+import { compareIssues, subjectRef, memberRef, normalizeImagePullMessage, issueMessageParts, type Issue } from './types'
 import { categoryLabel, groupLabel, groupBadgeClass } from './severity'
 
 const base: Issue = {
@@ -66,5 +66,35 @@ describe('subjectRef / memberRef', () => {
     const issue = mk({ cluster_id: 'cl_2' })
     const member = { group: 'apps', kind: 'Pod', namespace: 'ns', name: 'p1' }
     expect(memberRef(issue, member)).toEqual({ ...member, cluster_id: 'cl_2' })
+  })
+})
+
+describe('image-pull message normalization', () => {
+  const notFound =
+    'Back-off pulling image "reg.io/team/api:v2": ErrImagePull: rpc error: code = NotFound desc = failed to pull and unpack image "reg.io/team/api:v2": failed to resolve reference "reg.io/team/api:v2": "reg.io/team/api:v2": not found'
+
+  it('extracts cause + single image ref from the verbose CRI string', () => {
+    expect(normalizeImagePullMessage(notFound)).toBe('Image not found: reg.io/team/api:v2')
+  })
+  it('classifies the common failure modes', () => {
+    expect(normalizeImagePullMessage('pull access denied for image "x:1", repository does not exist or may require authorization')).toBe('Not authorized to pull image: x:1')
+    expect(normalizeImagePullMessage('failed to pull image "x:1": dial tcp: lookup reg.io: no such host')).toBe('Registry unreachable: x:1')
+    expect(normalizeImagePullMessage('toomanyrequests: rate limit exceeded for image "x:1"')).toBe('Registry rate-limited: x:1')
+  })
+  it('returns null for shapes it does not recognize (caller keeps raw)', () => {
+    expect(normalizeImagePullMessage('some novel kubelet error')).toBeNull()
+    expect(normalizeImagePullMessage('')).toBeNull()
+  })
+
+  it('issueMessageParts normalizes image-pull headline and keeps raw as detail', () => {
+    const parts = issueMessageParts(mk({ category: 'image_pull_failed', reason: 'ImagePullBackOff', message: notFound }))
+    expect(parts.headline).toBe('Image not found: reg.io/team/api:v2')
+    expect(parts.detail).toBe(notFound)
+  })
+  it('does NOT mislabel a non-image "not found" message (gating)', () => {
+    // missing_config_ref carries 'secret "x" not found' — must stay verbatim, no detail split.
+    const parts = issueMessageParts(mk({ category: 'missing_config_ref', reason: 'Missing Secret', message: 'secret "project-infra" not found' }))
+    expect(parts.headline).toBe('secret "project-infra" not found')
+    expect(parts.detail).toBe('')
   })
 })

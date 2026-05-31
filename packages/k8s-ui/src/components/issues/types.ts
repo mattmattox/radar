@@ -166,3 +166,40 @@ export function compareIssues(a: Issue, b: Issue): number {
   if (nm !== 0) return nm;
   return a.id.localeCompare(b.id);
 }
+
+/**
+ * normalizeImagePullMessage turns a raw containerd/CRI image-pull error — which
+ * is verbose and re-quotes the image ref at every wrapped layer ("Back-off
+ * pulling image X: ErrImagePull: rpc error: code = NotFound desc = failed to
+ * pull and unpack image X: failed to resolve reference X: X: not found") — into
+ * a short headline: cause + the image ref once. Returns null for shapes it
+ * doesn't recognize, so the caller falls back to the raw string.
+ */
+export function normalizeImagePullMessage(raw: string): string | null {
+  if (!raw) return null;
+  const ref = raw.match(/image "([^"]+)"/)?.[1];
+  const lower = raw.toLowerCase();
+  let cause: string | null = null;
+  if (/not\s*found|manifest\s*unknown|no such (image|manifest)/.test(lower)) cause = 'Image not found';
+  else if (/unauthorized|forbidden|denied|\b401\b|\b403\b|authentication required/.test(lower)) cause = 'Not authorized to pull image';
+  else if (/no such host|i\/o timeout|\btimeout\b|connection refused|dial tcp|lookup .* no such/.test(lower)) cause = 'Registry unreachable';
+  else if (/toomanyrequests|too many requests|rate limit/.test(lower)) cause = 'Registry rate-limited';
+  if (!cause) return null;
+  return ref ? `${cause}: ${ref}` : cause;
+}
+
+/**
+ * issueMessageParts splits an issue's message into the inline headline and the
+ * raw secondary detail. For image-pull issues the headline is a normalized
+ * one-liner and detail holds the original CRI string; for every other issue the
+ * headline IS the (already concise) message and detail is empty — no
+ * duplication. Gated on image-pull so a generic "not found" in, say, a
+ * missing_config_ref message ('secret "x" not found') is never mislabeled.
+ */
+export function issueMessageParts(issue: Issue): { headline: string; detail: string } {
+  const raw = issue.message ?? '';
+  const isImagePull = issue.category === 'image_pull_failed' || /ImagePull|ErrImage|InvalidImageName|ImageInspect/i.test(issue.reason ?? '');
+  const normalized = isImagePull ? normalizeImagePullMessage(raw) : null;
+  if (normalized && normalized !== raw) return { headline: normalized, detail: raw };
+  return { headline: raw, detail: '' };
+}
