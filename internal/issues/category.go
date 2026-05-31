@@ -58,6 +58,12 @@ const (
 	CategoryPVCPending        Category = "pvc_pending"
 	CategoryPVCLost           Category = "pvc_lost"
 	CategoryVolumeMountFailed Category = "volume_mount_failed"
+	// CategoryVolumeAccessModeConflict is a config-level storage fault: a
+	// multi-replica Deployment mounts a ReadWriteOnce volume, which only one
+	// node can attach — surplus replicas can never start. Distinct from
+	// volume_mount_failed (the observed attach error) because this is the
+	// proactive root cause, detected from spec, before/independent of the symptom.
+	CategoryVolumeAccessModeConflict Category = "volume_access_mode_conflict"
 
 	// scaling / rollout
 	CategoryRolloutStalled     Category = "rollout_stalled"
@@ -122,6 +128,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryPVCPending:               GroupStorage,
 	CategoryPVCLost:                  GroupStorage,
 	CategoryVolumeMountFailed:        GroupStorage,
+	CategoryVolumeAccessModeConflict: GroupStorage,
 	CategoryRolloutStalled:           GroupScaling,
 	CategoryHPALimitedOrFailed:       GroupScaling,
 	CategoryRBACForbidden:            GroupSecurity,
@@ -279,6 +286,11 @@ func classifyProblem(in classifyInput) Category {
 	case "Deployment", "StatefulSet", "DaemonSet":
 		if in.Reason == "Rollout stuck" {
 			return CategoryRolloutStalled
+		}
+		// Stable reason literal emitted by k8s.detectSharedRWOVolumeConflicts —
+		// a multi-replica Deployment mounting a ReadWriteOnce volume.
+		if in.Reason == "ReadWriteOnce volume shared across replicas" {
+			return CategoryVolumeAccessModeConflict
 		}
 		// "{avail}/{desired} available" / "{ready}/{desired} ready" /
 		// "{n} unavailable" — workload under its desired healthy count. The

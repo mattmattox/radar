@@ -34,14 +34,24 @@ const highRestartThreshold = 3
 // container that crashed once and is now running healthily: RestartCount and
 // LastTerminationState persist for the life of the container, so without the
 // recovery guard below a pod that restarted once at startup would read as a
-// crashloop forever. Two recovery signals clear it: a container Running
-// continuously past the kubelet's max CrashLoopBackOff backoff (5m) has outlived
-// the loop, and a container whose CURRENT state is a clean exit (Terminated,
-// exit 0) has succeeded — the common init-container-retries-then-completes case,
-// whose failed prior attempt lingers in LastTerminationState. OOMKilled is
-// intentionally excluded — it has its own category/severity path upstream.
-func isStableCrashLoop(cs *corev1.ContainerStatus, now time.Time) bool {
+// crashloop forever. Three recovery signals clear it: a container currently
+// Ready when that Ready is probe-gated (readyTrusted) has passed its readiness
+// probe and is serving NOW; a container Running continuously past the kubelet's
+// max CrashLoopBackOff backoff (5m) has outlived the loop; and a container whose
+// CURRENT state is a clean exit (Terminated, exit 0) has succeeded — the common
+// init-container-retries-then-completes case, whose failed prior attempt lingers
+// in LastTerminationState. OOMKilled is intentionally excluded — it has its own
+// category/severity path upstream.
+//
+// readyTrusted gates the Ready short-circuit because Ready is only a meaningful
+// recovery signal when a readiness probe backs it: without a probe Ready just
+// mirrors Running and flips true during a loop's brief between-crash window, so
+// for probe-less containers the 5m Running guard below stays the discriminator.
+func isStableCrashLoop(cs *corev1.ContainerStatus, now time.Time, readyTrusted bool) bool {
 	if cs.RestartCount == 0 {
+		return false
+	}
+	if readyTrusted && cs.Ready {
 		return false
 	}
 	if r := cs.State.Running; r != nil && !r.StartedAt.IsZero() && now.Sub(r.StartedAt.Time) > 5*time.Minute {
@@ -71,13 +81,29 @@ func isStableCrashLoop(cs *corev1.ContainerStatus, now time.Time) bool {
 // stable crashloop (see isStableCrashLoop).
 func podHasStableCrashLoop(pod *corev1.Pod, now time.Time) bool {
 	for i := range pod.Status.ContainerStatuses {
-		if isStableCrashLoop(&pod.Status.ContainerStatuses[i], now) {
+		cs := &pod.Status.ContainerStatuses[i]
+		if isStableCrashLoop(cs, now, containerHasReadinessProbe(pod.Spec.Containers, cs.Name)) {
 			return true
 		}
 	}
 	for i := range pod.Status.InitContainerStatuses {
-		if isStableCrashLoop(&pod.Status.InitContainerStatuses[i], now) {
+		// Init containers carry no readiness probe and their Ready field is not a
+		// serving signal — never trust Ready as recovery there; the Running-window
+		// and clean-exit guards still apply.
+		if isStableCrashLoop(&pod.Status.InitContainerStatuses[i], now, false) {
 			return true
+		}
+	}
+	return false
+}
+
+// containerHasReadinessProbe reports whether the named container declares a
+// readiness probe — the condition under which its ContainerStatus.Ready is a
+// trustworthy "serving now" signal rather than a mirror of Running.
+func containerHasReadinessProbe(containers []corev1.Container, name string) bool {
+	for i := range containers {
+		if containers[i].Name == name {
+			return containers[i].ReadinessProbe != nil
 		}
 	}
 	return false

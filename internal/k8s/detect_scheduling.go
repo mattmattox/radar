@@ -553,9 +553,21 @@ func describeUnschedulable(pod *corev1.Pod, schedMsg string, nodes []NodeFacts) 
 // summarizeReasons renders the parsed predicate counts into a compact phrase.
 // When skipAffinity is set, the generic node-affinity/selector clause is
 // omitted because describeUnschedulable already emitted the resolved label.
+//
+// Clauses are ordered by how many nodes each rejected, descending — the
+// scheduler emits them in an arbitrary predicate order, so leading with the
+// widest-blast-radius constraint surfaces the dominant reason first ("2 node(s)
+// node affinity/selector mismatch" before "1 node(s) pod anti-affinity
+// conflict") instead of whichever predicate the scheduler happened to list
+// first. Stable, so equal counts keep the scheduler's order; count-0
+// whole-message clauses (e.g. unbound PVC) sink to the end.
 func summarizeReasons(reasons []SchedulingReason, skipAffinity bool) string {
+	ordered := make([]SchedulingReason, len(reasons))
+	copy(ordered, reasons)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].NodeCount > ordered[j].NodeCount })
+
 	var parts []string
-	for _, r := range reasons {
+	for _, r := range ordered {
 		switch r.Class {
 		case SchedInsufficientResource:
 			res := r.Resource

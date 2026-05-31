@@ -322,6 +322,48 @@ func TestClassifyPodHealth_RecoveredAfterCrashIsHealthy(t *testing.T) {
 	}
 }
 
+// TestClassifyPodHealth_ProbeGatedReadyClearsCrashLoop pins the fast-recovery
+// path: a container that crashed at startup (RestartCount>0 + crash history) but
+// is now Ready BEFORE the 5m Running window elapses is cleared immediately —
+// but ONLY when a readiness probe backs that Ready. A probe-less container's
+// Ready just mirrors Running and flips true during a loop's between-crash blip,
+// so it must still fall through to the Running-duration guard.
+func TestClassifyPodHealth_ProbeGatedReadyClearsCrashLoop(t *testing.T) {
+	now := time.Now()
+	crash := corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}}
+
+	// Probed + Ready + Running only 90s (well inside the 5m window) → recovered.
+	// This is the bench's distractor: a service that crashed twice waiting on a
+	// dependency, now serving, was reading as crashloop-critical for ~5m.
+	probedRecovered := &corev1.Pod{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:           "app",
+			ReadinessProbe: &corev1.Probe{},
+		}}},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:                 "app",
+				Ready:                true,
+				RestartCount:         2,
+				State:                corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-90 * time.Second))}},
+				LastTerminationState: crash,
+			}},
+		},
+	}
+	if got := ClassifyPodHealth(probedRecovered, now); got != "healthy" {
+		t.Errorf("probed Ready pod recovered 90s = %q, want healthy", got)
+	}
+
+	// Control: identical status but no readiness probe in the spec, so Ready is
+	// untrusted → the 90s Running duration is still inside the loop window → error.
+	probelessLooping := probedRecovered.DeepCopy()
+	probelessLooping.Spec.Containers[0].ReadinessProbe = nil
+	if got := ClassifyPodHealth(probelessLooping, now); got != "error" {
+		t.Errorf("probe-less Ready pod Running 90s = %q, want error (Ready untrusted)", got)
+	}
+}
+
 func TestClassifyNodeHealth(t *testing.T) {
 	tests := []struct {
 		name              string

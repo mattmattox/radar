@@ -556,7 +556,114 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 		}
 	}
 
+	// Multi-replica Deployment sharing a ReadWriteOnce volume: only one node can
+	// attach an RWO PVC, so a Deployment wanting >1 replica can never bring up
+	// the surplus — they sit unschedulable / multi-attach-failed. A config-level
+	// root cause we can name from spec, independent of whether the symptom has
+	// fired yet. StatefulSets are exempt (volumeClaimTemplates give each replica
+	// its own PVC); DaemonSets are one-per-node by design.
+	if depLister := cache.Deployments(); depLister != nil {
+		var deps []*appsv1.Deployment
+		if namespace != "" {
+			deps, _ = depLister.Deployments(namespace).List(labels.Everything())
+		} else {
+			deps, _ = depLister.List(labels.Everything())
+		}
+		for _, d := range deps {
+			if schedDesiredReplicas(d.Spec.Replicas) < 2 {
+				continue
+			}
+			ageDur := now.Sub(d.CreationTimestamp.Time)
+			for _, pvcName := range sharedRWOVolumeConflicts(cache, d) {
+				problems = append(problems, Detection{
+					Kind:      "Deployment",
+					Namespace: d.Namespace,
+					Name:      d.Name,
+					Group:     "apps",
+					Severity:  "high",
+					Reason:    "ReadWriteOnce volume shared across replicas",
+					Message: fmt.Sprintf("Deployment wants %d replicas but mounts ReadWriteOnce PVC %q — only one node can attach it, so the other replicas can't start. Use a ReadWriteMany volume, switch to a StatefulSet with volumeClaimTemplates (a volume per replica), or reduce to 1 replica.",
+						schedDesiredReplicas(d.Spec.Replicas), pvcName),
+					// One Deployment can share multiple distinct RWO PVCs; fingerprint
+					// per PVC so each is its own row rather than collapsing into one.
+					Fingerprint:     "pvc-rwo-multireplica:" + pvcName,
+					Age:             FormatAge(ageDur),
+					AgeSeconds:      int64(ageDur.Seconds()),
+					Duration:        FormatAge(ageDur),
+					DurationSeconds: int64(ageDur.Seconds()),
+				})
+			}
+		}
+	}
+
 	return problems
+}
+
+// sharedRWOVolumeConflicts returns the names of PVCs the Deployment's pod
+// template MOUNTS whose access modes permit only single-node attach
+// (ReadWriteOnce / ReadWriteOncePod, no ReadWriteMany) — a hard conflict for a
+// multi-replica Deployment. Only PVCs present in cache with known access modes
+// are considered; an unverifiable PVC is skipped rather than guessed at.
+func sharedRWOVolumeConflicts(cache *ResourceCache, d *appsv1.Deployment) []string {
+	pvcl := cache.PersistentVolumeClaims()
+	if pvcl == nil {
+		return nil
+	}
+	spec := d.Spec.Template.Spec
+	mounted := mountedVolumeNames(spec)
+	var out []string
+	for _, v := range spec.Volumes {
+		if v.PersistentVolumeClaim == nil || !mounted[v.Name] {
+			continue
+		}
+		pvc, err := pvcl.PersistentVolumeClaims(d.Namespace).Get(v.PersistentVolumeClaim.ClaimName)
+		if err != nil || pvc == nil {
+			continue
+		}
+		if pvcSingleNodeAccessOnly(pvc) {
+			out = append(out, pvc.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// mountedVolumeNames is the set of pod-template volume names actually mounted by
+// a container (main or init). A defined-but-unmounted volume can't cause an
+// attach conflict, so the detector ignores it.
+func mountedVolumeNames(spec corev1.PodSpec) map[string]bool {
+	out := map[string]bool{}
+	add := func(containers []corev1.Container) {
+		for _, c := range containers {
+			for _, m := range c.VolumeMounts {
+				out[m.Name] = true
+			}
+		}
+	}
+	add(spec.InitContainers)
+	add(spec.Containers)
+	return out
+}
+
+// pvcSingleNodeAccessOnly reports whether a PVC's effective access modes permit
+// attaching on only one node at a time (ReadWriteOnce / ReadWriteOncePod and NOT
+// ReadWriteMany). Prefers the bound status modes; falls back to the requested
+// spec modes. Empty/unknown modes → false (don't guess).
+func pvcSingleNodeAccessOnly(pvc *corev1.PersistentVolumeClaim) bool {
+	modes := pvc.Status.AccessModes
+	if len(modes) == 0 {
+		modes = pvc.Spec.AccessModes
+	}
+	restrictive := false
+	for _, m := range modes {
+		if m == corev1.ReadWriteMany {
+			return false
+		}
+		if m == corev1.ReadWriteOnce || m == corev1.ReadWriteOncePod {
+			restrictive = true
+		}
+	}
+	return restrictive
 }
 
 // pvcAwaitsFirstConsumer reports whether a Pending PVC is bound to a

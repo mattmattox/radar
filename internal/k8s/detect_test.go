@@ -288,3 +288,71 @@ func assertProblem(t *testing.T, problems []Detection, kind, name, reason, sever
 	}
 	t.Fatalf("missing problem kind=%s name=%s reason=%q; got %+v", kind, name, reason, problems)
 }
+
+// TestDetectProblems_SharedRWOVolume pins the multi-replica ReadWriteOnce
+// conflict detector: a Deployment wanting >1 replica that mounts an RWO PVC is
+// flagged (only one node can attach it), while a single-replica RWO mount and a
+// multi-replica ReadWriteMany mount are not.
+func TestDetectProblems_SharedRWOVolume(t *testing.T) {
+	defer ResetTestState()
+
+	two := int32(2)
+	one := int32(1)
+	three := int32(3)
+
+	mkDeploy := func(name string, replicas *int32, claim string) *appsv1.Deployment {
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "prod"},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: replicas,
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:         "app",
+						VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/data"}},
+					}},
+					Volumes: []corev1.Volume{{
+						Name:         "data",
+						VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: claim}},
+					}},
+				}},
+			},
+		}
+	}
+	mkPVC := func(name string, mode corev1.PersistentVolumeAccessMode) *corev1.PersistentVolumeClaim {
+		return &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "prod"},
+			Spec:       corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{mode}},
+			Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound, AccessModes: []corev1.PersistentVolumeAccessMode{mode}},
+		}
+	}
+
+	client := fake.NewClientset(
+		mkDeploy("conflict", &two, "rwo-pvc"), // 2 replicas + RWO → flagged
+		mkDeploy("single", &one, "rwo-pvc"),   // 1 replica + RWO → fine
+		mkDeploy("rwx", &three, "rwx-pvc"),    // 3 replicas + RWX → fine
+		mkPVC("rwo-pvc", corev1.ReadWriteOnce),
+		mkPVC("rwx-pvc", corev1.ReadWriteMany),
+	)
+	if err := InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	cache := GetResourceCache()
+
+	const reason = "ReadWriteOnce volume shared across replicas"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hasProblem(DetectProblems(cache, "prod"), "Deployment", "conflict", reason) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	problems := DetectProblems(cache, "prod")
+
+	assertProblem(t, problems, "Deployment", "conflict", reason, "high")
+	if hasProblem(problems, "Deployment", "single", reason) {
+		t.Errorf("single-replica RWO mount should not be flagged: %+v", problems)
+	}
+	if hasProblem(problems, "Deployment", "rwx", reason) {
+		t.Errorf("multi-replica RWX mount should not be flagged: %+v", problems)
+	}
+}

@@ -230,6 +230,24 @@ func TestDescribeUnschedulable_ResourcesAndTaint(t *testing.T) {
 	}
 }
 
+// TestDescribeUnschedulable_OrdersByBlastRadius pins that the dominant
+// constraint (the one that rejected the most nodes) leads the summary, even
+// when the scheduler listed a narrower predicate first. Bare pod + nil nodes so
+// node-affinity stays unresolved and both clauses flow through summarizeReasons.
+func TestDescribeUnschedulable_OrdersByBlastRadius(t *testing.T) {
+	msg := describeUnschedulable(&corev1.Pod{},
+		"0/3 nodes are available: 1 node(s) didn't satisfy existing pods anti-affinity rules, "+
+			"2 node(s) didn't match Pod's node affinity/selector.", nil)
+	affinity := strings.Index(msg, "node affinity/selector mismatch")
+	antiAffinity := strings.Index(msg, "pod anti-affinity conflict")
+	if affinity < 0 || antiAffinity < 0 {
+		t.Fatalf("message %q missing an expected clause", msg)
+	}
+	if affinity > antiAffinity {
+		t.Errorf("expected wider node affinity/selector clause (2 nodes) before anti-affinity (1 node): %q", msg)
+	}
+}
+
 func TestDescribeUnschedulable_FallbackWhenUnparseable(t *testing.T) {
 	if got := describeUnschedulable(&corev1.Pod{}, "", nil); got != "Pod is unschedulable" {
 		t.Errorf("empty verdict should fall back, got %q", got)
