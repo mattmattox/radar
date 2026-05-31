@@ -10,6 +10,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -451,6 +452,15 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				continue
 			}
 			if pvc.Status.Phase == corev1.ClaimPending {
+				// A WaitForFirstConsumer PVC is Pending BY DESIGN until a pod that
+				// mounts it is scheduled — dormant/scaled-to-zero/orphaned volumes
+				// sit here forever and are not a fault. If a consumer is genuinely
+				// stuck, that pod surfaces as unschedulable via the scheduling
+				// source, so suppress the PVC row to avoid flagging every awaiting-
+				// consumer volume.
+				if pvcAwaitsFirstConsumer(cache, pvc) {
+					continue
+				}
 				if ageDur > 5*time.Minute {
 					problems = append(problems, Detection{
 						Kind:            "PersistentVolumeClaim",
@@ -458,6 +468,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 						Name:            pvc.Name,
 						Severity:        "high",
 						Reason:          "Pending",
+						Message:         "PVC is unbound — no volume has been provisioned",
 						Age:             FormatAge(ageDur),
 						AgeSeconds:      int64(ageDur.Seconds()),
 						Duration:        FormatAge(ageDur),
@@ -522,6 +533,31 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 	}
 
 	return problems
+}
+
+// pvcAwaitsFirstConsumer reports whether a Pending PVC is bound to a
+// WaitForFirstConsumer StorageClass — in which case Pending is the EXPECTED
+// state until a consuming pod is scheduled, not a fault. Resolves the PVC's
+// explicit StorageClass, falling back to the cluster default. Unknown SC →
+// false (can't prove benign, so let the caller flag it).
+func pvcAwaitsFirstConsumer(cache *ResourceCache, pvc *corev1.PersistentVolumeClaim) bool {
+	scl := cache.StorageClasses()
+	if scl == nil {
+		return false
+	}
+	var sc *storagev1.StorageClass
+	if name := pvc.Spec.StorageClassName; name != nil && *name != "" {
+		sc, _ = scl.Get(*name)
+	} else {
+		all, _ := scl.List(labels.Everything())
+		for _, c := range all {
+			if c.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
+				sc = c
+				break
+			}
+		}
+	}
+	return sc != nil && sc.VolumeBindingMode != nil && *sc.VolumeBindingMode == storagev1.VolumeBindingWaitForFirstConsumer
 }
 
 func listPodsByNamespace(cache *ResourceCache, namespace string) map[string][]*corev1.Pod {
