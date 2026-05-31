@@ -31,6 +31,11 @@
       "./src/components/gitops/*.tsx",
       "./src/components/gitops/*.ts"
     ],
+    "./components/issues": "./src/components/issues/index.ts",
+    "./components/issues/*": [
+      "./src/components/issues/*.tsx",
+      "./src/components/issues/*.ts"
+    ],
     "./components/timeline/*": [
       "./src/components/timeline/*.tsx",
       "./src/components/timeline/*.ts"
