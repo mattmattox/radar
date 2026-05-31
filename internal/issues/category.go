@@ -64,8 +64,9 @@ const (
 	CategoryHPALimitedOrFailed Category = "hpa_limited_or_failed"
 
 	// security
-	CategoryRBACForbidden       Category = "rbac_forbidden"
-	CategoryCertificateNotReady Category = "certificate_not_ready"
+	CategoryRBACForbidden        Category = "rbac_forbidden"
+	CategoryCertificateNotReady  Category = "certificate_not_ready"
+	CategoryPodSecurityViolation Category = "pod_security_violation"
 
 	// control plane / operators / cluster infra
 	CategoryNodeNotReady          Category = "node_not_ready"
@@ -125,6 +126,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryHPALimitedOrFailed:       GroupScaling,
 	CategoryRBACForbidden:            GroupSecurity,
 	CategoryCertificateNotReady:      GroupSecurity,
+	CategoryPodSecurityViolation:     GroupSecurity,
 	CategoryNodeNotReady:             GroupControlPlane,
 	CategoryOperatorConditionFail:    GroupControlPlane,
 	CategoryGitOpsSyncFailed:         GroupControlPlane,
@@ -168,7 +170,11 @@ func Classify(in classifyInput) Category {
 			return CategoryUnschedulable
 		case "QuotaExceeded", "LimitRangeViolation":
 			return CategoryQuotaExceeded
-		case "PodSecurityViolation", "WebhookDenied":
+		case "PodSecurityViolation":
+			// Pod Security admission (built-in PSA) is NOT a webhook — don't
+			// mislabel it as such.
+			return CategoryPodSecurityViolation
+		case "WebhookDenied":
 			return CategoryAdmissionWebhookBlocking
 		case "IPExhaustion", "SandboxCreationFailed":
 			// scheduled but stuck creating the sandbox — a startup-stage stall
@@ -203,7 +209,13 @@ func Classify(in classifyInput) Category {
 		g := strings.ToLower(in.APIGroup)
 		switch {
 		case strings.Contains(g, "cert-manager.io"):
-			return CategoryCertificateNotReady
+			// Only a Certificate is "certificate not ready". Issuer/ClusterIssuer/
+			// Order/Challenge are different objects — a not-ready Issuer is a
+			// control-plane condition, not a certificate problem.
+			if in.Kind == "Certificate" {
+				return CategoryCertificateNotReady
+			}
+			return CategoryOperatorConditionFail
 		case strings.Contains(g, "argoproj.io"):
 			switch in.Kind {
 			case "Application":

@@ -94,8 +94,17 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []D
 		ns, name := app.GetNamespace(), app.GetName()
 		age := now.Sub(app.GetCreationTimestamp().Time)
 		health, _, _ := unstructured.NestedString(app.Object, "status", "health", "status")
+		healthMsg, _, _ := unstructured.NestedString(app.Object, "status", "health", "message")
 		sync, _, _ := unstructured.NestedString(app.Object, "status", "sync", "status")
 		phase, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "phase")
+		// Argo's own per-app health message ("Deployment X has 0/3 replicas…")
+		// is far more decisive than a generic string; fall back when empty.
+		orMsg := func(fallback string) string {
+			if strings.TrimSpace(healthMsg) != "" {
+				return healthMsg
+			}
+			return fallback
+		}
 
 		if strings.EqualFold(health, "Suspended") || strings.EqualFold(health, "Progressing") || strings.EqualFold(phase, "Running") {
 			continue
@@ -107,17 +116,22 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []D
 		// error branch below.
 		if strings.EqualFold(health, "Degraded") {
 			out = append(out, gitopsProblem("Application", argoGroup, ns, name, "critical",
-				"HealthDegraded", "Application health is Degraded (managed resources are unhealthy)", age))
+				"HealthDegraded", orMsg("Application health is Degraded (managed resources are unhealthy)"), age))
 			continue
 		}
+		// A failed sync (ComparisonError/SyncError/InvalidSpecError) is a genuine
+		// reconciliation failure, not drift — critical, matching the GitOps detail
+		// view rather than under-ranking it as a warning.
 		if ct, msg, ok := argoErrorCondition(app); ok {
-			out = append(out, gitopsProblem("Application", argoGroup, ns, name, "high", ct, msg, age))
+			out = append(out, gitopsProblem("Application", argoGroup, ns, name, "critical", ct, msg, age))
 			continue
 		}
 		automated := argoIsAutomated(app)
 		if strings.EqualFold(health, "Missing") && automated {
-			out = append(out, gitopsProblem("Application", argoGroup, ns, name, "high",
-				"HealthMissing", "auto-synced Application's managed resources are missing from the cluster", age))
+			// Auto-synced app whose managed resources are GONE is critical — the
+			// declared state isn't running at all.
+			out = append(out, gitopsProblem("Application", argoGroup, ns, name, "critical",
+				"HealthMissing", orMsg("auto-synced Application's managed resources are missing from the cluster"), age))
 			continue
 		}
 		if strings.EqualFold(sync, "OutOfSync") && automated {
@@ -201,7 +215,10 @@ func detectFluxProblems(items []*unstructured.Unstructured, kind, group string, 
 		if displayReason == "" {
 			displayReason = "Ready=False"
 		}
-		p := gitopsProblem(kind, group, obj.GetNamespace(), obj.GetName(), "high", displayReason, msg, age)
+		// A Flux Ready=False for a genuine (non-in-progress) reason is a real
+		// reconciliation failure — critical, aligning Issues with the GitOps
+		// detail view instead of under-ranking it as a warning.
+		p := gitopsProblem(kind, group, obj.GetNamespace(), obj.GetName(), "critical", displayReason, msg, age)
 		p.DurationSeconds = int64(d.Seconds())
 		p.Duration = FormatAge(d)
 		out = append(out, p)

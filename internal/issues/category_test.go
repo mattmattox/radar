@@ -12,7 +12,7 @@ func TestClassify(t *testing.T) {
 		{"unschedulable", classifyInput{Source: SourceScheduling, Kind: "Pod", Reason: "Unschedulable"}, CategoryUnschedulable},
 		{"quota", classifyInput{Source: SourceScheduling, Kind: "Deployment", Reason: "QuotaExceeded"}, CategoryQuotaExceeded},
 		{"limitrange", classifyInput{Source: SourceScheduling, Kind: "Deployment", Reason: "LimitRangeViolation"}, CategoryQuotaExceeded},
-		{"podsecurity", classifyInput{Source: SourceScheduling, Kind: "Deployment", Reason: "PodSecurityViolation"}, CategoryAdmissionWebhookBlocking},
+		{"podsecurity", classifyInput{Source: SourceScheduling, Kind: "Deployment", Reason: "PodSecurityViolation"}, CategoryPodSecurityViolation},
 		{"webhook denied", classifyInput{Source: SourceScheduling, Kind: "StatefulSet", Reason: "WebhookDenied"}, CategoryAdmissionWebhookBlocking},
 		{"ip exhaustion is startup stall", classifyInput{Source: SourceScheduling, Kind: "Pod", Reason: "IPExhaustion"}, CategoryContainerWaiting},
 		{"sandbox failed is startup stall", classifyInput{Source: SourceScheduling, Kind: "Pod", Reason: "SandboxCreationFailed"}, CategoryContainerWaiting},
@@ -80,6 +80,7 @@ func TestClassify(t *testing.T) {
 		{"argo sync failed", classifyInput{Source: SourceCondition, Kind: "Application", APIGroup: "argoproj.io", Reason: "Synced: ComparisonError"}, CategoryGitOpsSyncFailed},
 		{"flux helmrelease", classifyInput{Source: SourceCondition, Kind: "HelmRelease", APIGroup: "helm.toolkit.fluxcd.io", Reason: "Ready=False"}, CategoryGitOpsSyncFailed},
 		{"cert-manager not ready", classifyInput{Source: SourceCondition, Kind: "Certificate", APIGroup: "cert-manager.io", Reason: "Ready: DoesNotExist"}, CategoryCertificateNotReady},
+		{"cert-manager Issuer is NOT certificate_not_ready", classifyInput{Source: SourceCondition, Kind: "ClusterIssuer", APIGroup: "cert-manager.io", Reason: "Ready=False"}, CategoryOperatorConditionFail},
 		{"generic operator condition", classifyInput{Source: SourceCondition, Kind: "Foo", APIGroup: "example.com", Reason: "Ready=False"}, CategoryOperatorConditionFail},
 		// Flux source CRDs are NOT sync failures — they fall to operator condition.
 		{"flux source repo is not sync", classifyInput{Source: SourceCondition, Kind: "GitRepository", APIGroup: "source.toolkit.fluxcd.io", Reason: "Ready: GitOperationFailed"}, CategoryOperatorConditionFail},

@@ -136,11 +136,11 @@ func TestDetectGitOpsProblems(t *testing.T) {
 	}{
 		"degraded":           {"critical", "HealthDegraded"},
 		"degraded-and-error": {"critical", "HealthDegraded"},
-		"missing-auto":       {"high", "HealthMissing"},
-		"drift-auto":         {"high", "OutOfSync"},
-		"comparison":         {"high", "ComparisonError"},
-		"recon-failed":       {"high", "ReconciliationFailed"},
-		"artifact-failed":    {"high", "ArtifactFailed"},
+		"missing-auto":       {"critical", "HealthMissing"},   // auto-synced resources gone → critical
+		"drift-auto":         {"high", "OutOfSync"},           // drift self-heals → stays warning
+		"comparison":         {"critical", "ComparisonError"}, // sync failure → critical
+		"recon-failed":       {"critical", "ReconciliationFailed"},
+		"artifact-failed":    {"critical", "ArtifactFailed"},
 	}
 	for name, want := range wantFlag {
 		p, ok := bySubject[name]

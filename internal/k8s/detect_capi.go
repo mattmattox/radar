@@ -62,7 +62,9 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 			problems = append(problems, Detection{
 				Kind: "Cluster", Namespace: cl.GetNamespace(), Name: cl.GetName(), Group: capiGroup,
 				Severity: "critical", Reason: "Cluster in Failed phase",
-				Age: FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
+				// CAPI records the decisive detail in status.failureMessage/Reason.
+				Message: capiFailureDetail(cl),
+				Age:     FormatAge(ageDur), AgeSeconds: int64(ageDur.Seconds()),
 				Duration: FormatAge(ageDur), DurationSeconds: int64(ageDur.Seconds()),
 			})
 			continue // don't double-report conditions
@@ -102,8 +104,12 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 
 		// Phase-based: Failed
 		if strings.EqualFold(phase, "failed") {
-			// Include the condition message for richer context
-			_, _, msg, _, _ := conditions.FindFalseCondition(m, "Ready", "InfrastructureReady", "BootstrapReady")
+			// Prefer CAPI's terminal failureMessage/Reason; fall back to the
+			// failing condition message for richer context.
+			msg := capiFailureDetail(m)
+			if msg == "" {
+				_, _, msg, _, _ = conditions.FindFalseCondition(m, "Ready", "InfrastructureReady", "BootstrapReady")
+			}
 			problems = append(problems, Detection{
 				Kind: "Machine", Namespace: m.GetNamespace(), Name: m.GetName(), Group: capiGroup,
 				Severity: "critical", Reason: "Machine in Failed phase", Message: msg,
@@ -232,4 +238,16 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 	}
 
 	return problems
+}
+
+// capiFailureDetail returns a CAPI object's terminal failure detail —
+// status.failureMessage (the human string), falling back to status.failureReason
+// (the enum). Empty when neither is set. This is the decisive "why" CAPI records
+// on a Failed Cluster/Machine, more useful than a generic phase string.
+func capiFailureDetail(u *unstructured.Unstructured) string {
+	if m, _, _ := unstructured.NestedString(u.Object, "status", "failureMessage"); strings.TrimSpace(m) != "" {
+		return m
+	}
+	r, _, _ := unstructured.NestedString(u.Object, "status", "failureReason")
+	return r
 }
