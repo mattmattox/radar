@@ -489,6 +489,46 @@ func TestSQLiteStore_SeenResources_PersistAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestGetDiagnosis_WithSQLiteStore(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "timeline-diagnose-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ResetStore()
+	defer ResetStore()
+
+	dbPath := filepath.Join(tmpDir, "diagnose.db")
+	if err := InitStore(StoreConfig{Type: StoreTypeSQLite, Path: dbPath}); err != nil {
+		t.Fatalf("InitStore: %v", err)
+	}
+
+	event := TimelineEvent{
+		ID:        "event-1",
+		Timestamp: time.Now(),
+		Source:    SourceInformer,
+		Kind:      "TimelineWidget",
+		Namespace: "radar-timeline-test",
+		Name:      "noise-check",
+		EventType: EventTypeUpdate,
+	}
+	if err := RecordEvent(context.Background(), event); err != nil {
+		t.Fatalf("RecordEvent: %v", err)
+	}
+
+	resp := GetDiagnosis("TimelineWidget", "radar-timeline-test", "noise-check")
+	if !resp.StorePresent {
+		t.Fatal("expected diagnostics to see the global store")
+	}
+	if len(resp.TimelineEvents) != 1 {
+		t.Fatalf("expected one matching event, got %d: %+v", len(resp.TimelineEvents), resp.TimelineEvents)
+	}
+	if resp.TimelineEvents[0].ID != event.ID {
+		t.Fatalf("diagnosis returned wrong event: got %q want %q", resp.TimelineEvents[0].ID, event.ID)
+	}
+}
+
 func TestSQLiteStore_Stats_RecordsCleanupState(t *testing.T) {
 	store, cleanup := createTestSQLiteStore(t)
 	defer cleanup()

@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	"context"
 	"maps"
 	"sync"
 	"time"
@@ -280,7 +281,7 @@ func GetDiagnosis(kind, namespace, name string) DiagnoseResponse {
 
 	if store != nil {
 		// Query for events matching this resource
-		events, err := store.Query(nil, QueryOptions{
+		events, err := store.Query(context.Background(), QueryOptions{
 			Namespaces:       []string{namespace},
 			Kinds:            []string{kind},
 			Limit:            50,

@@ -420,9 +420,9 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 					NewValue: f.NewValue,
 				}
 			}
-		} else if KindHasDiffer(kind) {
-			// Audited diff function found nothing observable — usually a
-			// heartbeat, managedFields-only update, or reconcile counter.
+		} else if KindHasDiffer(kind) || isUnstructuredUpdate(oldObj, newObj) {
+			// Diff handling found nothing observable — usually a heartbeat,
+			// managedFields-only update, or reconcile counter.
 			// Before dropping, check metadata.generation: it bumps only on
 			// spec changes (status updates don't touch it), so a generation
 			// flip with a nil diff means our diff function missed a real spec
@@ -491,8 +491,11 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 				ctx := context.Background()
 				if err := timeline.RecordEventsWithBroadcast(ctx, events); err != nil {
 					log.Printf("Warning: failed to record historical events: %v", err)
+					timeline.RecordDrop(kind, namespace, name, timeline.DropReasonStoreFailed, op)
+					return
 				}
 			}
+			store.MarkResourceSeen(kind, namespace, name)
 			return
 		}
 	}
@@ -511,6 +514,12 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 	if op == "add" {
 		store.MarkResourceSeen(kind, namespace, name)
 	}
+}
+
+func isUnstructuredUpdate(oldObj, newObj any) bool {
+	_, oldOK := oldObj.(*unstructured.Unstructured)
+	_, newOK := newObj.(*unstructured.Unstructured)
+	return oldOK && newOK
 }
 
 // extractAPIVersion returns the resource's apiVersion (e.g. "cluster.x-k8s.io/v1beta1")

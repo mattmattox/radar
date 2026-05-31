@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -65,13 +66,25 @@ var diffFunctions = map[string]kindDiffFunc{
 func ComputeDiff(kind string, oldObj, newObj any) *DiffInfo {
 	fn, ok := diffFunctions[kind]
 	if !ok {
-		return nil
+		oldU, newU, ok := unstructuredPair(oldObj, newObj)
+		if !ok {
+			return nil
+		}
+		changes, summaryParts := diffGenericUnstructured(oldU, newU)
+		if len(changes) == 0 {
+			return nil
+		}
+		return buildDiff(changes, summaryParts)
 	}
 	changes, summaryParts := fn(oldObj, newObj)
 	if len(changes) == 0 {
 		return nil
 	}
 
+	return buildDiff(changes, summaryParts)
+}
+
+func buildDiff(changes []FieldChange, summaryParts []string) *DiffInfo {
 	var summary strings.Builder
 	if len(summaryParts) > 0 {
 		for i, part := range summaryParts {
@@ -86,6 +99,12 @@ func ComputeDiff(kind string, oldObj, newObj any) *DiffInfo {
 		Fields:  changes,
 		Summary: summary.String(),
 	}
+}
+
+func unstructuredPair(oldObj, newObj any) (*unstructured.Unstructured, *unstructured.Unstructured, bool) {
+	oldU, ok1 := oldObj.(*unstructured.Unstructured)
+	newU, ok2 := newObj.(*unstructured.Unstructured)
+	return oldU, newU, ok1 && ok2 && oldU != nil && newU != nil
 }
 
 // typeAssertWarnedKinds dedups one-time warnings about type-assertion failures
@@ -109,6 +128,124 @@ func warnUnstructuredAssertFailed(kind string, got any) {
 func KindHasDiffer(kind string) bool {
 	_, ok := diffFunctions[kind]
 	return ok
+}
+
+func diffGenericUnstructured(oldU, newU *unstructured.Unstructured) ([]FieldChange, []string) {
+	var changes []FieldChange
+	var summary []string
+
+	if oldGen, newGen := oldU.GetGeneration(), newU.GetGeneration(); oldGen != newGen && oldGen > 0 && newGen > 0 {
+		changes = append(changes, FieldChange{
+			Path:     "metadata.generation",
+			OldValue: oldGen,
+			NewValue: newGen,
+		})
+		summary = append(summary, fmt.Sprintf("spec changed (gen %d→%d, fields not specifically tracked)", oldGen, newGen))
+	}
+
+	for _, change := range genericConditionChanges(oldU, newU, "status", "conditions") {
+		changes = append(changes, change)
+		summary = append(summary, fmt.Sprintf("%s changed", change.Path))
+	}
+
+	if len(changes) > 0 {
+		return changes, summary
+	}
+
+	oldNorm := normalizedUnstructuredForTimeline(oldU)
+	newNorm := normalizedUnstructuredForTimeline(newU)
+	if reflect.DeepEqual(oldNorm, newNorm) {
+		return nil, nil
+	}
+
+	return []FieldChange{{
+		Path:     "resource",
+		OldValue: "changed",
+		NewValue: "changed",
+	}}, []string{"resource changed"}
+}
+
+func genericConditionChanges(oldU, newU *unstructured.Unstructured, fields ...string) []FieldChange {
+	oldConditions := genericConditionSignalMap(oldU.Object, fields...)
+	newConditions := genericConditionSignalMap(newU.Object, fields...)
+	keys := make(map[string]struct{}, len(oldConditions)+len(newConditions))
+	for k := range oldConditions {
+		keys[k] = struct{}{}
+	}
+	for k := range newConditions {
+		keys[k] = struct{}{}
+	}
+
+	var changes []FieldChange
+	for key := range keys {
+		oldVal, oldOK := oldConditions[key]
+		newVal, newOK := newConditions[key]
+		if oldOK != newOK || oldVal != newVal {
+			changes = append(changes, FieldChange{
+				Path:     fmt.Sprintf("%s[%s]", strings.Join(fields, "."), key),
+				OldValue: oldVal,
+				NewValue: newVal,
+			})
+		}
+	}
+	return changes
+}
+
+func genericConditionSignalMap(obj map[string]any, fields ...string) map[string]string {
+	conditions, found, _ := unstructured.NestedSlice(obj, fields...)
+	if !found {
+		return nil
+	}
+	out := make(map[string]string, len(conditions))
+	for _, item := range conditions {
+		cond, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := cond["type"].(string)
+		if typ == "" {
+			continue
+		}
+		status, _ := cond["status"].(string)
+		reason, _ := cond["reason"].(string)
+		out[typ] = status + "\x00" + reason
+	}
+	return out
+}
+
+func normalizedUnstructuredForTimeline(u *unstructured.Unstructured) map[string]any {
+	cp := u.DeepCopy().Object
+	normalizeTimelineObject(cp)
+	return cp
+}
+
+func normalizeTimelineObject(v any) {
+	switch typed := v.(type) {
+	case map[string]any:
+		for k, child := range typed {
+			if isTimelineNoiseKey(k) {
+				delete(typed, k)
+				continue
+			}
+			normalizeTimelineObject(child)
+		}
+	case []any:
+		for _, child := range typed {
+			normalizeTimelineObject(child)
+		}
+	}
+}
+
+func isTimelineNoiseKey(key string) bool {
+	switch key {
+	case "resourceVersion", "managedFields", "observedGeneration",
+		"lastTransitionTime", "lastUpdateTime", "lastHeartbeatTime", "lastProbeTime",
+		"lastReconcileTime", "lastReconciledTime", "lastSyncTime",
+		"lastHandledReconcileAt", "lastHandledRefresh":
+		return true
+	default:
+		return false
+	}
 }
 
 // diffDeployment computes diff for Deployment resources
@@ -1020,10 +1157,10 @@ func diffJob(oldObj, newObj any) ([]FieldChange, []string) {
 	// Check terminal conditions. CompletionTime alone misses Failed jobs
 	// (which never set CompletionTime) and the FailureTarget signal.
 	jobCondSummary := map[batchv1.JobConditionType]string{
-		batchv1.JobComplete:       "completed",
-		batchv1.JobFailed:         "failed",
-		batchv1.JobFailureTarget:  "failure target",
-		batchv1.JobSuspended:      "suspended",
+		batchv1.JobComplete:      "completed",
+		batchv1.JobFailed:        "failed",
+		batchv1.JobFailureTarget: "failure target",
+		batchv1.JobSuspended:     "suspended",
 	}
 	for _, condType := range []batchv1.JobConditionType{batchv1.JobComplete, batchv1.JobFailed, batchv1.JobSuspended, batchv1.JobFailureTarget} {
 		oldStatus := getJobConditionStatus(oldJob, condType)
@@ -2376,4 +2513,3 @@ func getConditionMap(obj map[string]any, path ...string) map[string]string {
 	}
 	return result
 }
-

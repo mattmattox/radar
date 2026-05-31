@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skyhook-io/radar/internal/timeline"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -75,6 +76,111 @@ func TestComputeDiff_NodeHeartbeatOnly_ReturnsNil(t *testing.T) {
 	diff := ComputeDiff("Node", base, updated)
 	if diff != nil {
 		t.Fatalf("expected nil diff for heartbeat-only Node update, got %+v", diff)
+	}
+}
+
+func TestComputeDiff_UnknownCRDMetadataOnly_ReturnsNil(t *testing.T) {
+	base := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "example.io/v1",
+		"kind":       "Widget",
+		"metadata": map[string]any{
+			"name":            "w",
+			"namespace":       "default",
+			"resourceVersion": "1",
+			"generation":      int64(3),
+		},
+		"status": map[string]any{
+			"observedGeneration": int64(3),
+			"conditions": []any{map[string]any{
+				"type":               "Ready",
+				"status":             "True",
+				"reason":             "Available",
+				"lastTransitionTime": "2026-05-31T10:00:00Z",
+			}},
+		},
+	}}
+
+	updated := base.DeepCopy()
+	updated.SetResourceVersion("2")
+	_ = unstructured.SetNestedField(updated.Object, int64(3), "status", "observedGeneration")
+	_ = unstructured.SetNestedSlice(updated.Object, []any{map[string]any{
+		"type":               "Ready",
+		"status":             "True",
+		"reason":             "Available",
+		"lastTransitionTime": "2026-05-31T10:05:00Z",
+	}}, "status", "conditions")
+
+	if diff := ComputeDiff("Widget", base, updated); diff != nil {
+		t.Fatalf("expected nil diff for metadata/timestamp-only unknown CRD update, got %+v", diff)
+	}
+}
+
+func TestComputeDiff_UnknownCRDConditionStatus_Detected(t *testing.T) {
+	base := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "example.io/v1",
+		"kind":       "Widget",
+		"metadata": map[string]any{
+			"name":       "w",
+			"namespace":  "default",
+			"generation": int64(3),
+		},
+		"status": map[string]any{
+			"conditions": []any{map[string]any{"type": "Ready", "status": "False", "reason": "Reconciling"}},
+		},
+	}}
+	updated := base.DeepCopy()
+	_ = unstructured.SetNestedSlice(updated.Object, []any{map[string]any{"type": "Ready", "status": "True", "reason": "Available"}}, "status", "conditions")
+
+	diff := ComputeDiff("Widget", base, updated)
+	if diff == nil || !containsPath(diff, "status.conditions[Ready]") {
+		t.Fatalf("expected Ready condition diff for unknown CRD, got %+v", diff)
+	}
+}
+
+func TestComputeDiff_UnknownCRDArbitraryStatus_Detected(t *testing.T) {
+	base := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "example.io/v1",
+		"kind":       "Widget",
+		"metadata":   map[string]any{"name": "w", "namespace": "default", "generation": int64(1)},
+		"status":     map[string]any{"endpoint": "10.0.0.1"},
+	}}
+	updated := base.DeepCopy()
+	_ = unstructured.SetNestedField(updated.Object, "10.0.0.2", "status", "endpoint")
+
+	diff := ComputeDiff("Widget", base, updated)
+	if diff == nil || !containsPath(diff, "resource") {
+		t.Fatalf("expected generic resource diff for unknown status field, got %+v", diff)
+	}
+}
+
+func TestRecordToTimelineStore_SyncAddMarksResourceSeen(t *testing.T) {
+	prev := initialSyncComplete
+	initialSyncComplete = false
+	defer func() { initialSyncComplete = prev }()
+
+	timeline.ResetStore()
+	if err := timeline.InitStore(timeline.DefaultStoreConfig()); err != nil {
+		t.Fatalf("InitStore: %v", err)
+	}
+	defer timeline.ResetStore()
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "p",
+			Namespace:         "default",
+			UID:               "pod-uid",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
+		},
+	}
+
+	recordToTimelineStore("Pod", "default", "p", "pod-uid", "add", nil, pod)
+
+	store := timeline.GetStore()
+	if store == nil {
+		t.Fatal("timeline store is nil")
+	}
+	if !store.IsResourceSeen("Pod", "default", "p") {
+		t.Fatal("sync add should mark resource seen after historical event recording")
 	}
 }
 
