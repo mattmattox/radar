@@ -43,9 +43,16 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 
 	// Auth-filter the requested namespaces. nil = "all namespaces" (user
 	// is unrestricted); non-nil empty = "user has no access to anything
-	// they asked for" → return empty rather than leak cluster-wide rows.
+	// they asked for".
 	namespaces := s.parseNamespacesForUser(r)
 	if noNamespaceAccess(namespaces) {
+		// If the caller EXPLICITLY named namespace(s) they can't access, that's
+		// a denial — surface it as 403, not an empty (reads-as-"nothing broken")
+		// list. Bad trust boundary otherwise, especially for an agent.
+		if q.Get("namespace") != "" || q.Get("namespaces") != "" {
+			s.writeError(w, http.StatusForbidden, "no access to the requested namespace(s)")
+			return
+		}
 		s.writeJSON(w, map[string]any{"issues": []any{}, "total": 0, "total_matched": 0})
 		return
 	}

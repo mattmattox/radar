@@ -2399,7 +2399,9 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 	var allowedNamespaces []string
 	if input.Namespace != "" {
 		if !checkNamespaceAccess(ctx, input.Namespace) {
-			return toJSONResult(map[string]any{"issues": []issues.Issue{}, "total": 0, "total_matched": 0})
+			// Explicit denial must NOT read as "[] = nothing broken" — for an
+			// agent that's an unauthorized → healthy trust gap. Surface it.
+			return nil, nil, fmt.Errorf("forbidden: no access to namespace %q", input.Namespace)
 		}
 		allowedNamespaces = []string{input.Namespace}
 	} else {

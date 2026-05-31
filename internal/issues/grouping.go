@@ -199,10 +199,13 @@ func sortRefs(refs []Ref) {
 
 // lessIssue is the canonical issue sort: severity desc, then ONSET (first_seen
 // desc) — deliberately NOT last_seen, which bumps to compose-time on every poll
-// and would reshuffle same-severity rows on each refetch. Then category / kind /
-// namespace / name for a stable total order. Matches the shared UI comparator
-// (k8s-ui issues/types.ts:compareIssues) so /api/issues, MCP, and the UI all
-// return one stable queue.
+// and would reshuffle same-severity rows on each refetch. Then namespace, name,
+// and the stable id as a total tiebreak. This is byte-for-byte the order the
+// shared UI comparator (k8s-ui issues/types.ts:compareIssues) produces for a
+// single cluster — the UI's only extra key is `cluster`, which it sorts on for
+// fleet (multi-cluster) views and which is constant here. So /api/issues, MCP,
+// and the single-cluster UI return one identical queue. (id is the final
+// tiebreak — two rows can share subject+ns+name and differ only by cause.)
 func lessIssue(a, b Issue) bool {
 	if a.Severity != b.Severity {
 		return SeverityRank(a.Severity) > SeverityRank(b.Severity)
@@ -210,16 +213,11 @@ func lessIssue(a, b Issue) bool {
 	if !a.FirstSeen.Equal(b.FirstSeen) {
 		return a.FirstSeen.After(b.FirstSeen)
 	}
-	if a.Kind != b.Kind {
-		return a.Kind < b.Kind
-	}
 	if a.Namespace != b.Namespace {
 		return a.Namespace < b.Namespace
 	}
 	if a.Name != b.Name {
 		return a.Name < b.Name
 	}
-	// Final tiebreak: two grouped rows can share a subject (kind/ns/name)
-	// and differ only by category. Keeps the order total + deterministic.
-	return a.Category < b.Category
+	return a.ID < b.ID
 }
