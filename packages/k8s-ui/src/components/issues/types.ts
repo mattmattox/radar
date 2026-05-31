@@ -6,10 +6,10 @@
 // payloads onto these types; the component renders against them.
 //
 // Mirrors the grouped Issue model radar emits (internal/issues.GroupIssues →
-// /api/issues, and the hub's /api/fleet/issues). The identity primitives
-// (IssueResourceRef, resourceKey) intentionally match the Checks queue's contract
-// (components/checks/types.ts) and radar/pkg/audit.ResourceKey — so Issues and
-// Checks share keys + deep-links rather than forking a second convention.
+// /api/issues, and the hub's /api/fleet/issues). IssueResourceRef intentionally
+// matches the Checks queue's contract (components/checks/types.ts) and
+// radar/pkg/audit.ResourceKey — so Issues and Checks share deep-links rather
+// than forking a second convention.
 
 /** Operational severity for live issues — distinct from the Checks 4-tier
  *  posture ladder on purpose (operational urgency vs compliance risk are
@@ -44,20 +44,6 @@ export interface IssueResourceRef {
   kind: string;
   namespace?: string;
   name: string;
-}
-
-/**
- * resourceKey mirrors Go `audit.ResourceKey(group, kind, namespace, name)`:
- * `group|Kind|namespace|name`. Group first because group and namespace can each
- * independently be empty; `|` is delimiter-safe (K8s API groups follow
- * DNS-subdomain rules and can't contain it).
- */
-export function resourceKey(group: string, kind: string, namespace: string, name: string): string {
-  return `${group}|${kind}|${namespace}|${name}`;
-}
-
-export function resourceRefKey(ref: IssueResourceRef): string {
-  return resourceKey(ref.group ?? '', ref.kind, ref.namespace ?? '', ref.name);
 }
 
 /** Rollup of the underlying resources folded into a grouped issue, by kind
@@ -185,7 +171,7 @@ export function normalizeImagePullMessage(raw: string): string | null {
   let cause: string | null = null;
   if (/not\s*found|manifest\s*unknown|no such (image|manifest)/.test(lower)) cause = 'Image not found';
   else if (/unauthorized|forbidden|denied|\b401\b|\b403\b|authentication required/.test(lower)) cause = 'Not authorized to pull image';
-  else if (/no such host|i\/o timeout|\btimeout\b|connection refused|dial tcp|lookup .* no such/.test(lower)) cause = 'Registry unreachable';
+  else if (/no such host|i\/o timeout|\btimeout\b|connection refused|dial tcp/.test(lower)) cause = 'Registry unreachable';
   else if (/toomanyrequests|too many requests|rate limit/.test(lower)) cause = 'Registry rate-limited';
   if (!cause) return null;
   return ref ? `${cause}: ${ref}` : cause;

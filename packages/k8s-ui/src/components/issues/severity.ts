@@ -88,10 +88,13 @@ const CATEGORY_LABEL: Record<string, string> = {
   hpa_limited_or_failed: 'HPA limited',
   rbac_forbidden: 'RBAC forbidden',
   certificate_not_ready: 'Certificate not ready',
+  pod_security_violation: 'Pod Security violation',
   node_not_ready: 'Node not ready',
   operator_condition_failed: 'Controller condition',
   gitops_sync_failed: 'GitOps sync failed',
   webhook_backend_down: 'Webhook backend down',
+  control_plane_not_ready: 'Control plane not ready',
+  machine_not_ready: 'Machine not ready',
   unknown: 'Unknown',
 };
 

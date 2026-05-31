@@ -746,11 +746,6 @@ func pvcSingleNodeAccessOnly(pvc *corev1.PersistentVolumeClaim) bool {
 	return restrictive
 }
 
-// pvcAwaitsFirstConsumer reports whether a Pending PVC is bound to a
-// WaitForFirstConsumer StorageClass — in which case Pending is the EXPECTED
-// state until a consuming pod is scheduled, not a fault. Resolves the PVC's
-// explicit StorageClass, falling back to the cluster default. Unknown SC →
-// false (can't prove benign, so let the caller flag it).
 // resourceAge returns now-creationTimestamp for the item in items matching
 // namespace/name, or 0 if absent. Used to stamp a stable AgeSeconds on
 // detections from per-kind detectors (HPA/CronJob) that don't track how long
@@ -765,6 +760,11 @@ func resourceAge[T metav1.Object](now time.Time, items []T, namespace, name stri
 	return 0
 }
 
+// pvcAwaitsFirstConsumer reports whether a Pending PVC is bound to a
+// WaitForFirstConsumer StorageClass — in which case Pending is the EXPECTED
+// state until a consuming pod is scheduled, not a fault. Resolves the PVC's
+// explicit StorageClass, falling back to the cluster default. Unknown SC →
+// false (can't prove benign, so let the caller flag it).
 func pvcAwaitsFirstConsumer(cache *ResourceCache, pvc *corev1.PersistentVolumeClaim) bool {
 	scl := cache.StorageClasses()
 	if scl == nil {
