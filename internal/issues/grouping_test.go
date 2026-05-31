@@ -159,3 +159,23 @@ func TestComposeWithStats_GroupedCapsOnGroups(t *testing.T) {
 		t.Errorf("grouped row should reflect 5 members: affected.pods=%d count=%d", g[0].Affected.Pods, g[0].Count)
 	}
 }
+
+// TestRelatedIssues_SubjectAndMember pins what diagnose relies on: querying a
+// resource returns the grouped issues where it's the SUBJECT or an affected
+// MEMBER. A Pod-evidenced crashloop under a Deployment is returned for both the
+// Deployment (subject) and the Pod (member); kind match is case-insensitive.
+func TestRelatedIssues_SubjectAndMember(t *testing.T) {
+	p := &fakeProvider{problems: []k8s.Detection{
+		{Kind: "Pod", Namespace: "prod", Name: "web-abc-1", Reason: "CrashLoopBackOff", Severity: "critical",
+			OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web"},
+	}}
+	if got := RelatedIssues(p, nil, "apps", "Deployment", "prod", "web"); len(got) != 1 {
+		t.Fatalf("RelatedIssues(owning Deployment) = %d, want 1 (subject match)", len(got))
+	}
+	if got := RelatedIssues(p, nil, "", "pod", "prod", "web-abc-1"); len(got) != 1 {
+		t.Errorf("RelatedIssues(evidence Pod, case-insensitive) = %d, want 1 (member match)", len(got))
+	}
+	if got := RelatedIssues(p, nil, "apps", "Deployment", "prod", "other"); len(got) != 0 {
+		t.Errorf("RelatedIssues(unrelated) = %d, want 0", len(got))
+	}
+}

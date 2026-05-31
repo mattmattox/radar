@@ -164,7 +164,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 	// -----------------------------------------------------------------------
 	// CAPI MachineDeployment problems: ready < desired for > 5m
 	// -----------------------------------------------------------------------
-	for _, md := range listCAPI("MachineDeployment", "") {
+	for _, md := range listCAPI("MachineDeployment", capiGroup) {
 		desired, _, _ := unstructured.NestedInt64(md.Object, "spec", "replicas")
 		ready, _, _ := unstructured.NestedInt64(md.Object, "status", "readyReplicas")
 		if desired > 0 && ready < desired {
@@ -188,7 +188,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 	// -----------------------------------------------------------------------
 	// CAPI KubeadmControlPlane problems: Ready=False or replicas mismatch
 	// -----------------------------------------------------------------------
-	for _, kcp := range listCAPI("KubeadmControlPlane", "") {
+	for _, kcp := range listCAPI("KubeadmControlPlane", capiCPGroup) {
 		ageDur := now.Sub(kcp.GetCreationTimestamp().Time)
 		desired, _, _ := unstructured.NestedInt64(kcp.Object, "spec", "replicas")
 		ready, _, _ := unstructured.NestedInt64(kcp.Object, "status", "readyReplicas")
@@ -220,7 +220,7 @@ func DetectCAPIProblems(dynamicCache *DynamicResourceCache, discovery *ResourceD
 	// -----------------------------------------------------------------------
 	// CAPI MachineHealthCheck: actively remediating
 	// -----------------------------------------------------------------------
-	for _, mhc := range listCAPI("MachineHealthCheck", "") {
+	for _, mhc := range listCAPI("MachineHealthCheck", capiGroup) {
 		expected, _, _ := unstructured.NestedInt64(mhc.Object, "status", "expectedMachines")
 		healthy, _, _ := unstructured.NestedInt64(mhc.Object, "status", "currentHealthy")
 		if expected > 0 && healthy < expected {

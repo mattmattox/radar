@@ -125,6 +125,28 @@ func TestBuildIssueIndex_GroupAware(t *testing.T) {
 	}
 }
 
+// TestBuildIssueIndex_GroupedSubjectPropagation is the contract that ties the
+// issues tool to resource drill-down: a Pod-evidenced issue grouped under a
+// Deployment must surface on BOTH the Deployment (the grouped subject an agent
+// sees in `issues` and queries via get_resource) AND the Pod (the evidence).
+// Before the grouped index, the Deployment read issueCount=0 — the drill-down
+// contradicted the entry point.
+func TestBuildIssueIndex_GroupedSubjectPropagation(t *testing.T) {
+	p := &fakeIssuesProvider{
+		problems: []k8s.Detection{
+			{Kind: "Pod", Namespace: "prod", Name: "web-abc-1", Reason: "CrashLoopBackOff", Severity: "critical",
+				OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web"},
+		},
+	}
+	idx := BuildIssueIndex(p, nil)
+	if got := idx.Count("apps", "Deployment", "prod", "web"); got != 1 {
+		t.Errorf("owning Deployment count = %d, want 1 (Pod-evidenced issue must surface on the grouped subject)", got)
+	}
+	if got := idx.Count("", "Pod", "prod", "web-abc-1"); got != 1 {
+		t.Errorf("evidence Pod count = %d, want 1", got)
+	}
+}
+
 // TestBuildIssueIndex_BeyondMaxLimit pins that resources whose issues
 // would fall in the tail beyond MaxLimit still get correct issueCounts.
 // Pre-fix, BuildIssueIndex passed Limit:MaxLimit (1000) to Compose; on

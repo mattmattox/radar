@@ -349,6 +349,10 @@ export interface IssuesResponse {
   issues: Issue[]
   total?: number
   total_matched?: number
+  // Present only when RBAC visibility is incomplete (absent = full access).
+  // state 'degraded' means core workload reads are denied, so an empty list may
+  // mean "can't see" rather than "nothing broken" — the UI must say so.
+  visibility?: { state?: string; impact?: string }
 }
 
 export function useIssues(namespaces: string[] = []) {

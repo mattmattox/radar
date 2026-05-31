@@ -37,9 +37,12 @@ export function isIssueSeverity(s: string): s is IssueSeverity {
  */
 export interface IssueResourceRef {
   cluster_id?: string;
-  group: string;
+  // group/namespace are optional to match the Go wire (omitempty): a
+  // cluster-scoped or core-group member (Node, a core/v1 object) arrives
+  // without them. Consumers default to '' (subjectRef/memberRef do this).
+  group?: string;
   kind: string;
-  namespace: string;
+  namespace?: string;
   name: string;
 }
 
@@ -54,7 +57,7 @@ export function resourceKey(group: string, kind: string, namespace: string, name
 }
 
 export function resourceRefKey(ref: IssueResourceRef): string {
-  return resourceKey(ref.group, ref.kind, ref.namespace, ref.name);
+  return resourceKey(ref.group ?? '', ref.kind, ref.namespace ?? '', ref.name);
 }
 
 /** Rollup of the underlying resources folded into a grouped issue, by kind

@@ -18,7 +18,7 @@ export function IssuesPane({ namespaces, onBack, onNavigateToResource }: IssuesP
   const { data, isLoading, error } = useIssues(namespaces)
 
   const onResourceClick = (ref: IssueResourceRef) =>
-    onNavigateToResource({ kind: ref.kind, namespace: ref.namespace, name: ref.name, group: ref.group })
+    onNavigateToResource({ kind: ref.kind, namespace: ref.namespace ?? '', name: ref.name, group: ref.group ?? '' })
 
   if (isLoading) {
     return <PaneLoader label="Loading issues…" className="flex-1" />
@@ -47,10 +47,20 @@ export function IssuesPane({ namespaces, onBack, onNavigateToResource }: IssuesP
             <h1 className="text-lg font-semibold text-theme-text-primary">Issues</h1>
           </div>
           <p className="text-sm text-theme-text-tertiary mt-1 ml-7">
-            Live cluster problems — crashes, scheduling failures, bad references — grouped by the workload they affect.
+            Live cluster problems — crashes, scheduling failures, bad references — grouped by the resource they affect.
           </p>
         </div>
       </div>
+
+      {/* Visibility honesty: when RBAC reads are incomplete, an empty queue may
+          mean "can't see" rather than "nothing broken" — say so up front so the
+          empty state isn't mistaken for a clean bill of health. */}
+      {data?.visibility?.impact && (
+        <div className="-mt-3 flex items-start gap-2 rounded-lg border border-theme-border bg-theme-elevated px-3 py-2 text-xs text-theme-text-secondary">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          <span>Limited visibility — {data.visibility.impact} Results may be incomplete.</span>
+        </div>
+      )}
 
       {/* Truncation honesty: when more issues matched than were returned, say
           so — don't present a capped list as the complete picture. */}
