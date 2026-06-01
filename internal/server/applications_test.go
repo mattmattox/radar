@@ -11,7 +11,7 @@ import (
 // (a singleton, raw-always).
 func rawInput(kind, ns, name, version, health string) appWorkloadInput {
 	return appWorkloadInput{
-		wl:       appWorkload{Kind: kind, Namespace: ns, Name: name, Version: version, Health: health},
+		wl:       appWorkload{Kind: kind, Namespace: ns, Name: name, Version: version, Health: health, WorkloadClass: classifyWorkload(kind, nil)},
 		rootKey:  ns + "/" + kind + "/" + name,
 		rootKind: kind,
 	}
@@ -154,5 +154,43 @@ func TestClassifyAddon_ClassifiesNotHides(t *testing.T) {
 	svc := rowByName(rows, "my-service")
 	if svc == nil || svc.Category != "app" {
 		t.Errorf("my-service should be Category=app, got %+v", svc)
+	}
+}
+
+func TestClassifyAddon_MixedEvidenceDoesNotForceAddon(t *testing.T) {
+	addon := rawInput("Deployment", "prod", "grafana-sidecar", "10.0", "healthy")
+	addon.addon, addon.addonWhy = packages.ClassifyAddon("", "grafana", "", "grafana-sidecar")
+	app := rawInput("Deployment", "prod", "api", "1.0", "healthy")
+	addon.overlay = &subject.AppOverlay{Winner: subject.Signal{Tier: subject.TierPartOf, Key: "prod/app/checkout", Confidence: subject.ConfidenceMedium}}
+	app.overlay = &subject.AppOverlay{Winner: subject.Signal{Tier: subject.TierPartOf, Key: "prod/app/checkout", Confidence: subject.ConfidenceMedium}}
+
+	rows := groupApplications([]appWorkloadInput{addon, app})
+	if len(rows) != 1 {
+		t.Fatalf("shared overlay should produce one app, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Category != "mixed" {
+		t.Fatalf("mixed add-on evidence should classify as mixed, got %q", rows[0].Category)
+	}
+	if rows[0].AddonReason == "" {
+		t.Fatalf("mixed classification should preserve add-on evidence")
+	}
+}
+
+func TestWorkloadClass_FacetIsDerivedFromRuntimeShape(t *testing.T) {
+	service := rawInput("Deployment", "prod", "api", "1.0", "healthy")
+	service.wl.WorkloadClass = classifyWorkload("Deployment", &appRelationships{Services: []string{"api"}})
+	service.rels = &appRelationships{Services: []string{"api"}}
+	worker := rawInput("Deployment", "prod", "worker", "1.0", "healthy")
+	job := rawInput("CronJob", "prod", "nightly", "", "healthy")
+
+	rows := groupApplications([]appWorkloadInput{service, worker, job})
+	if got := rowByName(rows, "api"); got == nil || got.WorkloadClass != "service" {
+		t.Fatalf("service row class = %+v, want service", got)
+	}
+	if got := rowByName(rows, "worker"); got == nil || got.WorkloadClass != "worker" {
+		t.Fatalf("worker row class = %+v, want worker", got)
+	}
+	if got := rowByName(rows, "nightly"); got == nil || got.WorkloadClass != "job" {
+		t.Fatalf("cronjob row class = %+v, want job", got)
 	}
 }

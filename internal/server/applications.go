@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -21,8 +22,9 @@ import (
 
 // Applications is the workload-centric twin of /api/packages. Where packages
 // answers "what software is installed" (chart/GitOps-declaration centric, the
-// Add-ons surface), Applications answers "what are MY services and what version
-// runs where" — the unit is a logical app.
+// Add-ons surface), Applications answers "what deployable/owned software units
+// run here, what runtime class they have, and what version they run" — the unit
+// is a logical app/release grouping over concrete workloads.
 //
 // What defines an app boundary: the K8s STRUCTURAL relationship graph is the
 // spine. A workload's app is its topmost EdgeManages ancestor — the root that
@@ -45,17 +47,18 @@ type applicationsResponse struct {
 
 // appRow is one logical app in this cluster.
 type appRow struct {
-	Key         string `json:"key"`                  // overlay key, structural-root key, or "<ns>/<kind>/<name>" raw
-	Name        string `json:"name"`                 // display name
-	Namespace   string `json:"namespace,omitempty"`  // grouping scope
-	Tier        int    `json:"tier,omitempty"`       // pkg/subject overlay tier (0 = raw, no signal)
-	Confidence  string `json:"confidence,omitempty"` // high | medium | low
-	Category    string `json:"category,omitempty"`   // "app" (your service) | "addon" (3rd-party platform machinery)
-	AddonReason string `json:"addonReason,omitempty"`// evidence when Category == "addon" — never hidden, always explained
-	Health      string `json:"health"`               // worst-of across workloads
-	Versions    []string          `json:"versions,omitempty"` // distinct image tags (the running version)
-	Workloads   []appWorkload     `json:"workloads"`
-	Events      []appEvent        `json:"events,omitempty"`        // recent Warning events across the app's workloads/pods
+	Key           string            `json:"key"`                      // overlay key, structural-root key, or "<ns>/<kind>/<name>" raw
+	Name          string            `json:"name"`                     // display name
+	Namespace     string            `json:"namespace,omitempty"`      // grouping scope
+	Tier          int               `json:"tier,omitempty"`           // pkg/subject overlay tier (0 = raw, no signal)
+	Confidence    string            `json:"confidence,omitempty"`     // high | medium | low
+	Category      string            `json:"category,omitempty"`       // app | addon | mixed; classification hint, never identity
+	AddonReason   string            `json:"addonReason,omitempty"`    // add-on evidence when Category == addon/mixed
+	WorkloadClass string            `json:"workload_class,omitempty"` // service | worker | job | unknown
+	Health        string            `json:"health"`                   // worst-of across workloads
+	Versions      []string          `json:"versions,omitempty"`       // distinct image tags (the running version)
+	Workloads     []appWorkload     `json:"workloads"`
+	Events        []appEvent        `json:"events,omitempty"`        // recent Warning events across the app's workloads/pods
 	Relationships *appRelationships `json:"relationships,omitempty"` // structural satellites attached via topology
 }
 
@@ -82,19 +85,20 @@ type appEvent struct {
 	LastSeen string `json:"lastSeen,omitempty"`
 }
 
-// appWorkload is one running controller (Deployment/StatefulSet/DaemonSet)
-// belonging to an app, with its primary container image as the version anchor.
+// appWorkload is one concrete workload belonging to an app, with its primary
+// container image as the version anchor when the workload has a pod template.
 type appWorkload struct {
-	Kind      string `json:"kind"`
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	Image     string `json:"image,omitempty"`   // full primary-container image ref
-	Version   string `json:"version,omitempty"` // image tag (digest-only → empty)
-	Health    string `json:"health"`
-	Ready     int    `json:"ready"`            // ready/available replicas
-	Desired   int    `json:"desired"`          // desired replicas
-	Restarts  int    `json:"restarts"`         // total container restarts across the workload's pods
-	Reason    string `json:"reason,omitempty"` // last-terminated reason of the worst pod (CrashLoopBackOff/OOMKilled/…)
+	Kind          string `json:"kind"`
+	Namespace     string `json:"namespace"`
+	Name          string `json:"name"`
+	WorkloadClass string `json:"workload_class,omitempty"` // service | worker | job | unknown
+	Image         string `json:"image,omitempty"`          // full primary-container image ref
+	Version       string `json:"version,omitempty"`        // image tag (digest-only → empty)
+	Health        string `json:"health"`
+	Ready         int    `json:"ready"`            // ready/available replicas
+	Desired       int    `json:"desired"`          // desired replicas
+	Restarts      int    `json:"restarts"`         // total container restarts across the workload's pods
+	Reason        string `json:"reason,omitempty"` // last-terminated reason of the worst pod (CrashLoopBackOff/OOMKilled/…)
 }
 
 // handleListApplications serves GET /api/applications.
@@ -272,10 +276,11 @@ type appWorkloadInput struct {
 	addonWhy string
 }
 
-// collectAppWorkloads walks Deployments/StatefulSets/DaemonSets, captures the
-// primary container image + replica health, resolves each to its structural
-// root and label overlay, and classifies add-on machinery. Pods and Warning
-// events are indexed once per namespace and joined, not re-listed per workload.
+// collectAppWorkloads walks Deployments/StatefulSets/DaemonSets plus
+// Jobs/CronJobs, captures the primary container image + runtime health, resolves
+// each to its structural root and label overlay, and classifies add-on
+// machinery. Pods and Warning events are indexed once per namespace and joined,
+// not re-listed per workload.
 func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGraph) []appWorkloadInput {
 	var out []appWorkloadInput
 
@@ -283,34 +288,29 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGr
 	eventsByObj := indexWarningEventsByObject(cache, namespaces)
 
 	add := func(kind, ns, name string, lbls, anns map[string]string, image string, health packages.Health, ready, desired int, selector *metav1.LabelSelector) {
-		// Cluster plumbing (kube-proxy, kindnet, CNI, local-path) is K8s control
-		// plane, never a user service — exclude these namespaces outright. This
-		// is a namespace-scoped infra filter, distinct from add-on NAME matching
-		// below, which only classifies (never hides) user-namespace workloads.
-		if systemNamespaces[ns] {
-			return
-		}
 		pods := podsForSelector(podsByNS[ns], selector)
 		restarts, reason := podsRestarts(pods)
 		meta := metav1.ObjectMeta{Namespace: ns, Name: name, Labels: lbls, Annotations: anns}
 		rootKey, rootKind := g.rootOf(kind, ns, name)
+		rels := g.relationshipsFor(kind, ns, name)
 		addon, why := packages.ClassifyAddon(lbls["helm.sh/chart"], lbls["app.kubernetes.io/name"], lbls["app.kubernetes.io/part-of"], name)
 		out = append(out, appWorkloadInput{
 			wl: appWorkload{
-				Kind:      kind,
-				Namespace: ns,
-				Name:      name,
-				Image:     image,
-				Version:   imageTag(image),
-				Health:    string(health),
-				Ready:     ready,
-				Desired:   desired,
-				Restarts:  restarts,
-				Reason:    reason,
+				Kind:          kind,
+				Namespace:     ns,
+				Name:          name,
+				WorkloadClass: classifyWorkload(kind, rels),
+				Image:         image,
+				Version:       imageTag(image),
+				Health:        string(health),
+				Ready:         ready,
+				Desired:       desired,
+				Restarts:      restarts,
+				Reason:        reason,
 			},
 			overlay:  subject.ResolveOverlay(&meta, false),
 			events:   eventsForWorkload(eventsByObj[ns], name, pods),
-			rels:     g.relationshipsFor(kind, ns, name),
+			rels:     rels,
 			rootKey:  rootKey,
 			rootKind: rootKind,
 			addon:    addon,
@@ -373,6 +373,41 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGr
 					primaryImage(d.Spec.Template.Spec.Containers),
 					statefulsetHealth(int(d.Status.Replicas), int(d.Status.ReadyReplicas)),
 					int(d.Status.ReadyReplicas), int(d.Status.Replicas), d.Spec.Selector)
+			}
+		})
+	}
+	if jobLister := cache.Jobs(); jobLister != nil {
+		forEachNamespace(func(ns string) {
+			var items []*batchv1.Job
+			if ns == "" {
+				items, _ = jobLister.List(labels.Everything())
+			} else {
+				items, _ = jobLister.Jobs(ns).List(labels.Everything())
+			}
+			for _, j := range items {
+				if ownedByCronJob(j) {
+					continue
+				}
+				add("Job", j.Namespace, j.Name, j.Labels, j.Annotations,
+					primaryImage(j.Spec.Template.Spec.Containers),
+					jobHealth(j),
+					int(j.Status.Succeeded), jobDesired(j), j.Spec.Selector)
+			}
+		})
+	}
+	if cjLister := cache.CronJobs(); cjLister != nil {
+		forEachNamespace(func(ns string) {
+			var items []*batchv1.CronJob
+			if ns == "" {
+				items, _ = cjLister.List(labels.Everything())
+			} else {
+				items, _ = cjLister.CronJobs(ns).List(labels.Everything())
+			}
+			for _, cj := range items {
+				add("CronJob", cj.Namespace, cj.Name, cj.Labels, cj.Annotations,
+					primaryImage(cj.Spec.JobTemplate.Spec.Template.Spec.Containers),
+					cronJobHealth(cj),
+					0, 0, nil)
 			}
 		})
 	}
@@ -493,14 +528,8 @@ func identifyApp(r *appRow, ins []appWorkloadInput) {
 		}
 	}
 
-	r.Category = "app"
-	for _, in := range ins {
-		if in.addon {
-			r.Category = "addon"
-			r.AddonReason = in.addonWhy
-			break
-		}
-	}
+	r.Category, r.AddonReason = classifyAppCategory(ins)
+	r.WorkloadClass = classifyAppWorkloads(ins)
 }
 
 // pickRoot prefers a GitOps-manager root over a raw workload root for identity.
@@ -572,6 +601,76 @@ func finalizeRelationships(r *appRow) {
 	r.Relationships.Services = dedupSorted(r.Relationships.Services, 20)
 	r.Relationships.Ingresses = dedupSorted(r.Relationships.Ingresses, 20)
 	r.Relationships.Routes = dedupSorted(r.Relationships.Routes, 20)
+}
+
+func classifyWorkload(kind string, rels *appRelationships) string {
+	switch kind {
+	case "Job", "CronJob":
+		return "job"
+	case "Deployment", "StatefulSet", "DaemonSet":
+		if rels != nil && (len(rels.Services) > 0 || len(rels.Ingresses) > 0 || len(rels.Routes) > 0) {
+			return "service"
+		}
+		return "worker"
+	default:
+		return "unknown"
+	}
+}
+
+func classifyAppWorkloads(ins []appWorkloadInput) string {
+	seenService := false
+	seenWorker := false
+	seenJob := false
+	seenUnknown := false
+	for _, in := range ins {
+		switch in.wl.WorkloadClass {
+		case "service":
+			seenService = true
+		case "worker":
+			seenWorker = true
+		case "job":
+			seenJob = true
+		default:
+			seenUnknown = true
+		}
+	}
+	switch {
+	case seenService && !seenJob && !seenUnknown:
+		// A deployable unit with an API Deployment and a background worker is
+		// still operated primarily as a service.
+		return "service"
+	case seenWorker && !seenService && !seenJob && !seenUnknown:
+		return "worker"
+	case seenJob && !seenService && !seenWorker && !seenUnknown:
+		return "job"
+	default:
+		return "unknown"
+	}
+}
+
+func classifyAppCategory(ins []appWorkloadInput) (category, reason string) {
+	addonCount := 0
+	reasons := []string{}
+	for _, in := range ins {
+		if !in.addon {
+			continue
+		}
+		addonCount++
+		if in.addonWhy != "" && !slices.Contains(reasons, in.addonWhy) {
+			reasons = append(reasons, in.addonWhy)
+		}
+	}
+	if addonCount == 0 {
+		return "app", ""
+	}
+	reason = strings.Join(reasons, "; ")
+	if addonCount == len(ins) {
+		return "addon", reason
+	}
+	if reason != "" {
+		reason = "mixed add-on evidence: " + reason
+	}
+	return "mixed", reason
 }
 
 // --- small helpers --------------------------------------------------------
@@ -765,7 +864,7 @@ func eventsForWorkload(byObject map[string][]*corev1.Event, workloadName string,
 			}
 			byKey[key] = &appEvent{
 				Type: e.Type, Reason: e.Reason, Message: e.Message, Count: c,
-				Object: e.InvolvedObject.Kind + "/" + e.InvolvedObject.Name,
+				Object:   e.InvolvedObject.Kind + "/" + e.InvolvedObject.Name,
 				LastSeen: e.LastTimestamp.Format(time.RFC3339),
 			}
 			order = append(order, key)
@@ -793,6 +892,47 @@ func imageTag(image string) string {
 		return image[colon+1:]
 	}
 	return ""
+}
+
+func ownedByCronJob(j *batchv1.Job) bool {
+	for _, owner := range j.OwnerReferences {
+		if owner.Kind == "CronJob" {
+			return true
+		}
+	}
+	return false
+}
+
+func jobDesired(j *batchv1.Job) int {
+	if j.Spec.Completions != nil && *j.Spec.Completions > 0 {
+		return int(*j.Spec.Completions)
+	}
+	return 1
+}
+
+func jobHealth(j *batchv1.Job) packages.Health {
+	for _, c := range j.Status.Conditions {
+		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
+			return packages.HealthUnhealthy
+		}
+		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
+			return packages.HealthHealthy
+		}
+	}
+	if int(j.Status.Succeeded) >= jobDesired(j) {
+		return packages.HealthHealthy
+	}
+	if j.Status.Failed > 0 && j.Status.Active == 0 && j.Status.Succeeded == 0 {
+		return packages.HealthUnhealthy
+	}
+	if j.Status.Active > 0 {
+		return packages.HealthHealthy
+	}
+	return packages.HealthUnknown
+}
+
+func cronJobHealth(cj *batchv1.CronJob) packages.Health {
+	return packages.HealthHealthy
 }
 
 func appNameFromKey(key string) string {
@@ -838,12 +978,3 @@ func appHealthRank(h packages.Health) int {
 	}
 	return 2
 }
-
-// systemNamespaces hold cluster plumbing, never user services.
-var systemNamespaces = map[string]bool{
-	"kube-system":        true,
-	"kube-public":        true,
-	"kube-node-lease":    true,
-	"local-path-storage": true,
-}
-
