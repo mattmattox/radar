@@ -5,6 +5,7 @@ import (
 
 	"github.com/skyhook-io/radar/pkg/packages"
 	"github.com/skyhook-io/radar/pkg/subject"
+	"github.com/skyhook-io/radar/pkg/topology"
 )
 
 // rawInput builds a workload with no label overlay and its own structural root
@@ -125,6 +126,55 @@ func TestGroupApplications_SharedSatelliteDoesNotMerge(t *testing.T) {
 		if r.Relationships == nil || len(r.Relationships.Services) != 1 || r.Relationships.Services[0] != "shared-gateway" {
 			t.Errorf("each app should still list the shared service, got %+v", r.Relationships)
 		}
+	}
+}
+
+// structuralRoot must stop AT the in-cluster GitOps manager (Flux
+// Kustomization) and NOT climb the EdgeManages edge to the GitRepository source
+// that feeds it. The topology builder models GitRepository → Kustomization as
+// EdgeManages too, so without the stop-at-manager rule a Flux mono-repo (one
+// GitRepository sourcing N Kustomizations) resolves every workload to the same
+// GitRepository root and union-find merges all installations into one app.
+func TestStructuralRoot_StopsAtManagerNotSource(t *testing.T) {
+	node := func(id, kind, ns, name string) topology.Node {
+		return topology.Node{ID: id, Kind: topology.NodeKind(kind), Name: name, Data: map[string]any{"namespace": ns}}
+	}
+	manages := func(src, dst string) topology.Edge {
+		return topology.Edge{ID: src + "->" + dst, Source: src, Target: dst, Type: topology.EdgeManages}
+	}
+	topo := &topology.Topology{
+		Nodes: []topology.Node{
+			node("gitrepo", "GitRepository", "flux-system", "monorepo"),
+			node("ks-apps", "Kustomization", "flux-system", "apps"),
+			node("ks-infra", "Kustomization", "flux-system", "infrastructure"),
+			node("dep-api", "Deployment", "prod", "api"),
+			node("dep-grafana", "Deployment", "monitoring", "grafana"),
+		},
+		Edges: []topology.Edge{
+			manages("gitrepo", "ks-apps"),       // source ref — must NOT be climbed through
+			manages("gitrepo", "ks-infra"),      // source ref — must NOT be climbed through
+			manages("ks-apps", "dep-api"),       // manager → workload
+			manages("ks-infra", "dep-grafana"),  // manager → workload
+		},
+	}
+	g := &appGraph{byID: map[string]topology.Node{}, byKNN: map[string]string{}, topo: topo, idx: topology.IndexByResource(topo)}
+	for _, n := range topo.Nodes {
+		g.byID[n.ID] = n
+		ns, _ := n.Data["namespace"].(string)
+		g.byKNN[knnKey(string(n.Kind), ns, n.Name)] = n.ID
+	}
+
+	apiRoot, _ := g.rootOf("Deployment", "prod", "api")
+	grafanaRoot, _ := g.rootOf("Deployment", "monitoring", "grafana")
+
+	if apiRoot != "flux-system/Kustomization/apps" {
+		t.Errorf("api root = %q, want the apps Kustomization (not the GitRepository)", apiRoot)
+	}
+	if grafanaRoot != "flux-system/Kustomization/infrastructure" {
+		t.Errorf("grafana root = %q, want the infrastructure Kustomization (not the GitRepository)", grafanaRoot)
+	}
+	if apiRoot == grafanaRoot {
+		t.Fatalf("two Kustomizations under one GitRepository share root %q — the mono-repo over-merge", apiRoot)
 	}
 }
 

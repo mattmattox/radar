@@ -56,9 +56,9 @@ const (
 // pkg/subject + metav1: the caller resolves subject.ResolveOverlay (for
 // workloads) or maps a GitOps declaration's identity, then sets this.
 //
-//	Tier   — 1-8, mirrors pkg/subject.Tier (lower = higher precedence/confidence).
+//	Tier   — 1-9, mirrors pkg/subject.Tier (lower = higher precedence/confidence).
 //	Key    — stable grouping key, e.g. "<ns>/Application/<name>" or "<ns>/app/<name>".
-//	Confidence — "high" (tiers 1-4) | "medium" (5-7) | "low" (8).
+//	Confidence — "high" (tiers 1-4) | "medium" (5-8) | "low" (9).
 type Overlay struct {
 	Key        string `json:"key"`
 	Tier       int    `json:"tier"`

@@ -182,11 +182,29 @@ func knnKey(kind, ns, name string) string {
 	return strings.ToLower(kind) + "|" + ns + "|" + name
 }
 
-// structuralRoot walks incoming EdgeManages edges from startID to the topmost
-// ancestor — the same walk pkg/topology uses for managed-by synthesis. The
-// topmost node is the app's structural root: a manager (ArgoCD Application,
-// Flux Kustomization/HelmRelease, generic-CRD owner) when one manages the
-// workload in-cluster, otherwise the workload's own top controller.
+// isGitOpsManagerKind reports whether a node is an in-cluster GitOps manager —
+// the boundary structuralRoot stops climbing AT. Above a manager lies either a
+// source ref (GitRepository → Kustomization is an EdgeManages edge too) or a
+// parent manager (app-of-apps); climbing THROUGH one would resolve every
+// installation sharing that source/parent to the same structural root and
+// union-find would merge them all into one app. ownerRef chains — including
+// operator CRs (CNPG Cluster, Strimzi Kafka) — are not managers and keep
+// climbing to the topmost owner.
+func isGitOpsManagerKind(k topology.NodeKind) bool {
+	switch k {
+	case topology.KindApplication, topology.KindKustomization, topology.KindHelmRelease:
+		return true
+	default:
+		return false
+	}
+}
+
+// structuralRoot walks incoming EdgeManages edges from startID toward the
+// app's structural root: the lowest in-cluster GitOps manager (ArgoCD
+// Application, Flux Kustomization/HelmRelease) when one manages the workload,
+// otherwise the workload's topmost ownerRef ancestor (incl. operator CRs). It
+// stops AT the first manager — it does not climb through to the manager's
+// source ref or parent manager.
 func (g *appGraph) structuralRoot(startID string) (topology.Node, bool) {
 	cur := startID
 	top, ok := g.byID[cur]
@@ -207,11 +225,15 @@ func (g *appGraph) structuralRoot(startID string) (topology.Node, bool) {
 			break
 		}
 		visited[next] = true
-		if n, exists := g.byID[next]; exists {
+		n, exists := g.byID[next]
+		if exists {
 			top = n
 			ok = true
 		}
 		cur = next
+		if exists && isGitOpsManagerKind(n.Kind) {
+			break
+		}
 	}
 	return top, ok
 }
