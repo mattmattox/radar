@@ -458,7 +458,10 @@ function renderRuntime(
     )
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    // Concrete height (not flex-1 of an unsized column): the workload's
+    // Topology tab positions ReactFlow absolutely and collapses to zero inside
+    // a content-sized ancestor. Mirrors the multi-workload rail row's height.
+    <div className="flex h-[calc(100vh-13rem)] min-h-[480px] flex-col">
       {canGoBackToApp && (
         <button
           type="button"
