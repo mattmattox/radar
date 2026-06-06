@@ -472,6 +472,7 @@ func groupApplications(inputs []appWorkloadInput) []appRow {
 		r := &appRow{}
 		identifyApp(r, ins)
 		appVers := map[string]struct{}{}
+		labeled := 0
 		for _, in := range ins {
 			r.Workloads = append(r.Workloads, in.wl)
 			r.Events = append(r.Events, in.events...)
@@ -481,13 +482,15 @@ func groupApplications(inputs []appWorkloadInput) []appRow {
 			}
 			if av := in.wl.AppVersion; av != "" {
 				appVers[av] = struct{}{}
+				labeled++
 			}
 			mergeRelationships(r, in.rels)
 		}
-		// A single upstream version across the app's workloads is its "main
-		// version" (a single-chart add-on). A multi-chart umbrella disagrees, so
-		// we leave it empty and the UI falls back to per-workload image tags.
-		if len(appVers) == 1 {
+		// A single upstream version is the app's "main version" only when EVERY
+		// workload declares it and they agree (a single-chart add-on). One labeled
+		// workload among unlabeled ones, or a multi-chart umbrella that disagrees,
+		// leaves it empty — the UI falls back to per-workload image tags.
+		if len(appVers) == 1 && labeled == len(ins) {
 			for av := range appVers {
 				r.AppVersion = av
 			}

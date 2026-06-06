@@ -74,6 +74,21 @@ describe('neighborhoodFor', () => {
     expect(ids.has('depB')).toBe(false) // …but not the Kustomization's other app
   })
 
+  // The degree guard targets shared infra (routing/context), not ownership: a
+  // workload with more than K pods must still keep every pod — the ReplicaSet
+  // in between must not be leafed for high manages-fan-out.
+  it('keeps all pods of a large workload (degree guard exempts ownership)', () => {
+    const pods = Array.from({ length: 10 }, (_, i) => node(`pod${i}`, 'Pod', 'app', `web-${i}`))
+    const topo: Topology = {
+      nodes: [node('dep', 'Deployment', 'app', 'web'), node('rs', 'ReplicaSet', 'app', 'web-abc'), ...pods],
+      edges: [edge('dep', 'rs', 'manages'), ...pods.map((p) => edge('rs', p.id, 'manages'))],
+    }
+    const out = neighborhoodFor(topo, [{ kind: 'Deployment', namespace: 'app', name: 'web' }])
+    const ids = new Set(out.nodes.map((n) => n.id))
+    expect(ids.has('rs')).toBe(true)
+    for (const p of pods) expect(ids.has(p.id)).toBe(true)
+  })
+
   it('returns an empty graph with a warning when no seed matches', () => {
     const topo: Topology = { nodes: [node('dep', 'Deployment', 'app', 'web')], edges: [] }
     const out = neighborhoodFor(topo, [{ kind: 'Deployment', namespace: 'app', name: 'missing' }])

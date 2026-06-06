@@ -127,8 +127,11 @@ export function neighborhoodFor(
       } else {
         asLeaf = true // configures / uses / protects — leaf
       }
-      // The graph's own signal: a high-fan-out node is shared infra → leaf.
-      if (highFanout(nextId, e.type)) asLeaf = true
+      // The graph's own signal: a high-fan-out node reached via a non-identity
+      // edge is shared infra → leaf. Identity (ownerRef) fan-out is exempt — a
+      // workload legitimately owns many pods, and leafing the ReplicaSet would
+      // stop the walk before its Pods (losing them for any workload > K pods).
+      if (!IDENTITY_EDGES.has(e.type) && highFanout(nextId, e.type)) asLeaf = true
 
       if (!keep.has(nextId)) {
         keep.add(nextId)

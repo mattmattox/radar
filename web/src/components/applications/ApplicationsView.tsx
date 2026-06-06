@@ -111,11 +111,11 @@ function AppDetailRoute({ app, onBack, onOpenResource }: { app: AppRow; onBack: 
   const selectWorkload = useCallback(
     (key: string | null) => {
       const params = new URLSearchParams(searchParams)
+      // Always drop the workload's tab: a fresh workload opens on its overview,
+      // and clearing back to the graph leaves no stale tab on the route.
+      params.delete('tab')
       if (key) params.set('workload', key)
-      else {
-        params.delete('workload')
-        params.delete('tab')
-      }
+      else params.delete('workload')
       setSearchParams(params)
     },
     [searchParams, setSearchParams],

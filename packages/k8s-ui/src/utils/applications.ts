@@ -249,12 +249,20 @@ export function provenanceTooltip(tier: number | undefined, key: string, confide
 
 export type AppSource = 'Argo' | 'Flux' | 'Helm' | 'Label' | 'raw'
 
+/** An app's namespace: the row field when set, else the shared namespace of its
+ *  workloads (so the detail and the list resolve env/namespace identically). */
+export function namespaceOf(app: AppRow): string {
+  if (app.namespace) return app.namespace
+  const nss = Array.from(new Set((app.workloads || []).map((w) => w.namespace).filter(Boolean)))
+  return nss.length === 1 ? nss[0] : (nss[0] ?? '')
+}
+
 export function sourceOf(tier: number | undefined): AppSource {
   const t = tier ?? 0
   if (t === 1 || t === 2) return 'Flux'
   if (t === 3 || t === 4) return 'Argo'
   if (t === 5) return 'Helm'
-  if (t === 6 || t === 7 || t === 8) return 'Label'
+  if (t >= 6 && t <= 9) return 'Label' // tiers 6-9 are all label-based grouping
   return 'raw'
 }
 

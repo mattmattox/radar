@@ -21,6 +21,7 @@ import {
   categoryOf,
   envRank,
   isSystemNamespace,
+  namespaceOf,
   overlayProvenance,
   resolveEnv,
   sourceOf,
@@ -53,12 +54,6 @@ interface AppEntry {
 
 /** The namespace an app runs in: the row's namespace, else the shared
  *  namespace of its workloads (single-cluster rows are namespace-coherent). */
-function namespaceOf(row: AppRow): string {
-  if (row.namespace) return row.namespace
-  const nss = Array.from(new Set((row.workloads || []).map((w) => w.namespace).filter(Boolean)))
-  return nss.length === 1 ? nss[0] : (nss[0] ?? '')
-}
-
 function buildEntry(row: AppRow): AppEntry {
   const kinds: Record<string, number> = {}
   let ready = 0

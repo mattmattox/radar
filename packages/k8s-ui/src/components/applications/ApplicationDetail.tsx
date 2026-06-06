@@ -16,6 +16,7 @@ import {
   type AppHealth,
   type AppWorkloadClass,
   CLASS_META,
+  namespaceOf,
   overlayProvenance,
   resolveEnv,
   workloadClassOf,
@@ -108,7 +109,10 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
   const ready = workloads.reduce((n, w) => n + (w.ready ?? 0), 0)
   const desired = workloads.reduce((n, w) => n + (w.desired ?? 0), 0)
   const restartSignal = restartWarning(workloads)
-  const { env, inferred } = resolveEnv(undefined, app.namespace)
+  // Resolve namespace the same way the list does (row field, else the shared
+  // workload namespace) so env/namespace match across list and detail.
+  const namespace = namespaceOf(app)
+  const { env, inferred } = resolveEnv(undefined, namespace)
 
   // The app graph is the landing for multi-workload apps when a topology was
   // injected. A single workload (or no topology) skips straight to runtime.
@@ -229,7 +233,7 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
         {env && (
           <ContextFact label="Environment">
             {inferred ? (
-              <Tooltip content={`Inferred from namespace "${app.namespace ?? env}".`} delay={150}>
+              <Tooltip content={`Inferred from namespace "${namespace || env}".`} delay={150}>
                 <span className="italic">~{env}</span>
               </Tooltip>
             ) : (
@@ -237,9 +241,9 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
             )}
           </ContextFact>
         )}
-        {app.namespace && (
+        {namespace && (
           <ContextFact label="Namespace">
-            <span className="font-mono">{app.namespace}</span>
+            <span className="font-mono">{namespace}</span>
           </ContextFact>
         )}
         <ContextFact label="Ready">
@@ -271,7 +275,9 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
             workloads={workloads}
             colorByWorkload={ownership?.colorByWorkload ?? null}
             showAllEntry={appGraphAvailable}
-            selectedKey={selected}
+            // Without an app graph the body always renders a workload (selected ??
+            // workloads[0]); mirror that so the rail marks it active.
+            selectedKey={appGraphAvailable ? selected : selected ?? (workloads[0] ? workloadKey(workloads[0]) : null)}
             focusedOwnerId={focusedOwnerId}
             onSelect={setSelected}
             onFocus={setFocusedOwnerId}
