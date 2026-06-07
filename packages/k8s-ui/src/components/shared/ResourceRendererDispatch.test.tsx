@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
-import { ResourceRendererDispatch, type RendererOverrides } from './ResourceRendererDispatch'
+import { ResourceRendererDispatch, getResourceStatus, type RendererOverrides } from './ResourceRendererDispatch'
 import type { ResourceRef } from '../../types'
 
 function renderWithScalers(scalers: ResourceRef[]): string {
@@ -144,5 +144,80 @@ describe('DRA renderers dispatch', () => {
     })
     expect(html).toContain('Selectors (1)')
     expect(html).toContain('device.driver')
+  })
+})
+
+describe('GPU ecosystem kind collisions', () => {
+  it('routes Volcano Jobs away from the core JobRenderer to GenericRenderer', () => {
+    const html = renderKind('jobs', {
+      apiVersion: 'batch.volcano.sh/v1alpha1',
+      kind: 'Job',
+      metadata: { name: 'train', namespace: 'ml' },
+      spec: { queue: 'gpu-queue', minAvailable: 4 },
+      status: { state: { phase: 'Running' } },
+    }, 'ml')
+    expect(html).toContain('Min Available')
+    expect(html).toContain('gpu-queue')
+    expect(html).not.toContain('Completions')
+  })
+
+  it('routes status for queues by group (Volcano vs KAI)', () => {
+    const volcano = getResourceStatus('queues', {
+      apiVersion: 'scheduling.volcano.sh/v1beta1',
+      status: { state: 'Open' },
+    })
+    const kai = getResourceStatus('queues', {
+      apiVersion: 'scheduling.run.ai/v2',
+      spec: { priority: 100 },
+    })
+    expect(volcano?.text).toBe('Open')
+    expect(kai?.text).not.toBe('Open')
+  })
+
+  it('routes status for podgroups by group (Volcano vs KAI)', () => {
+    const volcano = getResourceStatus('podgroups', {
+      apiVersion: 'scheduling.volcano.sh/v1beta1',
+      status: { phase: 'Running' },
+    })
+    expect(volcano?.text).toBe('Running')
+  })
+
+  it('routes Kueue Workload status only for the kueue group', () => {
+    const admitted = getResourceStatus('workloads', {
+      apiVersion: 'kueue.x-k8s.io/v1beta2',
+      status: { conditions: [{ type: 'Admitted', status: 'True' }] },
+    })
+    expect(admitted?.text).toBe('Admitted')
+  })
+
+  it('routes KAITO Workspace status only for the kaito group', () => {
+    const ws = getResourceStatus('workspaces', {
+      apiVersion: 'kaito.sh/v1beta1',
+      status: { conditions: [{ type: 'ResourceReady', status: 'False' }] },
+    })
+    expect(ws).not.toBeNull()
+  })
+})
+
+describe('GPU ecosystem status edge cases', () => {
+  it('JobSet with minimal status is Pending, not Running', () => {
+    const fresh = getResourceStatus('jobsets', {
+      apiVersion: 'jobset.x-k8s.io/v1alpha2',
+      status: { replicatedJobsStatus: [{ name: 'w', active: 0, ready: 0 }] },
+    })
+    const live = getResourceStatus('jobsets', {
+      apiVersion: 'jobset.x-k8s.io/v1alpha2',
+      status: { replicatedJobsStatus: [{ name: 'w', active: 1, ready: 1 }] },
+    })
+    expect(fresh?.text).toBe('Pending')
+    expect(live?.text).toBe('Running')
+  })
+
+  it('InferencePool with only an empty-parentRef default entry reads Not referenced', () => {
+    const pool = getResourceStatus('inferencepools', {
+      apiVersion: 'inference.networking.x-k8s.io/v1alpha2',
+      status: { parent: [{ parentRef: {}, conditions: [{ type: 'Accepted', status: 'Unknown' }] }] },
+    })
+    expect(pool?.text).toBe('Not referenced')
   })
 })

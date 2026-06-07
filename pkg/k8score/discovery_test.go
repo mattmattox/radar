@@ -141,3 +141,43 @@ func TestSupportsWatchGVRCoreResourceUsesExactEmptyGroup(t *testing.T) {
 		t.Fatal("Knative Service GVR should not inherit watch support from core Service")
 	}
 }
+
+// Kueue's aggregated visibility API serves a get-only "clusterqueues"
+// resource that shadows the real kueue.x-k8s.io plural. Bare-name lookup
+// must resolve to the list+watch-capable resource regardless of which one
+// discovery enumerates first.
+func TestIndexPrefersListWatchCapableResourceAcrossGroups(t *testing.T) {
+	d := &ResourceDiscovery{
+		resourceMap: map[string]APIResource{},
+		gvrMap:      map[string]schema.GroupVersionResource{},
+	}
+
+	visibility := APIResource{
+		Group: "visibility.kueue.x-k8s.io", Version: "v1beta2",
+		Name: "clusterqueues", Kind: "ClusterQueue",
+		IsCRD: true, Verbs: []string{"get"},
+	}
+	real := APIResource{
+		Group: "kueue.x-k8s.io", Version: "v1beta2",
+		Name: "clusterqueues", Kind: "ClusterQueue",
+		IsCRD: true, Verbs: []string{"get", "list", "watch"},
+	}
+
+	// Enumeration order 1: shadow first, real second — real must win.
+	d.indexResourceLocked(visibility)
+	d.indexResourceLocked(real)
+	if got := d.gvrMap["clusterqueues"].Group; got != "kueue.x-k8s.io" {
+		t.Fatalf("shadow-first: bare plural resolved to %q, want kueue.x-k8s.io", got)
+	}
+
+	// Enumeration order 2: real first, shadow second — real must stay.
+	d2 := &ResourceDiscovery{
+		resourceMap: map[string]APIResource{},
+		gvrMap:      map[string]schema.GroupVersionResource{},
+	}
+	d2.indexResourceLocked(real)
+	d2.indexResourceLocked(visibility)
+	if got := d2.gvrMap["clusterqueues"].Group; got != "kueue.x-k8s.io" {
+		t.Fatalf("real-first: bare plural resolved to %q, want kueue.x-k8s.io", got)
+	}
+}

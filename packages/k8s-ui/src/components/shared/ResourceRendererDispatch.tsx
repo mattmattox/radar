@@ -52,6 +52,17 @@ import { getServiceMonitorStatus, getPrometheusRuleStatus, getPodMonitorStatus }
 import { getPolicyReportStatus, getKyvernoPolicyStatus } from '../resources/resource-utils-kyverno'
 import { getResourceClaimStatus, getResourceClaimTemplateStatus, getDeviceClassStatus, getResourceSliceStatus } from '../resources/resource-utils-dra'
 import { getNvidiaClusterPolicyStatus, getNvidiaDriverStatus } from '../resources/resource-utils-nvidia'
+import { getClusterQueueStatus, getLocalQueueStatus, getKueueWorkloadStatus, getResourceFlavorStatus, getAdmissionCheckStatus, getProvisioningRequestStatus } from '../resources/resource-utils-kueue'
+import { getRayClusterStatus, getRayJobStatus, getRayServiceStatus, getRayCronJobStatus } from '../resources/resource-utils-ray'
+import { getLeaderWorkerSetStatus, getJobSetStatus } from '../resources/resource-utils-jobset-lws'
+import { getInferenceServiceStatus, getServingRuntimeStatus, getInferenceGraphStatus, getTrainedModelStatus, getLLMInferenceServiceStatus } from '../resources/resource-utils-kserve'
+import { getInferencePoolStatus, getInferenceObjectiveStatus } from '../resources/resource-utils-inference-gateway'
+import { getVolcanoJobStatus, getVolcanoQueueStatus, getVolcanoPodGroupStatus, getJobFlowStatus, getJobTemplateStatus } from '../resources/resource-utils-volcano'
+import { getKaiQueueStatus, getKaiPodGroupStatus } from '../resources/resource-utils-kai'
+import { getKaitoWorkspaceStatus, getRAGEngineStatus } from '../resources/resource-utils-kaito'
+import { getNIMServiceStatus, getNIMCacheStatus, getNIMPipelineStatus } from '../resources/resource-utils-nim'
+import { getAMDDeviceConfigStatus } from '../resources/resource-utils-amd-gpu'
+import { getPyTorchJobStatus, getTFJobStatus, getMPIJobStatus, getTrainJobStatus } from '../resources/resource-utils-kubeflow-training'
 import { getBackupStatus, getRestoreStatus, getScheduleStatus, getBSLStatus } from '../resources/resource-utils-velero'
 import {
   getVirtualServiceStatus,
@@ -466,6 +477,11 @@ export function ResourceRendererDispatch({
   )
   const crossplaneCollisionFallthrough = isCollisionGatedKind && !crossplaneApiVersionMatched
 
+  // Volcano Job shares the `jobs` plural with batch/v1 Job. The core
+  // JobRenderer line is gated below; the Volcano CR falls through to
+  // GenericRenderer here (same pattern as the Crossplane collisions).
+  const volcanoJobFallthrough = kind === 'jobs' && !!data?.apiVersion?.startsWith('batch.volcano.sh/')
+
   const isKnownKind = KNOWN_KINDS.has(kind) || isCrossplaneMR || isCrossplaneClaim || isCrossplaneXR
 
   const PodComp = rendererOverrides?.PodRenderer ?? PodRenderer
@@ -511,7 +527,7 @@ export function ResourceRendererDispatch({
         {kind === 'ingresses' && !data?.apiVersion?.includes('networking.internal.knative.dev') && <IngressRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'configmaps' && <ConfigMapRenderer data={data} />}
         {kind === 'secrets' && <SecretRenderer data={data} certificateInfo={certificateInfo} resourceData={data} onSaveSecretValue={onSaveSecretValue} isSaving={isSavingSecret} />}
-        {kind === 'jobs' && <JobRenderer data={data} />}
+        {kind === 'jobs' && !volcanoJobFallthrough && <JobRenderer data={data} />}
         {kind === 'cronjobs' && <CronJobRenderer data={data} onNavigate={onNavigate} />}
         {(kind === 'hpas' || kind === 'horizontalpodautoscalers') && <HPAComp data={data} onNavigate={onNavigate} />}
         {kind === 'nodes' && <NodeComp data={data} relationships={relationships} />}
@@ -677,7 +693,7 @@ export function ResourceRendererDispatch({
             for known-plural collisions where no apiVersion-gated renderer
             matched (e.g. a Knative Configuration sharing the `configurations`
             plural with Crossplane Configuration). */}
-        {(!isKnownKind || crossplaneCollisionFallthrough) && <GenericRenderer data={data} />}
+        {(!isKnownKind || crossplaneCollisionFallthrough || volcanoJobFallthrough) && <GenericRenderer data={data} />}
 
         {/* Common sections - can be disabled when parent handles them separately */}
         {showCommonSections && (
@@ -727,7 +743,49 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
       SEVERITY_BADGE.error
     return { text, color }
   }
-  if (k === 'jobs') return getJobStatus(data)
+  if (k === 'jobs') {
+    if (data?.apiVersion?.startsWith('batch.volcano.sh/')) return getVolcanoJobStatus(data)
+    return getJobStatus(data)
+  }
+  if (k === 'queues') {
+    if (data?.apiVersion?.startsWith('scheduling.run.ai/')) return getKaiQueueStatus(data)
+    return getVolcanoQueueStatus(data)
+  }
+  if (k === 'podgroups') {
+    if (data?.apiVersion?.startsWith('scheduling.run.ai/')) return getKaiPodGroupStatus(data)
+    return getVolcanoPodGroupStatus(data)
+  }
+  if (k === 'workspaces' && data?.apiVersion?.startsWith('kaito.sh/')) return getKaitoWorkspaceStatus(data)
+  if (k === 'workloads' && data?.apiVersion?.startsWith('kueue.x-k8s.io/')) return getKueueWorkloadStatus(data)
+  if (k === 'clusterqueues') return getClusterQueueStatus(data)
+  if (k === 'localqueues') return getLocalQueueStatus(data)
+  if (k === 'resourceflavors') return getResourceFlavorStatus(data)
+  if (k === 'admissionchecks') return getAdmissionCheckStatus(data)
+  if (k === 'provisioningrequests') return getProvisioningRequestStatus(data)
+  if (k === 'rayclusters') return getRayClusterStatus(data)
+  if (k === 'rayjobs') return getRayJobStatus(data)
+  if (k === 'rayservices') return getRayServiceStatus(data)
+  if (k === 'raycronjobs') return getRayCronJobStatus(data)
+  if (k === 'leaderworkersets') return getLeaderWorkerSetStatus(data)
+  if (k === 'jobsets') return getJobSetStatus(data)
+  if (k === 'inferenceservices') return getInferenceServiceStatus(data)
+  if (k === 'servingruntimes' || k === 'clusterservingruntimes') return getServingRuntimeStatus(data)
+  if (k === 'inferencegraphs') return getInferenceGraphStatus(data)
+  if (k === 'trainedmodels') return getTrainedModelStatus(data)
+  if (k === 'llminferenceservices') return getLLMInferenceServiceStatus(data)
+  if (k === 'inferencepools') return getInferencePoolStatus(data)
+  if (k === 'inferenceobjectives') return getInferenceObjectiveStatus(data)
+  if (k === 'jobflows') return getJobFlowStatus(data)
+  if (k === 'jobtemplates') return getJobTemplateStatus(data)
+  if (k === 'ragengines') return getRAGEngineStatus(data)
+  if (k === 'nimservices') return getNIMServiceStatus(data)
+  if (k === 'nimcaches') return getNIMCacheStatus(data)
+  if (k === 'nimpipelines') return getNIMPipelineStatus(data)
+  if (k === 'deviceconfigs' && data?.apiVersion?.startsWith('amd.com/')) return getAMDDeviceConfigStatus(data)
+  if (k === 'pytorchjobs') return getPyTorchJobStatus(data)
+  if (k === 'tfjobs') return getTFJobStatus(data)
+  if (k === 'mpijobs') return getMPIJobStatus(data)
+  if (k === 'trainjobs') return getTrainJobStatus(data)
   if (k === 'cronjobs') return getCronJobStatus(data)
   if (k === 'hpas' || k === 'horizontalpodautoscalers') return getHPAStatus(data)
   if (k === 'nodes') return getNodeStatus(data)

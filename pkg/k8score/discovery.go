@@ -257,6 +257,24 @@ func (d *ResourceDiscovery) addResourceLocked(resource APIResource) {
 	d.indexResourceLocked(resource)
 }
 
+// supportsListWatch reports whether the resource can back a browse/cache
+// path. Aggregated APIs sometimes shadow a real kind's plural with a
+// get-only resource (e.g. Kueue's visibility.kueue.x-k8s.io serves
+// "clusterqueues" without list) — those must never win name resolution.
+func supportsListWatch(r APIResource) bool {
+	hasList := false
+	hasWatch := false
+	for _, v := range r.Verbs {
+		switch v {
+		case "list":
+			hasList = true
+		case "watch":
+			hasWatch = true
+		}
+	}
+	return hasList && hasWatch
+}
+
 func (d *ResourceDiscovery) indexResourceLocked(resource APIResource) {
 	gvr := schema.GroupVersionResource{
 		Group:    resource.Group,
@@ -264,20 +282,28 @@ func (d *ResourceDiscovery) indexResourceLocked(resource APIResource) {
 		Resource: resource.Name,
 	}
 
-	// Store in map by lowercase kind for lookup. Prefer non-CRD over CRD,
-	// then stable versions within the same group.
+	// Store in map by lowercase kind for lookup. Precedence: list+watch
+	// capable beats not, then non-CRD over CRD, then stable versions
+	// within the same group. Ties across different groups keep the first
+	// indexed entry — callers that know the group use GetResourceWithGroup.
+	prefer := func(existing APIResource) bool {
+		if supportsListWatch(resource) != supportsListWatch(existing) {
+			return supportsListWatch(resource)
+		}
+		if !resource.IsCRD && existing.IsCRD {
+			return true
+		}
+		return resource.IsCRD == existing.IsCRD && existing.Group == resource.Group && IsMoreStableVersion(resource.Version, existing.Version)
+	}
+
 	kindKey := strings.ToLower(resource.Kind)
-	if existing, ok := d.resourceMap[kindKey]; !ok ||
-		(!resource.IsCRD && existing.IsCRD) ||
-		(resource.IsCRD == existing.IsCRD && existing.Group == resource.Group && IsMoreStableVersion(resource.Version, existing.Version)) {
+	if existing, ok := d.resourceMap[kindKey]; !ok || prefer(existing) {
 		d.resourceMap[kindKey] = resource
 		d.gvrMap[kindKey] = gvr
 	}
 
 	nameKey := strings.ToLower(resource.Name)
-	if existing, ok := d.resourceMap[nameKey]; !ok ||
-		(!resource.IsCRD && existing.IsCRD) ||
-		(resource.IsCRD == existing.IsCRD && existing.Group == resource.Group && IsMoreStableVersion(resource.Version, existing.Version)) {
+	if existing, ok := d.resourceMap[nameKey]; !ok || prefer(existing) {
 		d.resourceMap[nameKey] = resource
 		d.gvrMap[nameKey] = gvr
 	}
