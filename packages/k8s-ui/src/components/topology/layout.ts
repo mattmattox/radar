@@ -273,7 +273,19 @@ function runLayout(
   if (layoutEngine === 'main-thread') {
     return runLayoutOnMainThread(elkGraph, groupingMode, hideGroupHeader, padding)
   }
-  return runLayoutViaWorker(elkGraph, groupingMode, hideGroupHeader, padding)
+  return runLayoutViaWorker(elkGraph, groupingMode, hideGroupHeader, padding).catch((err) => {
+    // A worker BOOT failure (an ELK layout error arrives as a message with its
+    // own text) means the consumer's bundler couldn't serve the worker chunk —
+    // Vite's dep pre-bundler does this to workers inside node_modules packages.
+    // Fall back to the inline engine permanently rather than rendering a dead
+    // "Layout Error" pane.
+    if (err instanceof Error && err.message === 'Worker error') {
+      console.warn('[TopologyLayout] layout worker unavailable — falling back to main-thread ELK')
+      layoutEngine = 'main-thread'
+      return runLayoutOnMainThread(elkGraph, groupingMode, hideGroupHeader, padding)
+    }
+    throw err
+  })
 }
 
 interface ElkNode {
