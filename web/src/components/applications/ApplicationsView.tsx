@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   ApplicationsList,
@@ -40,6 +40,19 @@ export function ApplicationsView({ namespaces, onOpenResource }: ApplicationsVie
     },
     [searchParams, setSearchParams],
   )
+
+  // A stale ?app= (uninstalled/renamed app, or a link from another cluster)
+  // would leave the URL lying under the list view — clear it once data is
+  // fresh. Never during load, so a slow fetch can't eject a valid deep link.
+  useEffect(() => {
+    if (selectedKey && !selected && query.isSuccess) {
+      const params = new URLSearchParams(searchParams)
+      params.delete('app')
+      params.delete('workload')
+      params.delete('tab')
+      setSearchParams(params, { replace: true })
+    }
+  }, [selectedKey, selected, query.isSuccess, searchParams, setSearchParams])
 
   if (selectedKey && selected) {
     return <AppDetailRoute app={selected} onBack={() => selectApp(null)} onOpenResource={onOpenResource} />

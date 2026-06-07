@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
 import { startViewTransitionSafe } from '../../utils/view-transition'
 import { FetchResult } from '../ui/FetchResult'
+import { PaneLoader } from '../ui/PaneLoader'
 import { useRegisterShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { clsx } from 'clsx'
 import {
@@ -351,6 +352,13 @@ export function WorkloadView({
     [topology, neighborhoodSeed],
   )
 
+  // The Topology tab stays visible while topology is loading (the pane shows a
+  // loader) and hides only when topology arrived and nothing matched the seed.
+  // A deep-linked ?tab=topology that turns out unavailable falls back to
+  // overview instead of rendering an empty body under a hidden tab.
+  const topologyTabHidden = !!topology && (!neighborhood || neighborhood.nodes.length === 0)
+  const effectiveTab: TabType = activeTab === 'topology' && topologyTabHidden ? 'overview' : activeTab
+
   // YAML tab object rail — the same neighborhood, as a manifest list: the
   // workload first, then routing → config → policy/scaling → ownership.
   const yamlObjects = useMemo(() => {
@@ -523,7 +531,7 @@ export function WorkloadView({
   const showMetricsTab = isMetricsAvailable ? isMetricsAvailable(kind, resource) : false
   const tabs: DetailShellTab<TabType>[] = [
     { id: 'overview', label: 'Overview', icon: <Layers className="w-4 h-4" /> },
-    { id: 'topology', label: 'Topology', icon: <Network className="w-4 h-4" />, hidden: !neighborhood || neighborhood.nodes.length === 0 },
+    { id: 'topology', label: 'Topology', icon: <Network className="w-4 h-4" />, hidden: topologyTabHidden },
     {
       id: 'timeline',
       label: 'Timeline',
@@ -752,14 +760,14 @@ export function WorkloadView({
         </>
       }
       tabs={tabs}
-      activeTab={activeTab}
+      activeTab={effectiveTab}
       onTabChange={handleSetTab}
       scopeControls={scopeControls}
       tabStripEnd={<ResourceActionsBar resource={selectedResource} data={resource} hideLogs {...actionsBarProps} />}
       overlay={saveSuccess ? <SaveSuccessAnimation /> : null}
       compactHeader={compactHeader}
     >
-        {activeTab === 'overview' && (
+        {effectiveTab === 'overview' && (
             <InfoTab
               resource={resource}
               selectedResource={selectedResource}
@@ -783,20 +791,24 @@ export function WorkloadView({
               extraContent={renderOverviewExtra && renderOverviewExtra({ kind, namespace, name })}
             />
         )}
-        {activeTab === 'topology' && topology && (
+        {effectiveTab === 'topology' && (
           <div className="relative h-full min-h-0 w-full">
-            <TopologyGraph
-              topology={neighborhood}
-              viewMode="resources"
-              groupingMode="namespace"
-              hideGroupHeader
-              onNodeClick={handleTopologyNodeClick}
-              showExportButton={false}
-              focusNodeId={neighborhoodFocusId}
-            />
+            {topology ? (
+              <TopologyGraph
+                topology={neighborhood}
+                viewMode="resources"
+                groupingMode="namespace"
+                hideGroupHeader
+                onNodeClick={handleTopologyNodeClick}
+                showExportButton={false}
+                focusNodeId={neighborhoodFocusId}
+              />
+            ) : (
+              <PaneLoader label="Loading topology…" className="absolute inset-0" />
+            )}
           </div>
         )}
-        {activeTab === 'timeline' && (
+        {effectiveTab === 'timeline' && (
           <EventsTab
             events={resourceEvents}
             resourceLanes={resourceLanes}
@@ -809,7 +821,7 @@ export function WorkloadView({
             onSelectEvent={setSelectedEventId}
           />
         )}
-        {activeTab === 'logs' && renderLogsTab && (
+        {effectiveTab === 'logs' && renderLogsTab && (
           renderLogsTab({
             kind,
             apiKind,
@@ -823,12 +835,12 @@ export function WorkloadView({
             onConsumeInitialContainer: () => setInitialContainer(null),
           })
         )}
-        {activeTab === 'metrics' && renderMetricsTab && (
+        {effectiveTab === 'metrics' && renderMetricsTab && (
           <div className="h-full overflow-auto p-4">
             {renderMetricsTab({ kind: resource?.kind || kind, namespace, name })}
           </div>
         )}
-        {activeTab === 'yaml' && (
+        {effectiveTab === 'yaml' && (
           <div className="flex h-full min-h-0">
             {renderRelatedYaml && yamlObjects.length > 1 && (
               <div className="flex w-56 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-theme-border bg-theme-base px-2 py-2">

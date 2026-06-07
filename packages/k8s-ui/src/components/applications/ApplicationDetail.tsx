@@ -141,10 +141,17 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
     [topology, appSeeds],
   )
 
-  // Hovering a node lights up its owning workload (and the rail row); a shared/
-  // unscoped node clears the focus rather than dimming everything.
+  // Hovering a node lights up its owning workload (and the rail row). An
+  // unowned node related to exactly ONE workload (a GitOps manager over a
+  // single workload here) still focuses that workload, mirroring rail-driven
+  // focus. Truly shared nodes clear instead of dimming everything.
   const handleNodeHover = useCallback((node: TopologyNode | null) => {
-    setFocusedOwnerId(node ? ownershipOf(node.data).ownerWorkloadId : null)
+    if (!node) {
+      setFocusedOwnerId(null)
+      return
+    }
+    const stamp = ownershipOf(node.data)
+    setFocusedOwnerId(stamp.ownerWorkloadId ?? (stamp.focusWorkloadIds.length === 1 ? stamp.focusWorkloadIds[0] : null))
   }, [])
 
   // A node click in the app graph either drills into one of the app's workloads
