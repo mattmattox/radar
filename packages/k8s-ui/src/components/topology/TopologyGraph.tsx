@@ -20,7 +20,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { toCanvas } from 'html-to-image'
 
-import { AlertTriangle, ChevronsDownUp, ChevronsUpDown, Download, Layers, LayoutGrid, Loader2, Maximize, Minus, Pause, Play, Plus, RotateCw, Shield } from 'lucide-react'
+import { AlertTriangle, ChevronsDownUp, ChevronsUpDown, Download, Info, Layers, LayoutGrid, Loader2, Maximize, Minus, Pause, Play, Plus, RotateCw, Shield } from 'lucide-react'
 import { PaneLoader } from '../ui/PaneLoader'
 import { Tooltip } from '../ui/Tooltip'
 import { useToast } from '../ui/Toast'
@@ -51,6 +51,15 @@ function getEdgeColor(type: string, isTrafficView: boolean): string {
   }
   return EDGE_COLORS[type as keyof typeof EDGE_COLORS] || '#64748b'
 }
+
+// Human-readable edge legend for the resources view (traffic view is all-green).
+const EDGE_LEGEND: { label: string; color: string }[] = [
+  { label: 'owns', color: EDGE_COLORS['manages'] },
+  { label: 'exposes', color: EDGE_COLORS['exposes'] },
+  { label: 'configures', color: EDGE_COLORS['configures'] },
+  { label: 'scales', color: EDGE_COLORS['uses'] },
+  { label: 'routes to', color: EDGE_COLORS['routes-to'] },
+]
 
 // Memoized edge style cache to avoid creating new objects on every render
 const edgeStyleCache = new Map<string, React.CSSProperties>()
@@ -237,6 +246,7 @@ export function TopologyGraph({
   const [layoutRetryCount, setLayoutRetryCount] = useState(0)
   const [fitViewCounter, setFitViewCounter] = useState(0)
   const [isExporting, setIsExporting] = useState(false)
+  const [showLegend, setShowLegend] = useState(false)
   const prevStructureRef = useRef<string>('')
   const layoutVersionRef = useRef(0) // Used to invalidate stale layout results
   // Saved node positions for preservation across topology updates.
@@ -643,6 +653,12 @@ export function TopologyGraph({
             return saved ? { ...node, position: saved } : node
           })
 
+      // The ReactFlow fitView prop fires against the pre-layout canvas; once
+      // the first ELK layout lands the content can sit off-center. Re-frame it.
+      if (isInitialLayout) {
+        fitAllAfterLayoutRef.current = true
+      }
+
       // Update saved positions: add/overwrite with positions from this layout run.
       // Remove stale entries for nodes no longer in the topology.
       const currentIds = new Set(positionedNodes.map(n => n.id))
@@ -994,6 +1010,30 @@ export function TopologyGraph({
               onExportingChange={setIsExporting}
             />
           </div>
+          {!isTrafficView && (
+            <>
+              {showLegend && (
+                <div className="rounded-md border border-theme-border bg-theme-surface/95 px-3 py-2 shadow-theme-md backdrop-blur">
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-theme-text-tertiary">Edge colors</div>
+                  <div className="flex flex-col gap-1">
+                    {EDGE_LEGEND.map((e) => (
+                      <div key={e.label} className="flex items-center gap-2 text-[11px] text-theme-text-secondary">
+                        <span className="inline-block h-0.5 w-5 rounded-full" style={{ background: e.color }} />
+                        {e.label}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="react-flow__controls overflow-hidden" style={{ position: 'static', margin: 0 }}>
+                <Tooltip content="Edge color legend" delay={100} position="right">
+                  <button className="react-flow__controls-button" onClick={() => setShowLegend((v) => !v)}>
+                    <Info className="w-3.5 h-3.5" />
+                  </button>
+                </Tooltip>
+              </div>
+            </>
+          )}
         </Panel>
         <ViewportController
           viewMode={viewMode}

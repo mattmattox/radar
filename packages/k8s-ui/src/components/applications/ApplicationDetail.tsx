@@ -17,11 +17,13 @@ import {
   type AppWorkloadClass,
   CLASS_META,
   namespaceOf,
+  namespacesOf,
   overlayProvenance,
   resolveEnv,
   workloadClassOf,
   worstHealth,
 } from '../../utils/applications'
+import { midTruncate } from '../../utils/format'
 import { ProvenanceTooltip, CategoryTooltip, VersionTooltip } from './AppTooltips'
 
 // ApplicationDetail — pure single-cluster detail shell. Owns the title row
@@ -100,7 +102,16 @@ function workloadKey(w: SelectedAppWorkload): string {
 }
 
 export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNavigateToResource, selectedWorkloadKey, onSelectWorkload }: ApplicationDetailProps) {
-  const workloads = app.workloads ?? []
+  // Stable order regardless of API ordering: rail rows and the per-workload
+  // color assignment both follow this array, so an order flap between
+  // refetches must not reshuffle rows or reassign a workload's hue.
+  const workloads = useMemo(
+    () =>
+      [...(app.workloads ?? [])].sort(
+        (a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind) || a.namespace.localeCompare(b.namespace),
+      ),
+    [app.workloads],
+  )
   const overall = worstHealth([app.health, ...workloads.map((w) => w.health)])
   const v = VERDICT[overall]
   const workloadClass = workloadClassOf(app.workload_class)
@@ -109,9 +120,11 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
   const ready = workloads.reduce((n, w) => n + (w.ready ?? 0), 0)
   const desired = workloads.reduce((n, w) => n + (w.desired ?? 0), 0)
   const restartSignal = restartWarning(workloads)
-  // Resolve namespace the same way the list does (row field, else the shared
-  // workload namespace) so env/namespace match across list and detail.
+  // Resolve namespace the same way the list does (the workloads' shared
+  // namespace) so env/namespace match across list and detail. Multi-namespace
+  // apps get the count, never an arbitrary pick.
   const namespace = namespaceOf(app)
+  const namespaces = namespacesOf(app)
   const { env, inferred } = resolveEnv(undefined, namespace)
 
   // The app graph is the landing for multi-workload apps when a topology was
@@ -220,7 +233,9 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
               </span>
             </Tooltip>
           )}
-          {versions.length > 1 && (
+          {/* Amber only on real skew (same image, different tags) — the context
+              strip already covers the multi-image "N versions" case neutrally. */}
+          {app.versionSkew && versions.length > 1 && (
             <Tooltip content={<VersionTooltip workloads={workloads} />} delay={150}>
               <span className="inline-flex items-center rounded-md bg-amber-50 px-2 py-1 font-mono text-xs text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900">{versions.length} versions</span>
             </Tooltip>
@@ -241,11 +256,17 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
             )}
           </ContextFact>
         )}
-        {namespace && (
+        {namespace ? (
           <ContextFact label="Namespace">
             <span className="font-mono">{namespace}</span>
           </ContextFact>
-        )}
+        ) : namespaces.length > 1 ? (
+          <ContextFact label="Namespaces">
+            <Tooltip content={namespaces.join(', ')} delay={150}>
+              <span>{namespaces.length} namespaces</span>
+            </Tooltip>
+          </ContextFact>
+        ) : null}
         <ContextFact label="Ready">
           <ReadyBar ready={ready} desired={desired} />
         </ContextFact>
@@ -253,10 +274,16 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
           <ContextFact label="Version">
             {app.appVersion ? (
               <Tooltip content={<VersionTooltip workloads={workloads} />} delay={150}>
-                <span className="font-mono">{app.appVersion}</span>
+                <span className="font-mono">{midTruncate(app.appVersion, 32)}</span>
               </Tooltip>
             ) : versions.length === 1 ? (
-              <span className="font-mono">{versions[0]}</span>
+              versions[0].length > 32 ? (
+                <Tooltip content={versions[0]} delay={150}>
+                  <span className="font-mono">{midTruncate(versions[0], 32)}</span>
+                </Tooltip>
+              ) : (
+                <span className="font-mono">{versions[0]}</span>
+              )
             ) : (
               <Tooltip content={<VersionTooltip workloads={workloads} />} delay={150}>
                 <span className="font-mono">{versions.length} versions</span>

@@ -9,6 +9,7 @@ import type { NodeKind, HealthStatus, PodSummary } from '../../types'
 import { displayKind } from '../../types'
 import { healthToSeverity, SEVERITY_DOT } from '../../utils/badge-colors'
 import { workloadHue } from '../../utils/workload-colors'
+import { midTruncate } from '../../utils/format'
 import { Tooltip } from '../ui/Tooltip'
 
 // Get actionable tooltip content for health issues
@@ -514,9 +515,10 @@ export const K8sResourceNode = memo(function K8sResourceNode({
             </div>
           </div>
 
-          {/* Name */}
+          {/* Name — middle-ellipsis so the differentiating suffix survives
+              (a column of pods sharing a long prefix must stay tellable apart). */}
           <div className="text-sm font-medium text-theme-text-primary truncate pr-1">
-            {name}
+            {midTruncate(name, 34)}
           </div>
 
           {/* Subtitle */}

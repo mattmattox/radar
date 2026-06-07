@@ -57,6 +57,7 @@ type appRow struct {
 	WorkloadClass string            `json:"workload_class,omitempty"` // service | worker | job | unknown
 	Health        string            `json:"health"`                   // worst-of across workloads
 	Versions      []string          `json:"versions,omitempty"`       // distinct image tags (the running version)
+	VersionSkew   bool              `json:"versionSkew,omitempty"`    // the SAME image runs different tags across workloads — real drift, unlike multi-image diversity
 	AppVersion    string            `json:"appVersion,omitempty"`     // app.kubernetes.io/version when all workloads agree — the "main version" of a single-chart add-on; empty for multi-chart umbrellas
 	Workloads     []appWorkload     `json:"workloads"`
 	Events        []appEvent        `json:"events,omitempty"`        // recent Warning events across the app's workloads/pods
@@ -473,6 +474,8 @@ func groupApplications(inputs []appWorkloadInput) []appRow {
 		identifyApp(r, ins)
 		appVers := map[string]struct{}{}
 		labeled := 0
+		nss := map[string]struct{}{}
+		tagsByRepo := map[string]map[string]struct{}{}
 		for _, in := range ins {
 			r.Workloads = append(r.Workloads, in.wl)
 			r.Events = append(r.Events, in.events...)
@@ -484,7 +487,37 @@ func groupApplications(inputs []appWorkloadInput) []appRow {
 				appVers[av] = struct{}{}
 				labeled++
 			}
+			if in.wl.Namespace != "" {
+				nss[in.wl.Namespace] = struct{}{}
+			}
+			if repo, tag := imageRepo(in.wl.Image), in.wl.Version; repo != "" && tag != "" {
+				if tagsByRepo[repo] == nil {
+					tagsByRepo[repo] = map[string]struct{}{}
+				}
+				tagsByRepo[repo][tag] = struct{}{}
+			}
 			mergeRelationships(r, in.rels)
+		}
+		// The app lives where its WORKLOADS run — a Flux HelmRelease in
+		// flux-system deploying into demo is a demo app, not a flux-system one
+		// (the manager's home is provenance, not residence; it also must not
+		// trip the system-namespace filter). Multiple namespaces → empty; the
+		// UI derives "N namespaces" from the workloads.
+		if len(nss) == 1 {
+			for ns := range nss {
+				r.Namespace = ns
+			}
+		} else if len(nss) > 1 {
+			r.Namespace = ""
+		}
+		// Version skew means the SAME image runs different tags across the
+		// app's workloads — real drift. Different components shipping
+		// different images at different versions is normal, not skew.
+		for _, tags := range tagsByRepo {
+			if len(tags) > 1 {
+				r.VersionSkew = true
+				break
+			}
 		}
 		// A single upstream version is the app's "main version" only when EVERY
 		// workload declares it and they agree (a single-chart add-on). One labeled
@@ -932,6 +965,23 @@ func imageTag(image string) string {
 		return image[colon+1:]
 	}
 	return ""
+}
+
+// imageRepo is the image ref without its tag/digest — the unit version skew is
+// measured across: two workloads running the same repo at different tags.
+func imageRepo(image string) string {
+	if image == "" {
+		return ""
+	}
+	if at := strings.Index(image, "@"); at >= 0 {
+		image = image[:at]
+	}
+	slash := strings.LastIndex(image, "/")
+	colon := strings.LastIndex(image, ":")
+	if colon > slash {
+		return image[:colon]
+	}
+	return image
 }
 
 func ownedByCronJob(j *batchv1.Job) bool {

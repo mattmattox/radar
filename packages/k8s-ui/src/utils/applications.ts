@@ -57,6 +57,9 @@ export interface AppRow {
   health: string
   /** distinct image tags. */
   versions?: string[]
+  /** True when the SAME image runs different tags across workloads — real
+   *  drift. Multiple components on different images is normal, not skew. */
+  versionSkew?: boolean
   /** Single upstream version (app.kubernetes.io/version) when all workloads
    *  agree — the app's "main version". Empty for multi-chart umbrellas. */
   appVersion?: string
@@ -141,10 +144,10 @@ export type AppCategory = 'app' | 'addon' | 'mixed'
 
 export const CATEGORY_ORDER: AppCategory[] = ['app', 'addon', 'mixed']
 
-export const CATEGORY_META: Record<AppCategory, { label: string }> = {
-  app: { label: 'App' },
-  addon: { label: 'Add-on' },
-  mixed: { label: 'Mixed' },
+export const CATEGORY_META: Record<AppCategory, { label: string; tooltip: string }> = {
+  app: { label: 'App', tooltip: 'Software you deploy and run — services, workers, jobs.' },
+  addon: { label: 'Add-on', tooltip: 'Platform machinery (controllers, operators, system charts), classified by chart/label evidence. Shown for completeness.' },
+  mixed: { label: 'Mixed', tooltip: 'Has both app and add-on evidence. Kept visible — classification is informational, not identity.' },
 }
 
 /** The category bucket for a row — apps with no category default to 'app'. */
@@ -247,23 +250,32 @@ export function provenanceTooltip(tier: number | undefined, key: string, confide
 // Source — coarse provenance bucket derived from the tier, for facets.
 // -----------------------------------------------------------------------------
 
-export type AppSource = 'Argo' | 'Flux' | 'Helm' | 'Label' | 'raw'
+export type AppSource = 'Argo CD' | 'Flux' | 'Helm' | 'Label' | 'Ungrouped'
 
-/** An app's namespace: the row field when set, else the shared namespace of its
- *  workloads (so the detail and the list resolve env/namespace identically). */
-export function namespaceOf(app: AppRow): string {
-  if (app.namespace) return app.namespace
-  const nss = Array.from(new Set((app.workloads || []).map((w) => w.namespace).filter(Boolean)))
-  return nss.length === 1 ? nss[0] : (nss[0] ?? '')
+/** The distinct namespaces an app's workloads run in, sorted. Falls back to the
+ *  row's namespace when there are no workloads to derive from. */
+export function namespacesOf(app: AppRow): string[] {
+  const nss = Array.from(new Set((app.workloads || []).map((w) => w.namespace).filter(Boolean))).sort()
+  if (nss.length > 0) return nss
+  return app.namespace ? [app.namespace] : []
 }
+
+/** An app's single namespace, or '' when it spans several — callers must not
+ *  pick an arbitrary one (env inference and the system-namespace filter both
+ *  key off this; a wrong pick misleads). Use namespacesOf for the full list. */
+export function namespaceOf(app: AppRow): string {
+  const nss = namespacesOf(app)
+  return nss.length === 1 ? nss[0] : ''
+}
+
 
 export function sourceOf(tier: number | undefined): AppSource {
   const t = tier ?? 0
   if (t === 1 || t === 2) return 'Flux'
-  if (t === 3 || t === 4) return 'Argo'
+  if (t === 3 || t === 4) return 'Argo CD'
   if (t === 5) return 'Helm'
   if (t >= 6 && t <= 9) return 'Label' // tiers 6-9 are all label-based grouping
-  return 'raw'
+  return 'Ungrouped'
 }
 
 // -----------------------------------------------------------------------------

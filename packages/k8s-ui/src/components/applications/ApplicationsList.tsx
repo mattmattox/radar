@@ -22,11 +22,13 @@ import {
   envRank,
   isSystemNamespace,
   namespaceOf,
+  namespacesOf,
   overlayProvenance,
   resolveEnv,
   sourceOf,
   workloadClassOf,
 } from '../../utils/applications'
+import { midTruncate } from '../../utils/format'
 import { ProvenanceTooltip, VersionTooltip } from './AppTooltips'
 
 // ApplicationsList — pure, single-cluster dense list of logical apps. Health
@@ -40,6 +42,7 @@ interface AppEntry {
   health: AppHealth
   versions: string[]
   namespace: string
+  namespaces: string[]
   env: string
   envInferred: boolean
   kinds: Record<string, number>
@@ -70,6 +73,7 @@ function buildEntry(row: AppRow): AppEntry {
     health: (row.health as AppHealth) || 'unknown',
     versions: Array.from(new Set((row.versions || []).filter(Boolean))),
     namespace,
+    namespaces: namespacesOf(row),
     env,
     envInferred: inferred,
     kinds,
@@ -151,7 +155,7 @@ function ClassBadge({ workloadClass }: { workloadClass: AppWorkloadClass }) {
   )
 }
 
-function Facet<T extends string>({ title, options, selected, onToggle }: { title: string; options: { value: T; label: string; count: number; tone?: string }[]; selected: Set<T>; onToggle: (v: T) => void }) {
+function Facet<T extends string>({ title, options, selected, onToggle }: { title: string; options: { value: T; label: string; count: number; tone?: string; tooltip?: string }[]; selected: Set<T>; onToggle: (v: T) => void }) {
   const visible = options.filter((o) => o.count > 0)
   if (visible.length === 0) return null
   return (
@@ -159,16 +163,23 @@ function Facet<T extends string>({ title, options, selected, onToggle }: { title
       <div className="px-1 text-[10px] font-semibold uppercase tracking-wide text-theme-text-tertiary">{title}</div>
       {visible.map((o) => {
         const on = selected.has(o.value)
-        return (
+        const button = (
           <button
             key={o.value}
             type="button"
             onClick={() => onToggle(o.value)}
-            className={`flex items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs ${on ? 'bg-skyhook-500/10 text-theme-text-primary ring-1 ring-inset ring-skyhook-500/30' : 'text-theme-text-secondary hover:bg-theme-hover'}`}
+            className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs ${on ? 'bg-skyhook-500/10 text-theme-text-primary ring-1 ring-inset ring-skyhook-500/30' : 'text-theme-text-secondary hover:bg-theme-hover'}`}
           >
             <span className={`truncate ${o.tone ?? ''}`}>{o.label}</span>
             <span className="font-mono tabular-nums text-theme-text-tertiary">{o.count}</span>
           </button>
+        )
+        return o.tooltip ? (
+          <Tooltip key={o.value} content={o.tooltip} delay={300} position="right" wrapperClassName="w-full">
+            {button}
+          </Tooltip>
+        ) : (
+          button
         )
       })}
     </div>
@@ -291,8 +302,13 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
       {/* Health spectrum hero */}
       <div className="flex flex-col gap-1.5 rounded-md border border-theme-border bg-theme-surface px-4 py-3">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-          <span className="font-medium text-theme-text-primary">{pluralize(total, 'application')}</span>
+          <span className="font-medium text-theme-text-primary">
+            {entries.length < total ? `${entries.length} of ${total} applications` : pluralize(total, 'application')}
+          </span>
           {HEALTH_ORDER.map((h) => (counts.health[h] ? <span key={h} className={HEALTH_META[h].text}>{HEALTH_META[h].label} {counts.health[h]}</span> : null))}
+          <span className="ml-auto text-theme-text-tertiary">
+            {sort ? `Sorted by ${sort.key} ${sort.dir === 'asc' ? '↑' : '↓'}` : 'Sorted by status'}
+          </span>
         </div>
         <div className="flex h-2 w-full overflow-hidden rounded-full bg-theme-hover">
           {HEALTH_ORDER.map((h) => (counts.health[h] ? <span key={h} className={HEALTH_META[h].bar} style={{ width: `${(counts.health[h] / total) * 100}%` }} title={`${HEALTH_META[h].label} ${counts.health[h]}`} /> : null))}
@@ -308,9 +324,9 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
           </div>
           <Facet title="Availability" options={HEALTH_ORDER.map((h) => ({ value: h, label: HEALTH_META[h].label, count: counts.health[h] ?? 0, tone: HEALTH_META[h].text }))} selected={fHealth} onToggle={(v) => toggle(fHealth, setFHealth, v)} />
           <Facet title="Class" options={CLASS_ORDER.map((c) => ({ value: c, label: CLASS_META[c].label, count: counts.workloadClass[c] ?? 0 }))} selected={fClass} onToggle={(v) => toggle(fClass, setFClass, v)} />
-          <Facet title="Type" options={CATEGORY_ORDER.map((c) => ({ value: c, label: CATEGORY_META[c].label, count: counts.category[c] ?? 0 }))} selected={fType} onToggle={(v) => toggle(fType, setFType, v)} />
+          <Facet title="Type" options={CATEGORY_ORDER.map((c) => ({ value: c, label: CATEGORY_META[c].label, count: counts.category[c] ?? 0, tooltip: CATEGORY_META[c].tooltip }))} selected={fType} onToggle={(v) => toggle(fType, setFType, v)} />
           <Facet title="Environment" options={envOptions} selected={fEnv} onToggle={(v) => toggle(fEnv, setFEnv, v)} />
-          <Facet title="Source" options={(['Argo', 'Flux', 'Helm', 'Label', 'raw'] as AppSource[]).map((s) => ({ value: s, label: s, count: counts.source[s] ?? 0 }))} selected={fSource} onToggle={(v) => toggle(fSource, setFSource, v)} />
+          <Facet title="Source" options={(['Argo CD', 'Flux', 'Helm', 'Label', 'Ungrouped'] as AppSource[]).map((s) => ({ value: s, label: s, count: counts.source[s] ?? 0 }))} selected={fSource} onToggle={(v) => toggle(fSource, setFSource, v)} />
           {systemCount > 0 && (
             <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs text-theme-text-secondary hover:bg-theme-hover">
               <input type="checkbox" checked={showSystem} onChange={(e) => setShowSystem(e.target.checked)} className="accent-skyhook-500" />
@@ -354,7 +370,15 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                         </span>
                       </td>
                       <td className="px-2 py-2.5">
-                        {e.namespace ? <span className="truncate font-mono text-xs text-theme-text-secondary">{e.namespace}</span> : <span className="text-theme-text-tertiary">—</span>}
+                        {e.namespace ? (
+                          <span className="truncate font-mono text-xs text-theme-text-secondary">{e.namespace}</span>
+                        ) : e.namespaces.length > 1 ? (
+                          <Tooltip content={e.namespaces.join(', ')} delay={150}>
+                            <span className="text-xs text-theme-text-secondary">{e.namespaces.length} namespaces</span>
+                          </Tooltip>
+                        ) : (
+                          <span className="text-theme-text-tertiary">—</span>
+                        )}
                       </td>
                       <td className="px-2 py-2.5">
                         {e.env ? (
@@ -372,7 +396,27 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                       <td className="px-2 py-2.5"><ClassBadge workloadClass={e.workloadClass} /></td>
                       <td className="px-2 py-2.5"><ReadyBar ready={e.ready} desired={e.desired} /></td>
                       <td className="px-2 py-2.5">
-                        {e.row.appVersion ? <Tooltip content={<VersionTooltip workloads={e.row.workloads ?? []} />} delay={150}><span className="font-mono text-xs text-theme-text-secondary">{e.row.appVersion}</span></Tooltip> : e.versions.length === 0 ? <span className="text-theme-text-tertiary">—</span> : e.versions.length === 1 ? <span className="font-mono text-xs text-theme-text-secondary">{e.versions[0]}</span> : <Tooltip content={<VersionTooltip workloads={e.row.workloads ?? []} />} delay={150}><span className="rounded-sm bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900">{e.versions.length} versions</span></Tooltip>}
+                        {e.row.appVersion ? (
+                          <Tooltip content={<VersionTooltip workloads={e.row.workloads ?? []} />} delay={150}>
+                            <span className="font-mono text-xs text-theme-text-secondary">{midTruncate(e.row.appVersion)}</span>
+                          </Tooltip>
+                        ) : e.versions.length === 0 ? (
+                          <span className="text-theme-text-tertiary">—</span>
+                        ) : e.versions.length === 1 ? (
+                          e.versions[0].length > 24 ? (
+                            <Tooltip content={e.versions[0]} delay={150}>
+                              <span className="font-mono text-xs text-theme-text-secondary">{midTruncate(e.versions[0])}</span>
+                            </Tooltip>
+                          ) : (
+                            <span className="font-mono text-xs text-theme-text-secondary">{e.versions[0]}</span>
+                          )
+                        ) : (
+                          // Amber only on real skew (same image, different tags) —
+                          // multi-image apps naturally run several versions.
+                          <Tooltip content={<VersionTooltip workloads={e.row.workloads ?? []} />} delay={150}>
+                            <span className={e.row.versionSkew ? 'rounded-sm bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900' : 'rounded-sm bg-theme-hover px-1 text-[10px] font-medium text-theme-text-secondary ring-1 ring-inset ring-theme-border'}>{e.versions.length} versions</span>
+                          </Tooltip>
+                        )}
                       </td>
                       <td className="px-2 py-2.5">
                         {Object.keys(e.kinds).length === 0 ? (

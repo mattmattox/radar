@@ -27,7 +27,11 @@ export function ProvenanceTooltip({
         )}
         {src.trail ? ` ${src.trail}` : ''}
       </div>
-      <div className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">{conf} confidence</div>
+      {/* Only flag the case the user should act on — weak evidence. Medium/high
+          confidence is resolver detail, not actionable. */}
+      {conf === 'low' && (
+        <div className="text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">low confidence</div>
+      )}
     </div>
   )
 }
