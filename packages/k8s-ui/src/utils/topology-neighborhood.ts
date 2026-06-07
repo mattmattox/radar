@@ -22,9 +22,9 @@ import type { Topology, TopologyNode, TopologyEdge, EdgeType, NodeKind } from '.
 //                                     them into one neighborhood.
 //
 // Two more rules keep it honest:
-//   - GitOps managers reached UPWARD (Argo Application / Flux Kustomization /
-//     HelmRelease / GitRepository) are LEAVES — we show "managed by X" but never
-//     expand down to X's OTHER children (the same over-merge the app resolver's
+//   - Managers reached UPWARD (a CronJob over a seed Job, a GitOps controller
+//     over a workload) are LEAVES — we show "managed by X" but never expand
+//     down to X's OTHER children (the same over-merge the app resolver's
 //     structuralRoot fix prevents, in graph form).
 //   - Degree guard: any node whose fan-out along an edge type exceeds the guard is
 //     treated as a leaf regardless of class — the graph itself flags "this is
@@ -121,9 +121,12 @@ export function neighborhoodFor(topology: Topology, seeds: NeighborhoodSeed[]): 
 
       let asLeaf: boolean
       if (IDENTITY_EDGES.has(e.type)) {
-        // ownerRef chain — traverse, unless `next` is a GitOps manager reached
-        // upward: include it as "managed by", but don't fan out to its siblings.
-        asLeaf = GITOPS_MANAGER_KINDS.has(nextNode.kind)
+        // ownerRef chain: DOWNWARD (owner → child) is identity — a workload's
+        // pods ARE the workload. UPWARD (child → its manager: a CronJob, a
+        // GitOps controller) is context — include "managed by X" as a leaf,
+        // never fan out to X's other children (a seed Job must not drag in
+        // every sibling Job its CronJob owns).
+        asLeaf = nextId === e.source
       } else if (ROUTING_EDGES.has(e.type)) {
         asLeaf = true // a Service/Ingress in front of the workload — leaf
       } else {

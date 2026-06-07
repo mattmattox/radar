@@ -74,6 +74,30 @@ describe('neighborhoodFor', () => {
     expect(ids.has('depB')).toBe(false) // …but not the Kustomization's other app
   })
 
+  // Upward manages is context for ANY manager kind, not just GitOps: a seed
+  // Job shows its CronJob ("managed by") without dragging in sibling Jobs.
+  it('does not expand upward through a CronJob to sibling Jobs', () => {
+    const topo: Topology = {
+      nodes: [
+        node('cj', 'CronJob', 'app', 'nightly'),
+        node('job1', 'Job', 'app', 'nightly-001'),
+        node('job2', 'Job', 'app', 'nightly-002'),
+        node('pod2', 'Pod', 'app', 'nightly-002-x'),
+      ],
+      edges: [
+        edge('cj', 'job1', 'manages'),
+        edge('cj', 'job2', 'manages'),
+        edge('job2', 'pod2', 'manages'),
+      ],
+    }
+    const out = neighborhoodFor(topo, [{ kind: 'Job', namespace: 'app', name: 'nightly-001' }])
+    const ids = new Set(out.nodes.map((n) => n.id))
+    expect(ids.has('job1')).toBe(true)
+    expect(ids.has('cj')).toBe(true) // the managing CronJob is shown…
+    expect(ids.has('job2')).toBe(false) // …but its sibling Jobs are not
+    expect(ids.has('pod2')).toBe(false)
+  })
+
   // The degree guard targets shared infra (routing/context), not ownership: a
   // workload with more than K pods must still keep every pod — the ReplicaSet
   // in between must not be leafed for high manages-fan-out.

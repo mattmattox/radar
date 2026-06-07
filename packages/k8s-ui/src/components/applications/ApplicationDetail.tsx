@@ -21,6 +21,7 @@ import {
   workloadClassOf,
   worstHealth,
 } from '../../utils/applications'
+import { PaneLoader } from '../ui/PaneLoader'
 import { VersionTooltip } from './AppTooltips'
 import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo } from './AppChips'
 import { ReadyBar } from './ReadyBar'
@@ -56,6 +57,10 @@ export type ApplicationDetailProps = {
   /** Resources-view topology spanning the app's namespaces. When present and the
    *  app has >1 workload, the detail lands on the app graph. */
   topology?: Topology
+  /** True while the host's topology fetch is in flight. Without it, a
+   *  multi-workload landing briefly mounts the first workload's runtime (and
+   *  fires its data fetches) before jumping to the graph. */
+  topologyLoading?: boolean
   /** Open a related (non-workload) resource clicked in the app graph. */
   onNavigateToResource?: (resource: { kind: string; namespace: string; name: string; group?: string }) => void
 } & SelectionProps
@@ -69,7 +74,7 @@ function ContextFact({ label, children }: { label: string; children: ReactNode }
   )
 }
 
-export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNavigateToResource, selectedWorkloadKey, onSelectWorkload }: ApplicationDetailProps) {
+export function ApplicationDetail({ app, onBack, renderWorkload, topology, topologyLoading, onNavigateToResource, selectedWorkloadKey, onSelectWorkload }: ApplicationDetailProps) {
   // Stable order regardless of API ordering: rail rows and the per-workload
   // color assignment both follow this array, so an order flap between
   // refetches must not reshuffle rows or reassign a workload's hue.
@@ -261,6 +266,11 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
                 focusedOwnerId={focusedOwnerId}
                 onNodeHover={handleNodeHover}
               />
+            ) : selected === null && topologyLoading ? (
+              // The graph is this view's landing — hold a loader while the
+              // topology fetch is in flight instead of flashing the first
+              // workload's runtime (which would fire its data fetches too).
+              <PaneLoader label="Loading topology…" className="absolute inset-0" />
             ) : (
               <div key={workloadKey(selectedWorkload ?? workloads[0])} className="h-full min-h-0">
                 {renderWorkload(selectedWorkload ?? workloads[0])}

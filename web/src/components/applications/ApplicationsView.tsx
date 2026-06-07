@@ -78,7 +78,7 @@ function AppDetailRoute({ app, onBack, onOpenResource }: { app: AppRow; onBack: 
     () => Array.from(new Set((app.workloads ?? []).map((w) => w.namespace).filter(Boolean))).sort(),
     [app.workloads],
   )
-  const { data: topology } = useTopology(appNamespaces, 'resources', { enabled: appNamespaces.length > 0 })
+  const { data: topology, isLoading: topologyLoading } = useTopology(appNamespaces, 'resources', { enabled: appNamespaces.length > 0 })
 
   // The selected workload (?workload=<key>) lives in the URL too: deep-linkable,
   // and back returns from a workload's runtime to the app graph. Clearing it
@@ -104,6 +104,7 @@ function AppDetailRoute({ app, onBack, onOpenResource }: { app: AppRow; onBack: 
         app={app}
         onBack={onBack}
         topology={topology}
+        topologyLoading={topologyLoading}
         onNavigateToResource={onOpenResource}
         selectedWorkloadKey={selectedWorkloadKey}
         onSelectWorkload={selectWorkload}

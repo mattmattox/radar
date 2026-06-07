@@ -37,16 +37,15 @@ export function ProvenanceTooltip({
 }
 
 // "3 versions" on its own says little; the breakdown says which component runs
-// what. (A single chart/release would ideally show its appVersion as the one
-// "main version" — that needs the backend to surface chart metadata; until then
-// this is the honest per-workload view, and the right shape for umbrella apps
-// that genuinely have no single version.)
+// what — the right shape for umbrella apps that genuinely have no single version.
 export function VersionTooltip({ workloads }: { workloads: Pick<AppWorkload, 'name' | 'version'>[] }) {
   const rows = workloads.filter((w) => w.version)
   if (rows.length === 0) return null
   return (
     <div className="max-w-xs space-y-1">
-      <div className="text-[10px] font-medium uppercase tracking-wide text-theme-text-tertiary">Version by workload</div>
+      {/* These are the running image tags — they can legitimately differ from
+          the headline appVersion (a label), so the title says what it shows. */}
+      <div className="text-[10px] font-medium uppercase tracking-wide text-theme-text-tertiary">Image tag by workload</div>
       <ul className="space-y-0.5">
         {rows.map((w, i) => (
           <li key={i} className="flex items-baseline justify-between gap-3">

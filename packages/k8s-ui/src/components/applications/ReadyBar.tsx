@@ -8,13 +8,15 @@ export function ReadyBar({ ready, desired, width = 'w-12' }: { ready: number; de
   }
   const pct = Math.min(100, Math.round((ready / desired) * 100))
   const ok = ready >= desired
-  const bar = ok ? HEALTH_META.healthy.bar : ready === 0 ? HEALTH_META.unhealthy.bar : HEALTH_META.degraded.bar
+  // Text matches the bar's tier: amber for partial readiness, red only when
+  // nothing is ready — partial must not read as fully down.
+  const tier = ok ? HEALTH_META.healthy : ready === 0 ? HEALTH_META.unhealthy : HEALTH_META.degraded
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className={`inline-block h-1.5 ${width} rounded-full bg-theme-hover`}>
-        <span className={`block h-1.5 rounded-full ${bar}`} style={{ width: `${pct}%` }} />
+        <span className={`block h-1.5 rounded-full ${tier.bar}`} style={{ width: `${pct}%` }} />
       </span>
-      <span className={`font-mono text-xs tabular-nums ${ok ? 'text-theme-text-secondary' : HEALTH_META.unhealthy.text}`}>{ready}/{desired || '—'}</span>
+      <span className={`font-mono text-xs tabular-nums ${ok ? 'text-theme-text-secondary' : tier.text}`}>{ready}/{desired || '—'}</span>
     </span>
   )
 }

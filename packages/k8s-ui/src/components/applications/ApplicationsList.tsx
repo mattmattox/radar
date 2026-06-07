@@ -192,8 +192,11 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
   const allRaw = useMemo<AppEntry[]>(() => apps.map(buildEntry), [apps])
   // System namespaces are filtered before facet counts so the counts reflect
   // what the user is actually looking at (consistent with the other facets).
-  const all = useMemo(() => (showSystem ? allRaw : allRaw.filter((e) => !isSystemNamespace(e.namespace))), [allRaw, showSystem])
-  const systemCount = useMemo(() => allRaw.filter((e) => isSystemNamespace(e.namespace)).length, [allRaw])
+  // An app counts as system only when EVERY workload namespace is system —
+  // hiding a partly-user app would be worse than showing a partly-system one.
+  const isSystemApp = (e: AppEntry) => e.namespaces.length > 0 && e.namespaces.every(isSystemNamespace)
+  const all = useMemo(() => (showSystem ? allRaw : allRaw.filter((e) => !isSystemApp(e))), [allRaw, showSystem])
+  const systemCount = useMemo(() => allRaw.filter(isSystemApp).length, [allRaw])
 
   const entries = useMemo(() => {
     const t = textFilter.trim().toLowerCase()
