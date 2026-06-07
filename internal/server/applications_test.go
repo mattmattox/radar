@@ -340,3 +340,32 @@ func TestImageRepo(t *testing.T) {
 		}
 	}
 }
+
+// A real class mix (service + scheduled job) reports "mixed", not "unknown" —
+// the per-workload classes are confident and the UI shows the composition.
+// service+worker stays "service" (operated primarily as a service), and an
+// unclassifiable member (bare Pod) doesn't poison a known class.
+func TestWorkloadClass_MixedComposition(t *testing.T) {
+	mk := func(name, kind, class string) appWorkloadInput {
+		in := overlayInput(kind, "prod", name, "1.0", "healthy", subject.TierPartOf, "prod/app/shop", subject.ConfidenceMedium)
+		in.wl.WorkloadClass = class
+		return in
+	}
+	cases := []struct {
+		name string
+		ins  []appWorkloadInput
+		want string
+	}{
+		{"service+job", []appWorkloadInput{mk("api", "Deployment", "service"), mk("nightly", "CronJob", "job")}, "mixed"},
+		{"worker+job", []appWorkloadInput{mk("proc", "Deployment", "worker"), mk("nightly", "CronJob", "job")}, "mixed"},
+		{"service+worker", []appWorkloadInput{mk("api", "Deployment", "service"), mk("proc", "Deployment", "worker")}, "service"},
+		{"service+unknown", []appWorkloadInput{mk("api", "Deployment", "service"), mk("dbg", "Pod", "unknown")}, "service"},
+		{"only-unknown", []appWorkloadInput{mk("dbg", "Pod", "unknown")}, "unknown"},
+	}
+	for _, c := range cases {
+		rows := groupApplications(c.ins)
+		if r := rowByName(rows, "shop"); r == nil || r.WorkloadClass != c.want {
+			t.Errorf("%s: WorkloadClass = %v, want %s", c.name, r, c.want)
+		}
+	}
+}

@@ -19,6 +19,7 @@ import {
   namespacesOf,
   resolveEnv,
   workloadClassOf,
+  classCompositionOf,
   worstHealth,
 } from '../../utils/applications'
 import { PaneLoader } from '../ui/PaneLoader'
@@ -180,7 +181,7 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
         <h1 className="text-2xl font-semibold text-theme-text-primary">{app.name}</h1>
         <ProvenanceBadge tier={app.tier} appKey={app.key} confidence={app.confidence} />
         <CategoryChip category={app.category} addonReason={app.addonReason} />
-        <ClassBadge workloadClass={workloadClass} />
+        <ClassBadge workloadClass={workloadClass} composition={classCompositionOf(app)} />
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           <span className={`inline-flex items-center gap-2 rounded-md px-2.5 py-1 ring-1 ring-inset ${verdictTone}`}>
             <StatusDot tone={mapHealthToTone(overall)} />

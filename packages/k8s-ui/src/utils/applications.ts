@@ -5,7 +5,7 @@
 // The wire shape mirrors radar OSS's GET /api/applications response
 // (internal/server/applications.go). Field names match the Go json tags.
 
-export type AppWorkloadClass = 'service' | 'worker' | 'job' | 'unknown'
+export type AppWorkloadClass = 'service' | 'worker' | 'job' | 'mixed' | 'unknown'
 export type AppHealth = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 
 export interface AppWorkload {
@@ -328,7 +328,30 @@ export const CLASS_META: Record<AppWorkloadClass, { label: string; pill: string;
   service: { label: 'Service', pill: CHIP_TONE.blue, tooltip: 'Long-running, request-serving (a Deployment/StatefulSet behind a Service/Ingress/route). Inferred from the workload shape + routing.' },
   worker: { label: 'Worker', pill: CHIP_TONE.violet, tooltip: 'Long-running background processor (no serving edge). Inferred from the workload shape.' },
   job: { label: 'Job', pill: CHIP_TONE.amber, tooltip: 'Finite or scheduled work (Job/CronJob).' },
+  mixed: { label: 'Mixed', pill: CHIP_TONE.neutral, tooltip: 'Contains workloads of more than one class (e.g. a service plus its scheduled jobs).' },
   unknown: { label: 'Unknown', pill: CHIP_TONE.muted, tooltip: "Couldn't infer a runtime class from the workload." },
+}
+
+/** Per-class workload counts for an app, in CLASS_ORDER — the composition
+ *  behind a "Mixed" badge and the inclusive Class facet (filtering "Service"
+ *  matches mixed apps that contain a service). */
+export function classCompositionOf(app: AppRow): { cls: AppWorkloadClass; count: number }[] {
+  const counts = new Map<AppWorkloadClass, number>()
+  for (const w of app.workloads || []) {
+    const c = workloadClassOf(w.workload_class)
+    counts.set(c, (counts.get(c) ?? 0) + 1)
+  }
+  return CLASS_ORDER.filter((c) => counts.has(c)).map((c) => ({ cls: c, count: counts.get(c)! }))
+}
+
+/** The distinct KNOWN classes an app contains — the facet-matching set. Falls
+ *  back to the app-level class when there are no classifiable workloads. */
+export function classSetOf(app: AppRow): AppWorkloadClass[] {
+  const known = classCompositionOf(app)
+    .map((c) => c.cls)
+    .filter((c) => c === 'service' || c === 'worker' || c === 'job')
+  if (known.length > 0) return known
+  return [workloadClassOf(app.workload_class)]
 }
 
 export function workloadClassOf(value?: AppWorkloadClass): AppWorkloadClass {
@@ -336,6 +359,7 @@ export function workloadClassOf(value?: AppWorkloadClass): AppWorkloadClass {
     case 'service':
     case 'worker':
     case 'job':
+    case 'mixed':
       return value
     default:
       return 'unknown'

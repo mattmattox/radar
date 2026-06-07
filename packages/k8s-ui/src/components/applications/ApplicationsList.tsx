@@ -31,6 +31,8 @@ import {
   resolveEnv,
   sourceOf,
   workloadClassOf,
+  classSetOf,
+  classCompositionOf,
 } from '../../utils/applications'
 import { ReadyBar } from './ReadyBar'
 import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo } from './AppChips'
@@ -51,6 +53,9 @@ interface AppEntry {
   envInferred: boolean
   kinds: Record<string, number>
   workloadClass: AppWorkloadClass
+  /** Distinct contained classes — the inclusive facet-matching set. */
+  classSet: AppWorkloadClass[]
+  classComposition: { cls: AppWorkloadClass; count: number }[]
   category: AppCategory
   ready: number
   desired: number
@@ -80,6 +85,8 @@ function buildEntry(row: AppRow): AppEntry {
     envInferred: inferred,
     kinds,
     workloadClass: workloadClassOf(row.workload_class),
+    classSet: classSetOf(row),
+    classComposition: classCompositionOf(row),
     category: categoryOf(row.category),
     ready,
     desired,
@@ -98,6 +105,7 @@ function searchTextForEntry(e: AppEntry): string {
     e.namespace,
     SOURCE_META[e.source].label,
     CLASS_META[e.workloadClass].label,
+    ...e.classSet.map((c) => CLASS_META[c].label),
     CATEGORY_META[e.category].label,
     ...e.versions,
     envLabel(e.env),
@@ -203,7 +211,8 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
     const filtered = all.filter((e) => {
       if (t && !searchTextForEntry(e).includes(t)) return false
       if (fHealth.size && !fHealth.has(e.health)) return false
-      if (fClass.size && !fClass.has(e.workloadClass)) return false
+      // Inclusive: a mixed app matches the filter of ANY class it contains.
+      if (fClass.size && !e.classSet.some((c) => fClass.has(c))) return false
       if (fType.size && !fType.has(e.category)) return false
       if (fSource.size && !fSource.has(e.source)) return false
       if (fEnv.size && !fEnv.has(e.env || 'none')) return false
@@ -226,7 +235,7 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
     const category: Record<string, number> = {}
     for (const e of all) {
       health[e.health] = (health[e.health] ?? 0) + 1
-      workloadClass[e.workloadClass] = (workloadClass[e.workloadClass] ?? 0) + 1
+      for (const c of e.classSet) workloadClass[c] = (workloadClass[c] ?? 0) + 1
       source[e.source] = (source[e.source] ?? 0) + 1
       category[e.category] = (category[e.category] ?? 0) + 1
       env[e.env || 'none'] = (env[e.env || 'none'] ?? 0) + 1
@@ -349,7 +358,7 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                           <span className="text-theme-text-tertiary">—</span>
                         )}
                       </td>
-                      <td className="px-2 py-2.5"><ClassBadge workloadClass={e.workloadClass} /></td>
+                      <td className="px-2 py-2.5"><ClassBadge workloadClass={e.workloadClass} composition={e.classComposition} /></td>
                       <td className="px-2 py-2.5"><ReadyBar ready={e.ready} desired={e.desired} /></td>
                       <td className="px-2 py-2.5">
                         <VersionInfo app={e.row} variant="cell" />

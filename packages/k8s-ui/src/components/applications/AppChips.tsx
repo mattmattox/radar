@@ -31,10 +31,29 @@ export function ProvenanceBadge({ tier, appKey, confidence }: { tier?: number; a
   )
 }
 
-export function ClassBadge({ workloadClass }: { workloadClass: AppWorkloadClass }) {
+export function ClassBadge({
+  workloadClass,
+  composition,
+}: {
+  workloadClass: AppWorkloadClass
+  /** Per-class counts (classCompositionOf) — lets a Mixed badge's tooltip say
+   *  what the mix actually contains. */
+  composition?: { cls: AppWorkloadClass; count: number }[]
+}) {
   const meta = CLASS_META[workloadClass]
+  const tooltip =
+    workloadClass === 'mixed' && composition && composition.length > 0 ? (
+      <div className="space-y-1">
+        <div className="text-xs text-theme-text-primary">
+          Contains {composition.map((c) => `${c.count} ${CLASS_META[c.cls].label}${c.count > 1 ? 's' : ''}`).join(' · ')}
+        </div>
+        <div className="text-[11px] leading-snug text-theme-text-secondary">Class filters match any of the contained classes.</div>
+      </div>
+    ) : (
+      meta.tooltip
+    )
   return (
-    <Tooltip content={meta.tooltip} delay={150}>
+    <Tooltip content={tooltip} delay={150}>
       <span className={`${CHIP} ${meta.pill}`}>{meta.label}</span>
     </Tooltip>
   )

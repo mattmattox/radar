@@ -55,7 +55,7 @@ type appRow struct {
 	Confidence    string            `json:"confidence,omitempty"`     // high | medium | low
 	Category      string            `json:"category,omitempty"`       // app | addon | mixed; classification hint, never identity
 	AddonReason   string            `json:"addonReason,omitempty"`    // add-on evidence when Category == addon/mixed
-	WorkloadClass string            `json:"workload_class,omitempty"` // service | worker | job | unknown
+	WorkloadClass string            `json:"workload_class,omitempty"` // service | worker | job | mixed | unknown
 	Health        string            `json:"health"`                   // worst-of across workloads
 	Versions      []string          `json:"versions,omitempty"`       // distinct image tags (the running version)
 	VersionSkew   bool              `json:"versionSkew,omitempty"`    // the SAME image runs different tags across workloads — real drift, unlike multi-image diversity
@@ -698,34 +698,31 @@ func classifyWorkload(kind string, rels *appRelationships) string {
 }
 
 func classifyAppWorkloads(ins []appWorkloadInput) string {
-	seenService := false
-	seenWorker := false
-	seenJob := false
-	seenUnknown := false
+	classes := map[string]bool{}
 	for _, in := range ins {
 		switch in.wl.WorkloadClass {
-		case "service":
-			seenService = true
-		case "worker":
-			seenWorker = true
-		case "job":
-			seenJob = true
-		default:
-			seenUnknown = true
+		case "service", "worker", "job":
+			classes[in.wl.WorkloadClass] = true
 		}
+		// Unclassifiable members (e.g. a bare Pod) don't poison a known class.
 	}
-	switch {
-	case seenService && !seenJob && !seenUnknown:
+	if len(classes) == 0 {
+		return "unknown"
+	}
+	if classes["service"] && !classes["job"] {
 		// A deployable unit with an API Deployment and a background worker is
 		// still operated primarily as a service.
 		return "service"
-	case seenWorker && !seenService && !seenJob && !seenUnknown:
-		return "worker"
-	case seenJob && !seenService && !seenWorker && !seenUnknown:
-		return "job"
-	default:
-		return "unknown"
 	}
+	if len(classes) == 1 {
+		for c := range classes {
+			return c
+		}
+	}
+	// A real composition (e.g. a service plus its scheduled jobs). The UI
+	// derives the breakdown from the per-workload classes; "unknown" would
+	// throw away what classifyWorkload confidently determined.
+	return "mixed"
 }
 
 func classifyAppCategory(ins []appWorkloadInput) (category, reason string) {
