@@ -206,6 +206,7 @@ function AppDetailRoute({ app, apps, onBack, onOpenResource }: { app: AppRow; ap
               // "Back" returns to the app graph — meaningless for a
               // single-workload app, which has no graph to return to.
               hideBackButton={(app.workloads?.length ?? 0) <= 1}
+              compactHeader
               onNavigateToResource={onOpenResource}
             />
           </div>

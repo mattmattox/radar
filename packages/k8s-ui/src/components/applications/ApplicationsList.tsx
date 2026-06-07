@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from 'react'
+import { useMemo, useState, useEffect, useRef, useCallback } from 'react'
 import { ChevronRight, ChevronUp, ChevronDown, Layers, Info } from 'lucide-react'
 import { clsx } from 'clsx'
 import { StatusDot, mapHealthToTone } from '../ui/status-tone'
@@ -275,7 +275,12 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
   const rowsRef = useRef(visibleRows)
   rowsRef.current = visibleRows
-  useEffect(() => setHighlightedIndex(-1), [entries])
+  useEffect(() => setHighlightedIndex(-1), [visibleRows])
+  const firstOpenableVisibleRow = useCallback(() => {
+    const first = rowsRef.current[0]
+    if (!first) return null
+    return first.kind === 'family' ? first.cells[0]?.firstKey ?? null : first.entry.row.key
+  }, [])
   const moveHighlight = (delta: number) =>
     setHighlightedIndex((i) => Math.min(Math.max(i + delta, 0), rowsRef.current.length - 1))
   useRegisterShortcuts([
@@ -364,10 +369,13 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
         shortcutId="applications-search"
         className="max-w-md"
         onEnter={() => {
-          if (entries[0]) onSelect(entries[0].row.key)
+          const key = highlightedIndex >= 0 && rowsRef.current[highlightedIndex]?.kind === 'instance'
+            ? (rowsRef.current[highlightedIndex] as Extract<FoldedRow<AppEntry>, { kind: 'instance' }>).entry.row.key
+            : firstOpenableVisibleRow()
+          if (key) onSelect(key)
         }}
         onArrowDown={() => {
-          if (entries.length > 0) setHighlightedIndex(0)
+          if (visibleRows.length > 0) setHighlightedIndex(0)
         }}
       />
 

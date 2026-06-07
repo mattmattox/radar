@@ -405,6 +405,9 @@ export function WorkloadView({
   const resourceEvents = useMemo(() => {
     return getAllEventsFromHierarchy(resourceLanes)
   }, [resourceLanes])
+  const overviewEvents = resourceEvents.length > 0 ? resourceEvents : (resourceFocusedK8sEvents ?? [])
+  const overviewEventsLoading = resourceEvents.length > 0 ? eventsLoading : resourceFocusedEventsLoading
+  const overviewEventsError = resourceEvents.length > 0 ? undefined : resourceFocusedK8sError
 
   // Get pods from relationships and hierarchy
   const childPods = useMemo(() => {
@@ -782,10 +785,10 @@ export function WorkloadView({
               onSwitchToTimeline={() => handleSetTab('timeline')}
               rendererOverrides={rendererOverrides}
               resolvedEnvFrom={resolvedEnvFrom}
-              events={resourceEvents}
-              eventsLoading={eventsLoading || resourceFocusedEventsLoading}
+              events={overviewEvents}
+              eventsLoading={overviewEventsLoading}
               updates={resourceFocusedUpdates}
-              eventsError={resourceFocusedK8sError}
+              eventsError={overviewEventsError}
               updatesError={resourceFocusedUpdatesError}
               extraContent={renderOverviewExtra && renderOverviewExtra({ kind, namespace, name })}
             />

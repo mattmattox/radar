@@ -148,6 +148,14 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
   // the app graph rather than silently rendering a different workload under a
   // URL that names the missing one.
   const selected = rawSelected !== null && !selectedWorkload ? null : rawSelected
+  useEffect(() => {
+    if (selectedWorkloadKey !== undefined && selectedWorkloadKey !== null && !selectedWorkload) {
+      onSelectWorkload?.(null)
+    }
+  }, [selectedWorkloadKey, selectedWorkload, onSelectWorkload])
+  useEffect(() => {
+    if (selectedWorkloadKey === undefined) setInternalSelected(null)
+  }, [app.key, selectedWorkloadKey])
 
   // Hover-focus: the workload (or NEUTRAL_OWNER) whose nodes should stay lit
   // while the rest of the graph dims. Driven by the rail and, reciprocally, by
@@ -179,7 +187,7 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
       return
     }
     const stamp = ownershipOf(node.data)
-    setFocusedOwnerId(stamp.ownerWorkloadId ?? (stamp.focusWorkloadIds.length === 1 ? stamp.focusWorkloadIds[0] : null))
+    setFocusedOwnerId(stamp.ownerWorkloadId ?? (stamp.focusWorkloadIds.length === 1 ? stamp.focusWorkloadIds[0] : NEUTRAL_OWNER))
   }, [])
 
   // A node click in the app graph either drills into one of the app's workloads

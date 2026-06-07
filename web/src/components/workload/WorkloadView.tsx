@@ -140,6 +140,7 @@ interface WorkloadViewProps {
   name: string
   onBack: () => void
   hideBackButton?: boolean
+  compactHeader?: boolean
   onNavigateToResource?: NavigateToResource
   onCollapseToDrawer?: () => void
   expanded?: boolean

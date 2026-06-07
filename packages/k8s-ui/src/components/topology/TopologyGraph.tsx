@@ -377,6 +377,7 @@ export function TopologyGraph({
         name: pod.name,
         status: pod.phase === 'Running' ? 'healthy' : pod.phase === 'Pending' ? 'degraded' : 'unhealthy',
         data: {
+          ...podGroupNode.data,
           namespace: pod.namespace,
           phase: pod.phase,
           restarts: pod.restarts,
