@@ -15,7 +15,10 @@ import {
   type AppWorkload,
   type AppHealth,
   type AppWorkloadClass,
+  CHIP,
+  CHIP_TONE,
   CLASS_META,
+  HEALTH_META,
   namespaceOf,
   namespacesOf,
   overlayProvenance,
@@ -25,6 +28,7 @@ import {
 } from '../../utils/applications'
 import { midTruncate } from '../../utils/format'
 import { ProvenanceTooltip, CategoryTooltip, VersionTooltip } from './AppTooltips'
+import { ReadyBar } from './ReadyBar'
 
 // ApplicationDetail — pure single-cluster detail shell. Owns the title row
 // (icon, name, provenance/ungrouped chip, add-on/mixed chip, class badge,
@@ -62,16 +66,9 @@ export interface ApplicationDetailProps {
   onSelectWorkload?: (key: string | null) => void
 }
 
-const VERDICT: Record<AppHealth, { label: string; dot: string; text: string; ring: string }> = {
-  unhealthy: { label: 'Down', dot: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400', ring: 'ring-rose-200 dark:ring-rose-900 bg-rose-50 dark:bg-rose-950/40' },
-  degraded: { label: 'Degraded', dot: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400', ring: 'ring-amber-200 dark:ring-amber-900 bg-amber-50 dark:bg-amber-950/40' },
-  healthy: { label: 'Healthy', dot: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', ring: 'ring-emerald-200 dark:ring-emerald-900 bg-emerald-50 dark:bg-emerald-950/40' },
-  unknown: { label: 'Unknown', dot: 'bg-slate-400', text: 'text-theme-text-secondary', ring: 'ring-theme-border bg-theme-hover' },
-}
-
 function ClassBadge({ workloadClass }: { workloadClass: AppWorkloadClass }) {
   const meta = CLASS_META[workloadClass]
-  return <span className={`inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset ${meta.pill}`}>{meta.label}</span>
+  return <span className={`${CHIP} ${meta.pill}`}>{meta.label}</span>
 }
 
 function ContextFact({ label, children }: { label: string; children: ReactNode }) {
@@ -80,20 +77,6 @@ function ContextFact({ label, children }: { label: string; children: ReactNode }
       <span className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">{label}</span>
       <span className="min-w-0 truncate text-xs text-theme-text-secondary">{children}</span>
     </div>
-  )
-}
-
-function ReadyBar({ ready, desired }: { ready: number; desired: number }) {
-  if (desired <= 0) return <span className="font-mono text-xs tabular-nums text-theme-text-tertiary">—</span>
-  const pct = Math.min(100, Math.round((ready / desired) * 100))
-  const ok = ready >= desired
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span className="inline-block h-1.5 w-16 rounded-full bg-theme-hover">
-        <span className={`block h-1.5 rounded-full ${ok ? 'bg-emerald-500' : ready === 0 ? 'bg-rose-500' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
-      </span>
-      <span className={`font-mono text-xs tabular-nums ${ok ? 'text-theme-text-secondary' : 'text-rose-600 dark:text-rose-400'}`}>{ready}/{desired || '—'}</span>
-    </span>
   )
 }
 
@@ -113,7 +96,10 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
     [app.workloads],
   )
   const overall = worstHealth([app.health, ...workloads.map((w) => w.health)])
-  const v = VERDICT[overall]
+  // Verdict pill/icon colors come from the shared chip dialect + HEALTH_META —
+  // no parallel health palette here.
+  const verdictTone = { unhealthy: CHIP_TONE.rose, degraded: CHIP_TONE.amber, healthy: CHIP_TONE.emerald, unknown: CHIP_TONE.muted }[overall]
+  const verdictLabel = HEALTH_META[overall].label
   const workloadClass = workloadClassOf(app.workload_class)
   const provenance = app.tier ? overlayProvenance(app.tier) : null
   const versions = useMemo(() => Array.from(new Set((app.versions || []).filter(Boolean))), [app.versions])
@@ -197,38 +183,38 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> Applications
         </button>
         <span className="h-6 w-px bg-theme-border" aria-hidden />
-        <span className={`flex h-8 w-8 items-center justify-center rounded-md ${v.ring} ring-1 ring-inset`}>
-          <Boxes className={`h-4 w-4 ${v.text}`} aria-hidden />
+        <span className={`flex h-8 w-8 items-center justify-center rounded-md ring-1 ring-inset ${verdictTone}`}>
+          <Boxes className="h-4 w-4" aria-hidden />
         </span>
         <h1 className="text-2xl font-semibold text-theme-text-primary">{app.name}</h1>
         {provenance ? (
           <Tooltip content={<ProvenanceTooltip tier={app.tier} appKey={app.key} confidence={app.confidence} />} delay={150}>
-            <span className={`inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset ${app.confidence === 'high' ? 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900' : app.confidence === 'medium' ? 'bg-theme-hover text-theme-text-secondary ring-theme-border' : 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900'}`}>{provenance}</span>
+            <span className={`${CHIP} ${app.confidence === 'high' ? CHIP_TONE.emerald : app.confidence === 'medium' ? CHIP_TONE.neutral : CHIP_TONE.amber}`}>{provenance}</span>
           </Tooltip>
         ) : (
           <Tooltip content="No GitOps, Helm, or app-label grouping signal — shown as the raw workload." delay={150}>
-            <span className="inline-flex items-center rounded-sm bg-theme-hover px-1.5 py-px text-[10px] font-medium text-theme-text-tertiary ring-1 ring-inset ring-theme-border">ungrouped</span>
+            <span className={`${CHIP} ${CHIP_TONE.muted}`}>ungrouped</span>
           </Tooltip>
         )}
         {app.category === 'addon' && (
           <Tooltip content={<CategoryTooltip category="addon" addonReason={app.addonReason} />} delay={150}>
-            <span className="inline-flex items-center rounded-sm bg-theme-hover px-1.5 py-px text-[10px] font-medium text-theme-text-tertiary ring-1 ring-inset ring-theme-border">add-on</span>
+            <span className={`${CHIP} ${CHIP_TONE.muted}`}>add-on</span>
           </Tooltip>
         )}
         {app.category === 'mixed' && (
           <Tooltip content={<CategoryTooltip category="mixed" addonReason={app.addonReason} />} delay={150}>
-            <span className="inline-flex items-center rounded-sm bg-amber-50 px-1.5 py-px text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900">mixed</span>
+            <span className={`${CHIP} ${CHIP_TONE.amber}`}>mixed</span>
           </Tooltip>
         )}
         <ClassBadge workloadClass={workloadClass} />
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-          <span className={`inline-flex items-center gap-2 rounded-md px-2.5 py-1 ring-1 ring-inset ${v.ring}`}>
-            <span className={`h-2 w-2 rounded-full ${v.dot}`} />
-            <span className={`text-sm font-semibold ${v.text}`}>{v.label}</span>
+          <span className={`inline-flex items-center gap-2 rounded-md px-2.5 py-1 ring-1 ring-inset ${verdictTone}`}>
+            <StatusDot tone={mapHealthToTone(overall)} />
+            <span className="text-sm font-semibold">{verdictLabel}</span>
           </span>
           {restartSignal && (
             <Tooltip content={`${restartSignal.workload} · ${pluralize(restartSignal.restarts, 'restart')}`} delay={150}>
-              <span className="inline-flex items-center rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900">
+              <span className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-semibold ring-1 ring-inset ${CHIP_TONE.amber}`}>
                 Pod warning: {restartSignal.reason || 'Restarts'} · {pluralize(restartSignal.restarts, 'restart')}
               </span>
             </Tooltip>
@@ -237,7 +223,7 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
               strip already covers the multi-image "N versions" case neutrally. */}
           {app.versionSkew && versions.length > 1 && (
             <Tooltip content={<VersionTooltip workloads={workloads} />} delay={150}>
-              <span className="inline-flex items-center rounded-md bg-amber-50 px-2 py-1 font-mono text-xs text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900">{versions.length} versions</span>
+              <span className={`inline-flex items-center rounded-md px-2 py-1 font-mono text-xs ring-1 ring-inset ${CHIP_TONE.amber}`}>{versions.length} versions</span>
             </Tooltip>
           )}
         </div>
@@ -268,7 +254,7 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, onNav
           </ContextFact>
         ) : null}
         <ContextFact label="Ready">
-          <ReadyBar ready={ready} desired={desired} />
+          <ReadyBar ready={ready} desired={desired} width="w-16" />
         </ContextFact>
         {(app.appVersion || versions.length > 0) && (
           <ContextFact label="Version">
@@ -392,7 +378,7 @@ function WorkloadRail({
             onMouseEnter={() => onFocus(key)}
             swatch={
               <span
-                className="h-3 w-3 shrink-0 rounded-[3px] ring-1 ring-inset ring-black/10"
+                className="h-3 w-3 shrink-0 rounded-[3px] ring-1 ring-inset ring-theme-border"
                 style={hue ? { background: hue.swatch } : { background: 'var(--color-theme-border, #94a3b8)' }}
               />
             }
@@ -444,7 +430,7 @@ function RailRow({
   const className = clsx(
     'flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors',
     active
-      ? 'bg-skyhook-500/10 ring-1 ring-inset ring-skyhook-500/30'
+      ? 'selection selection-ring'
       : focused
         ? 'bg-theme-hover'
         : onClick && 'hover:bg-theme-hover',

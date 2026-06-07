@@ -293,20 +293,37 @@ export interface HealthMeta {
   pill: string
 }
 
+// ─── Chip dialect ────────────────────────────────────────────────────────────
+// The Applications surface renders dense metadata as pale pastel chips —
+// deliberately lighter than <Badge>'s severity palette, which is sized for
+// standalone status pills. A local dialect, but defined ONCE here: call sites
+// compose `CHIP` (chrome) + a `CHIP_TONE` (color), never inline the strings.
+// Literal class strings are required for Tailwind's content scanner.
+export const CHIP = 'inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset'
+export const CHIP_TONE = {
+  rose: 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:ring-rose-900',
+  amber: 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900',
+  emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900',
+  blue: 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:ring-blue-900',
+  violet: 'bg-violet-50 text-violet-700 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:ring-violet-900',
+  neutral: 'bg-theme-hover text-theme-text-secondary ring-theme-border',
+  muted: 'bg-theme-hover text-theme-text-tertiary ring-theme-border',
+} as const
+
 export const HEALTH_META: Record<AppHealth, HealthMeta> = {
-  unhealthy: { label: 'Down', bar: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400', pill: 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:ring-rose-900' },
-  degraded: { label: 'Degraded', bar: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400', pill: 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900' },
-  healthy: { label: 'Healthy', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', pill: 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900' },
-  unknown: { label: 'Unknown', bar: 'bg-slate-400', text: 'text-theme-text-tertiary', pill: 'bg-theme-hover text-theme-text-tertiary ring-theme-border' },
+  unhealthy: { label: 'Down', bar: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400', pill: CHIP_TONE.rose },
+  degraded: { label: 'Degraded', bar: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400', pill: CHIP_TONE.amber },
+  healthy: { label: 'Healthy', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', pill: CHIP_TONE.emerald },
+  unknown: { label: 'Unknown', bar: 'bg-slate-400', text: 'text-theme-text-tertiary', pill: CHIP_TONE.muted },
 }
 
 export const CLASS_ORDER: AppWorkloadClass[] = ['service', 'worker', 'job', 'unknown']
 
 export const CLASS_META: Record<AppWorkloadClass, { label: string; pill: string; tooltip: string }> = {
-  service: { label: 'Service', pill: 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:ring-blue-900', tooltip: 'Long-running, request-serving (a Deployment/StatefulSet behind a Service/Ingress/route). Inferred from the workload shape + routing.' },
-  worker: { label: 'Worker', pill: 'bg-violet-50 text-violet-700 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:ring-violet-900', tooltip: 'Long-running background processor (no serving edge). Inferred from the workload shape.' },
-  job: { label: 'Job', pill: 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900', tooltip: 'Finite or scheduled work (Job/CronJob).' },
-  unknown: { label: 'Unknown', pill: 'bg-theme-hover text-theme-text-tertiary ring-theme-border', tooltip: "Couldn't infer a runtime class from the workload." },
+  service: { label: 'Service', pill: CHIP_TONE.blue, tooltip: 'Long-running, request-serving (a Deployment/StatefulSet behind a Service/Ingress/route). Inferred from the workload shape + routing.' },
+  worker: { label: 'Worker', pill: CHIP_TONE.violet, tooltip: 'Long-running background processor (no serving edge). Inferred from the workload shape.' },
+  job: { label: 'Job', pill: CHIP_TONE.amber, tooltip: 'Finite or scheduled work (Job/CronJob).' },
+  unknown: { label: 'Unknown', pill: CHIP_TONE.muted, tooltip: "Couldn't infer a runtime class from the workload." },
 }
 
 export function workloadClassOf(value?: AppWorkloadClass): AppWorkloadClass {

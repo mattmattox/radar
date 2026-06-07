@@ -18,6 +18,8 @@ import {
   CLASS_META,
   CATEGORY_ORDER,
   CATEGORY_META,
+  CHIP,
+  CHIP_TONE,
   categoryOf,
   envRank,
   isSystemNamespace,
@@ -29,6 +31,7 @@ import {
   workloadClassOf,
 } from '../../utils/applications'
 import { midTruncate } from '../../utils/format'
+import { ReadyBar } from './ReadyBar'
 import { ProvenanceTooltip, VersionTooltip } from './AppTooltips'
 
 // ApplicationsList — pure, single-cluster dense list of logical apps. Health
@@ -112,37 +115,16 @@ function ProvenanceBadge({ row }: { row: AppRow }) {
   if (!row.tier) {
     return (
       <Tooltip content="No GitOps, Helm, or app-label grouping signal — shown as the raw workload." delay={150}>
-        <span className="inline-flex items-center rounded-sm bg-theme-hover px-1.5 py-px text-[10px] font-medium text-theme-text-tertiary ring-1 ring-inset ring-theme-border">ungrouped</span>
+        <span className={`${CHIP} ${CHIP_TONE.muted}`}>ungrouped</span>
       </Tooltip>
     )
   }
-  const tone =
-    conf === 'high'
-      ? 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900'
-      : conf === 'medium'
-        ? 'bg-theme-hover text-theme-text-secondary ring-theme-border'
-        : 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900'
+  const tone = conf === 'high' ? CHIP_TONE.emerald : conf === 'medium' ? CHIP_TONE.neutral : CHIP_TONE.amber
   const label = overlayProvenance(row.tier)
   return (
     <Tooltip content={<ProvenanceTooltip tier={row.tier} appKey={row.key} confidence={conf} />} delay={150}>
-      <span className={`inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset ${tone}`}>{label}</span>
+      <span className={`${CHIP} ${tone}`}>{label}</span>
     </Tooltip>
-  )
-}
-
-function ReadyBar({ ready, desired }: { ready: number; desired: number }) {
-  if (desired <= 0) {
-    return <span className="font-mono text-xs tabular-nums text-theme-text-tertiary">—</span>
-  }
-  const pct = Math.min(100, Math.round((ready / desired) * 100))
-  const ok = ready >= desired
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span className="inline-block h-1.5 w-12 rounded-full bg-theme-hover">
-        <span className={`block h-1.5 rounded-full ${ok ? 'bg-emerald-500' : ready === 0 ? 'bg-rose-500' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
-      </span>
-      <span className={`font-mono text-xs tabular-nums ${ok ? 'text-theme-text-secondary' : 'text-rose-600 dark:text-rose-400'}`}>{ready}/{desired || '—'}</span>
-    </span>
   )
 }
 
@@ -150,7 +132,7 @@ function ClassBadge({ workloadClass }: { workloadClass: AppWorkloadClass }) {
   const meta = CLASS_META[workloadClass]
   return (
     <Tooltip content={meta.tooltip} delay={150}>
-      <span className={`inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset ${meta.pill}`}>{meta.label}</span>
+      <span className={`${CHIP} ${meta.pill}`}>{meta.label}</span>
     </Tooltip>
   )
 }
@@ -168,7 +150,7 @@ function Facet<T extends string>({ title, options, selected, onToggle }: { title
             key={o.value}
             type="button"
             onClick={() => onToggle(o.value)}
-            className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs ${on ? 'bg-skyhook-500/10 text-theme-text-primary ring-1 ring-inset ring-skyhook-500/30' : 'text-theme-text-secondary hover:bg-theme-hover'}`}
+            className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs ${on ? 'selection selection-ring text-theme-text-primary' : 'text-theme-text-secondary hover:bg-theme-hover'}`}
           >
             <span className={`truncate ${o.tone ?? ''}`}>{o.label}</span>
             <span className="font-mono tabular-nums text-theme-text-tertiary">{o.count}</span>
@@ -365,8 +347,8 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                           </Tooltip>
                           <span className="truncate font-medium text-theme-text-primary">{e.row.name}</span>
                           <ProvenanceBadge row={e.row} />
-                          {e.category === 'addon' && <span className="rounded-sm bg-theme-hover px-1 text-[10px] font-medium text-theme-text-tertiary ring-1 ring-inset ring-theme-border">add-on</span>}
-                          {e.category === 'mixed' && <span className="rounded-sm bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900">mixed</span>}
+                          {e.category === 'addon' && <span className={`${CHIP} ${CHIP_TONE.muted}`}>add-on</span>}
+                          {e.category === 'mixed' && <span className={`${CHIP} ${CHIP_TONE.amber}`}>mixed</span>}
                         </span>
                       </td>
                       <td className="px-2 py-2.5">
@@ -384,10 +366,10 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                         {e.env ? (
                           e.envInferred ? (
                             <Tooltip content={`Inferred from namespace "${e.namespace || e.env}"`} delay={150}>
-                              <span className="inline-flex items-center rounded-sm bg-theme-hover px-1 py-px text-[10px] font-medium italic text-theme-text-tertiary ring-1 ring-inset ring-dashed ring-theme-border">~{e.env}</span>
+                              <span className={`${CHIP} italic ring-dashed ${CHIP_TONE.muted}`}>~{e.env}</span>
                             </Tooltip>
                           ) : (
-                            <span className="inline-flex items-center rounded-sm bg-theme-hover px-1 py-px text-[10px] font-medium ring-1 ring-inset ring-theme-border">{e.env}</span>
+                            <span className={`${CHIP} ${CHIP_TONE.neutral}`}>{e.env}</span>
                           )
                         ) : (
                           <span className="text-theme-text-tertiary">—</span>
@@ -414,7 +396,7 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                           // Amber only on real skew (same image, different tags) —
                           // multi-image apps naturally run several versions.
                           <Tooltip content={<VersionTooltip workloads={e.row.workloads ?? []} />} delay={150}>
-                            <span className={e.row.versionSkew ? 'rounded-sm bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900' : 'rounded-sm bg-theme-hover px-1 text-[10px] font-medium text-theme-text-secondary ring-1 ring-inset ring-theme-border'}>{e.versions.length} versions</span>
+                            <span className={`${CHIP} ${e.row.versionSkew ? CHIP_TONE.amber : CHIP_TONE.neutral}`}>{e.versions.length} versions</span>
                           </Tooltip>
                         )}
                       </td>

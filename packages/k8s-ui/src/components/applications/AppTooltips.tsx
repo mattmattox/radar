@@ -1,4 +1,4 @@
-import { provenanceSource, type AppWorkload } from '../../utils/applications'
+import { provenanceSource, HEALTH_META, type AppWorkload } from '../../utils/applications'
 
 // Structured tooltip content for the application chips. Both render a short
 // title/phrase plus the technical signal (label key, resource name, selector)
@@ -30,7 +30,7 @@ export function ProvenanceTooltip({
       {/* Only flag the case the user should act on — weak evidence. Medium/high
           confidence is resolver detail, not actionable. */}
       {conf === 'low' && (
-        <div className="text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">low confidence</div>
+        <div className={`text-[10px] uppercase tracking-wide ${HEALTH_META.degraded.text}`}>low confidence</div>
       )}
     </div>
   )
