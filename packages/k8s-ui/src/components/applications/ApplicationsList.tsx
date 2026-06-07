@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { ChevronRight, ChevronUp, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { StatusDot, mapHealthToTone } from '../ui/status-tone'
 import { Tooltip } from '../ui/Tooltip'
 import { EmptyState } from '../ui/EmptyState'
 import { SearchBox } from '../ui/SearchBox'
+import { useRegisterShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { pluralize } from '../../utils/pluralize'
 import {
   type AppRow,
@@ -228,6 +229,37 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
     return filtered
   }, [all, textFilter, fHealth, fEnv, fSource, fClass, fType, sort])
 
+  // Row keyboard navigation — same contract as the Resources table: j/k or
+  // arrows move a highlight, g g / G jump, Enter opens, Escape clears the
+  // highlight. The search box hands off via ArrowDown.
+  const [highlightedIndex, setHighlightedIndex] = useState(-1)
+  const entriesRef = useRef(entries)
+  entriesRef.current = entries
+  useEffect(() => setHighlightedIndex(-1), [entries])
+  const moveHighlight = (delta: number) =>
+    setHighlightedIndex((i) => Math.min(Math.max(i + delta, 0), entriesRef.current.length - 1))
+  useRegisterShortcuts([
+    { id: 'applications-nav-down', keys: 'j', description: 'Next row', category: 'Table', scope: 'applications', handler: () => moveHighlight(1) },
+    { id: 'applications-nav-down-arrow', keys: 'ArrowDown', description: 'Next row', category: 'Table', scope: 'applications', handler: () => moveHighlight(1) },
+    { id: 'applications-nav-up', keys: 'k', description: 'Previous row', category: 'Table', scope: 'applications', handler: () => moveHighlight(-1) },
+    { id: 'applications-nav-up-arrow', keys: 'ArrowUp', description: 'Previous row', category: 'Table', scope: 'applications', handler: () => moveHighlight(-1) },
+    { id: 'applications-nav-top', keys: 'g g', description: 'Jump to first row', category: 'Table', scope: 'applications', handler: () => setHighlightedIndex(entriesRef.current.length > 0 ? 0 : -1) },
+    { id: 'applications-nav-bottom', keys: 'G', description: 'Jump to last row', category: 'Table', scope: 'applications', handler: () => setHighlightedIndex(entriesRef.current.length - 1) },
+    {
+      id: 'applications-open', keys: 'Enter', description: 'Open application', category: 'Table', scope: 'applications',
+      handler: () => {
+        const e = entriesRef.current[highlightedIndex]
+        if (e) onSelect(e.row.key)
+      },
+      enabled: highlightedIndex >= 0,
+    },
+    {
+      id: 'applications-escape', keys: 'Escape', description: 'Clear row highlight', category: 'Table', scope: 'applications',
+      handler: () => setHighlightedIndex(-1),
+      enabled: highlightedIndex >= 0,
+    },
+  ])
+
   const counts = useMemo(() => {
     const health: Record<string, number> = {}
     const env: Record<string, number> = {}
@@ -291,6 +323,9 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
         onEnter={() => {
           if (entries[0]) onSelect(entries[0].row.key)
         }}
+        onArrowDown={() => {
+          if (entries.length > 0) setHighlightedIndex(0)
+        }}
       />
 
       <div className="flex w-full gap-4">
@@ -330,8 +365,16 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {entries.map((e) => (
-                    <tr key={e.row.key} className="group/row cursor-pointer border-b-subtle hover:bg-theme-hover" onClick={() => onSelect(e.row.key)}>
+                  {entries.map((e, idx) => (
+                    <tr
+                      key={e.row.key}
+                      ref={idx === highlightedIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                      className={clsx(
+                        'group/row cursor-pointer border-b-subtle',
+                        idx === highlightedIndex ? 'selection selection-ring' : 'hover:bg-theme-hover',
+                      )}
+                      onClick={() => onSelect(e.row.key)}
+                    >
                       <td className="py-2.5 pl-3 pr-2">
                         <span className="flex items-center gap-2">
                           <Tooltip content={HEALTH_META[e.health].label} delay={150}>

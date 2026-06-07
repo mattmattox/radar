@@ -16,6 +16,7 @@ export function SearchBox({
   placeholder = 'Search... (press /)',
   className,
   onEnter,
+  onArrowDown,
 }: {
   value: string
   onChange: (value: string) => void
@@ -28,6 +29,8 @@ export function SearchBox({
   className?: string
   /** Enter in the box — e.g. open the first filtered row. */
   onEnter?: () => void
+  /** ArrowDown in the box — hand focus off to list keyboard navigation. */
+  onArrowDown?: () => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -56,6 +59,10 @@ export function SearchBox({
             e.preventDefault()
             inputRef.current?.blur()
             onEnter()
+          } else if (e.key === 'ArrowDown' && onArrowDown) {
+            e.preventDefault()
+            inputRef.current?.blur()
+            onArrowDown()
           }
         }}
         className="w-full rounded-lg border border-theme-border-light bg-theme-elevated py-1.5 pl-10 pr-9 text-sm text-theme-text-primary placeholder-theme-text-disabled focus:outline-none focus:ring-2 focus:ring-skyhook-500"
