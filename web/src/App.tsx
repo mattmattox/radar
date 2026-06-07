@@ -43,7 +43,7 @@ import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/con
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import radarLoadingIcon from '@skyhook-io/k8s-ui/assets/radar/radar-icon-loading.svg'
-import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck, GitBranch, Boxes } from 'lucide-react'
+import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck, GitBranch } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
@@ -1192,7 +1192,10 @@ function AppInner() {
             { view: 'timeline' as const, icon: Clock, label: 'Timeline' },
             { view: 'helm' as const, icon: Package, label: 'Helm' },
             { view: 'gitops' as const, icon: GitBranch, label: 'GitOps' },
-            { view: 'applications' as const, icon: Boxes, label: 'Applications' },
+            // Applications is intentionally hidden from the pill bar for now —
+            // the bar is full, and the view's primary home is Cloud's fleet
+            // rail. The view still exists and is reachable via /applications
+            // and the view-switching shortcuts. Same treatment as Cost below.
             { view: 'traffic' as const, icon: Activity, label: 'Traffic' },
             // Cost is intentionally hidden from the pill bar for now — the view still
             // exists and is reachable via /cost, the Home dashboard card, and the
