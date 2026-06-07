@@ -26,7 +26,7 @@ import type { Topology, TopologyNode, TopologyEdge, EdgeType, NodeKind } from '.
 //     HelmRelease / GitRepository) are LEAVES — we show "managed by X" but never
 //     expand down to X's OTHER children (the same over-merge the app resolver's
 //     structuralRoot fix prevents, in graph form).
-//   - Degree guard: any node whose fan-out along an edge type exceeds K is
+//   - Degree guard: any node whose fan-out along an edge type exceeds the guard is
 //     treated as a leaf regardless of class — the graph itself flags "this is
 //     shared infrastructure," no labels needed.
 //
@@ -36,12 +36,6 @@ export interface NeighborhoodSeed {
   kind: string
   namespace: string
   name: string
-}
-
-export interface NeighborhoodOptions {
-  /** Fan-out above which a node along one edge type is treated as shared infra
-   *  (a leaf) even if its edge class would otherwise traverse. */
-  degreeGuard?: number
 }
 
 const IDENTITY_EDGES = new Set<EdgeType>(['manages'])
@@ -56,7 +50,10 @@ const GITOPS_MANAGER_KINDS = new Set<NodeKind>([
   'GitRepository',
 ] as NodeKind[])
 
-const DEFAULT_DEGREE_GUARD = 8
+// Fan-out above which a node along one non-identity edge type is treated as
+// shared infra (a leaf). Un-parameterized until a caller actually wants a
+// different value.
+const DEGREE_GUARD = 8
 
 function nodeNamespace(node: TopologyNode): string {
   const ns = node.data?.namespace
@@ -78,13 +75,7 @@ function matchSeedNode(node: TopologyNode, seeds: NeighborhoodSeed[]): boolean {
 
 /** Filter a topology to the neighborhood of `seeds`. Returns the subgraph; an
  *  empty graph (with a warning) when no seed node matches. */
-export function neighborhoodFor(
-  topology: Topology,
-  seeds: NeighborhoodSeed[],
-  opts: NeighborhoodOptions = {},
-): Topology {
-  const K = opts.degreeGuard ?? DEFAULT_DEGREE_GUARD
-
+export function neighborhoodFor(topology: Topology, seeds: NeighborhoodSeed[]): Topology {
   const nodeById = new Map<string, TopologyNode>()
   for (const n of topology.nodes) nodeById.set(n.id, n)
 
@@ -113,7 +104,7 @@ export function neighborhoodFor(
       m.set(e.type, (m.get(e.type) ?? 0) + 1)
     }
   }
-  const highFanout = (id: string, type: EdgeType): boolean => (fanout.get(id)?.get(type) ?? 0) > K
+  const highFanout = (id: string, type: EdgeType): boolean => (fanout.get(id)?.get(type) ?? 0) > DEGREE_GUARD
 
   const keep = new Set(seedIds)
   // Nodes included for context but never expanded THROUGH.
@@ -141,7 +132,7 @@ export function neighborhoodFor(
       // The graph's own signal: a high-fan-out node reached via a non-identity
       // edge is shared infra → leaf. Identity (ownerRef) fan-out is exempt — a
       // workload legitimately owns many pods, and leafing the ReplicaSet would
-      // stop the walk before its Pods (losing them for any workload > K pods).
+      // stop the walk before its Pods (losing them for any workload above the guard).
       if (!IDENTITY_EDGES.has(e.type) && highFanout(nextId, e.type)) asLeaf = true
 
       if (!keep.has(nextId)) {

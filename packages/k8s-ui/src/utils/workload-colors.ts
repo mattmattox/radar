@@ -1,4 +1,4 @@
-import { seriesColor, seriesFill, SERIES_COLORS } from '../components/charts/colors'
+import { seriesColor, seriesFill } from '../components/charts/colors'
 
 // Per-workload color encoding for the application topology graph. A workload's
 // exclusive satellites (its Service, config, pods) carry its hue; shared and
@@ -16,8 +16,6 @@ export interface WorkloadHue {
   /** Faint fill (~13% alpha) — the node card tint, layered over the surface. */
   wash: string
 }
-
-export const WORKLOAD_HUE_COUNT = SERIES_COLORS.length
 
 /** Sentinel owner for shared / unattached nodes — they get no hue (neutral).
  *  Collision-proof: real workload keys always contain two `/`. */

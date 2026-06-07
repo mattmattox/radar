@@ -259,14 +259,6 @@ export function provenanceSource(tier: number | undefined, key: string): Provena
   return { lead: meta.lead, code: meta.code(appNameFromKey(key)), trail: meta.trail }
 }
 
-/** A user-facing explanation of how an app was grouped, for the provenance
- *  tooltip — plain language naming the source resource, not the raw resolver key. */
-export function provenanceTooltip(tier: number | undefined, key: string, confidence: string | undefined): string {
-  const conf = confidence ?? 'low'
-  const s = provenanceSource(tier, key)
-  const how = s.code ? `${s.lead} ${s.code}${s.trail ? ` ${s.trail}` : ''}` : s.lead
-  return `Grouped by ${how} · ${conf} confidence`
-}
 
 /** The distinct namespaces an app's workloads run in, sorted. Prefers the
  *  server's `namespaces` field, deriving from workloads for older payloads. */
