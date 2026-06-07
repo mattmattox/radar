@@ -41,9 +41,10 @@ var addonChartsExtra = []string{
 	"reloader", "descheduler", "aws-load-balancer-controller", "keda",
 	"kured", "kube-fledged", "kubernetes-dashboard",
 	// platform / storage / networking / serverless
-	"cnpg", "cloudnative-pg", "opentelemetry-collector", "crossplane",
-	"crossplane-rbac-manager", "coredns", "calico", "longhorn", "metallb",
-	"knative-serving", "knative-eventing",
+	"cnpg", "cloudnative-pg", "opentelemetry-collector", "opentelemetry-operator",
+	"crossplane", "crossplane-rbac-manager", "coredns", "calico", "longhorn",
+	"metallb", "knative-serving", "knative-eventing", "knative-operator",
+	"cluster-api",
 }
 
 // knownAddonCharts is the resolved catalog: every canonical chart name
