@@ -104,10 +104,8 @@ export function envRank(env: string | undefined): number | null {
 // Namespace-name token → canonical env. Matched on the whole name first, then
 // on `-`/`_`-delimited segments (so `myapp-prod`, `staging-svc` resolve), which
 // avoids substring false-hits like `prod` inside `product`.
-// Mirrors the server's env vocabulary (applications_family.go) — the family
-// resolver and this client heuristic must recognize the same tokens, or rows
-// the server families (env=autopush) sit "unlabeled" in the Env column.
-// Only the universal trio is hardcoded (mirrors applications_family.go) —
+// Only the universal trio is hardcoded (same trio-only policy as
+// applications_family.go; this synonym list is slightly more permissive) —
 // every other env token is DISCOVERED by the server's family resolver and
 // arrives on the wire as family.env; callers pass those through extraTokens,
 // so an "autopush"/"loadtest" namespace labels once the cluster itself proves
@@ -198,7 +196,6 @@ function parseVersion(v: string | undefined): number[] | null {
   return t.split('.').map((n) => parseInt(n, 10))
 }
 
-/** -1 if a<b, 1 if a>b, 0 if equal, null if either isn't a comparable version. */
 /** Date-stamped CI tags ("main_2026-03-26_05", "billing_main_2026-05-18_00"):
  *  same prefix + extractable date (+ optional sequence) gives a total order.
  *  Different prefixes or no date → not comparable; never guess. */
@@ -212,6 +209,7 @@ function parseDateTag(v: string): { prefix: string; ord: number } | null {
   return { prefix, ord }
 }
 
+/** -1 if a<b, 1 if a>b, 0 if equal, null if either isn't a comparable version. */
 export function compareVersions(a: string | undefined, b: string | undefined): number | null {
   // Date-stamped pipeline tags first — semver parsing would misread them.
   if (a && b) {
@@ -333,9 +331,11 @@ export function namespaceOf(app: AppRow): string {
 // and later the hub.
 // -----------------------------------------------------------------------------
 
-/** Name-affix env tokens, the conservative set the server uses for names
- *  (mirror of applications_family.go's splitNameEnv — namespace-only tokens
- *  like "test"/"demo" are deliberately absent). */
+/** Client-only token set for matching "the same workload" across a family's
+ *  env instances during an env switch. Deliberately broader than what the
+ *  server discovers — a miss only means the switch lands on the instance
+ *  overview. Callers extend it with the family's own (discovered) env tokens
+ *  via the extraTokens parameter. */
 const NAME_ENV_TOKENS = new Set([
   'dev', 'development', 'staging', 'stage', 'stg', 'prod', 'production', 'prd',
   'autopush', 'qa', 'uat', 'preprod', 'preview', 'canary',
@@ -344,12 +344,32 @@ const NAME_ENV_TOKENS = new Set([
 /** Strip a recognized env affix from a workload/app name —
  *  "billing-staging" → "billing", "autopush-koala-backend" → "koala-backend".
  *  Used to match "the same workload" across a family's env instances. */
-export function stripEnvAffix(name: string): string {
+export function stripEnvAffix(name: string, extraTokens?: ReadonlySet<string>): string {
+  const isEnv = (tok: string) => NAME_ENV_TOKENS.has(tok) || (extraTokens?.has(tok) ?? false)
   const i = name.lastIndexOf('-')
-  if (i > 0 && NAME_ENV_TOKENS.has(name.slice(i + 1).toLowerCase())) return name.slice(0, i)
+  if (i > 0 && isEnv(name.slice(i + 1).toLowerCase())) return name.slice(0, i)
   const j = name.indexOf('-')
-  if (j > 0 && NAME_ENV_TOKENS.has(name.slice(0, j).toLowerCase())) return name.slice(j + 1)
+  if (j > 0 && isEnv(name.slice(0, j).toLowerCase())) return name.slice(j + 1)
   return name
+}
+
+/** Find "the same workload" in a sibling env instance: exact kind+name first,
+ *  then the env-affix-stripped stem (billing-staging ↔ billing). extraTokens
+ *  should carry the family's env tokens so discovered envs (loadtest, …)
+ *  strip too. Null = no counterpart — the switch shows the instance overview. */
+export function matchWorkloadAcrossInstances(
+  workloadKey: string,
+  targetWorkloads: Pick<AppWorkload, 'kind' | 'namespace' | 'name'>[] | undefined,
+  extraTokens?: ReadonlySet<string>,
+): Pick<AppWorkload, 'kind' | 'namespace' | 'name'> | null {
+  const [kind, , name] = workloadKey.split('/')
+  if (!kind || !name) return null
+  const ws = targetWorkloads ?? []
+  return (
+    ws.find((w) => w.kind === kind && w.name === name) ??
+    ws.find((w) => w.kind === kind && stripEnvAffix(w.name, extraTokens) === stripEnvAffix(name, extraTokens)) ??
+    null
+  )
 }
 
 /** Ladder order: ranked envs by rank (dev → staging → prod), then
@@ -375,12 +395,139 @@ export function familyLagMessage(cells: { env: string; version?: string }[]): st
     .sort((a, b) => a.rank - b.rank)
   for (let i = 0; i < ranked.length; i++) {
     for (let j = i + 1; j < ranked.length; j++) {
-      if (compareVersions(ranked[i].version, ranked[j].version) === 1) {
+      // Strict rank inequality: two instances of the SAME env are siblings,
+      // not a promotion pair — without this, "prod is behind prod" can fire.
+      if (ranked[i].rank < ranked[j].rank && compareVersions(ranked[i].version, ranked[j].version) === 1) {
         return `${ranked[j].env} is behind ${ranked[i].env}`
       }
     }
   }
   return null
+}
+
+// -----------------------------------------------------------------------------
+// Family folding — turns a filtered+sorted entry list into the rows the list
+// renders: one ladder row per family (emitted at its first member's position,
+// so the active sort still governs placement) with instances nested under it.
+// Pure so the collapse experiment's safety rails (search auto-expansion,
+// orphans rendering flat, per-env aggregation) stay pinned by tests.
+// -----------------------------------------------------------------------------
+
+/** The slice of a list entry the fold needs. */
+export interface FamilyFoldEntry {
+  row: { key: string; name: string; family?: AppFamily; appVersion?: string }
+  health: AppHealth
+  versions: string[]
+  ready: number
+  desired: number
+  kinds: Record<string, number>
+  classComposition: { cls: AppWorkloadClass; count: number }[]
+}
+
+export interface FamilyEnvCell {
+  env: string
+  health: AppHealth
+  version?: string
+  count: number
+  firstKey: string
+}
+
+export interface FoldedFamilyRow<T extends FamilyFoldEntry> {
+  kind: 'family'
+  key: string
+  members: T[]
+  expanded: boolean
+  cells: FamilyEnvCell[]
+  lag: string | null
+  health: AppHealth
+  ready: number
+  desired: number
+  kinds: Record<string, number>
+  classComposition: { cls: AppWorkloadClass; count: number }[]
+  workloadClass: AppWorkloadClass
+  confidence: string
+}
+
+export type FoldedRow<T extends FamilyFoldEntry> = FoldedFamilyRow<T> | { kind: 'instance'; entry: T; child?: boolean }
+
+export function foldFamilies<T extends FamilyFoldEntry>(
+  entries: T[],
+  expandedKeys: ReadonlySet<string>,
+  autoExpand: boolean,
+): FoldedRow<T>[] {
+  const newest = (e: T): string | undefined =>
+    e.versions.reduce<string | undefined>((best, v) => (!best || compareVersions(v, best) === 1 ? v : best), undefined) ?? e.row.appVersion
+  const byFam = new Map<string, T[]>()
+  for (const e of entries) {
+    const f = e.row.family
+    if (f) byFam.set(f.key, [...(byFam.get(f.key) ?? []), e])
+  }
+  const emitted = new Set<string>()
+  const out: FoldedRow<T>[] = []
+  for (const e of entries) {
+    const f = e.row.family
+    // A family needs ≥2 SURVIVING members — filters can orphan one, which
+    // then renders as the plain instance it is.
+    if (!f || (byFam.get(f.key)?.length ?? 0) < 2) {
+      out.push({ kind: 'instance', entry: e })
+      continue
+    }
+    if (emitted.has(f.key)) continue
+    emitted.add(f.key)
+    const members = byFam.get(f.key)!
+
+    const cellMap = new Map<string, FamilyEnvCell>()
+    const kinds: Record<string, number> = {}
+    const compMap = new Map<AppWorkloadClass, number>()
+    let ready = 0
+    let desired = 0
+    let health: AppHealth = 'unknown'
+    for (const m of members) {
+      const env = m.row.family!.env
+      const v = newest(m)
+      const cur = cellMap.get(env)
+      if (!cur) {
+        cellMap.set(env, { env, health: m.health, version: v, count: 1, firstKey: m.row.key })
+      } else {
+        cur.count++
+        if ((HEALTH_RANK[m.health] ?? 0) > (HEALTH_RANK[cur.health] ?? 0)) cur.health = m.health
+        if (v && (!cur.version || compareVersions(v, cur.version) === 1)) cur.version = v
+      }
+      if ((HEALTH_RANK[m.health] ?? 0) > (HEALTH_RANK[health] ?? 0)) health = m.health
+      ready += m.ready
+      desired += m.desired
+      for (const [k, n] of Object.entries(m.kinds)) kinds[k] = (kinds[k] ?? 0) + n
+      for (const c of m.classComposition) compMap.set(c.cls, (compMap.get(c.cls) ?? 0) + c.count)
+    }
+    const cells = orderEnvs([...cellMap.keys()]).map((env) => cellMap.get(env)!)
+    const classComposition = CLASS_ORDER.filter((c) => compMap.has(c)).map((c) => ({ cls: c, count: compMap.get(c)! }))
+    const known = classComposition.map((c) => c.cls).filter((c) => c !== 'unknown')
+    const workloadClass: AppWorkloadClass =
+      known.length === 0 ? 'unknown'
+      : known.includes('service') && !known.includes('job') ? 'service'
+      : known.length === 1 ? known[0]
+      : 'mixed'
+    const expanded = autoExpand || expandedKeys.has(f.key)
+    out.push({
+      kind: 'family',
+      key: f.key,
+      members,
+      expanded,
+      cells,
+      lag: familyLagMessage(cells),
+      health,
+      ready,
+      desired,
+      kinds,
+      classComposition,
+      workloadClass,
+      confidence: members.some((m) => m.row.family!.confidence === 'high') ? 'high' : 'medium',
+    })
+    if (expanded) {
+      for (const m of members) out.push({ kind: 'instance', entry: m, child: true })
+    }
+  }
+  return out
 }
 
 /** Normalize a wire health string to the AppHealth union (the health twin of

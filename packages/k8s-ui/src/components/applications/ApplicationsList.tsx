@@ -35,9 +35,8 @@ import {
   workloadClassOf,
   classSetOf,
   classCompositionOf,
-  orderEnvs,
-  familyLagMessage,
-  compareVersions,
+  foldFamilies,
+  type FoldedRow,
 } from '../../utils/applications'
 import { ReadyBar } from './ReadyBar'
 import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo } from './AppChips'
@@ -250,11 +249,12 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
   }, [all, textFilter, fHealth, fEnv, fSource, fClass, fType, sort])
 
   // ── Env families ──────────────────────────────────────────────────────────
-  // Instances sharing a wire `family` fold into one ladder row. THE COLLAPSE
-  // EXPERIMENT: default collapsed, contingent on (a) text search auto-expanding
-  // into hidden instances, (b) instance rows one chevron away, (c) the family
-  // chip visibly carrying confidence. Flip this constant to default-expand if
-  // heuristic precision disappoints in the field (plan §8.6 amendment).
+  // Instances sharing a wire `family` fold into one ladder row (foldFamilies).
+  // THE COLLAPSE EXPERIMENT: default collapsed, contingent on (a) text search
+  // auto-expanding into hidden instances, (b) instance rows one chevron away,
+  // (c) the family chip visibly carrying confidence. If heuristic precision
+  // disappoints in the field, default-expand by seeding expandedFamilies with
+  // every family key instead of an empty set.
   const FAMILY_AUTO_EXPAND_ON_SEARCH = true
   const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set())
   const toggleFamily = (key: string) =>
@@ -264,99 +264,10 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
       return n
     })
 
-  interface FamilyCell { env: string; health: AppHealth; version?: string; count: number; firstKey: string }
-  interface FamilyRow {
-    kind: 'family'
-    key: string
-    members: AppEntry[]
-    expanded: boolean
-    cells: FamilyCell[]
-    lag: string | null
-    health: AppHealth
-    ready: number
-    desired: number
-    kinds: Record<string, number>
-    classComposition: { cls: AppWorkloadClass; count: number }[]
-    workloadClass: AppWorkloadClass
-    confidence: string
-  }
-  type VisibleRow = FamilyRow | { kind: 'instance'; entry: AppEntry; child?: boolean }
-
-  const visibleRows = useMemo<VisibleRow[]>(() => {
-    const newest = (e: AppEntry): string | undefined =>
-      e.versions.reduce<string | undefined>((best, v) => (!best || compareVersions(v, best) === 1 ? v : best), undefined) ?? e.row.appVersion
-    const byFam = new Map<string, AppEntry[]>()
-    for (const e of entries) {
-      const f = e.row.family
-      if (f) byFam.set(f.key, [...(byFam.get(f.key) ?? []), e])
-    }
-    const searching = FAMILY_AUTO_EXPAND_ON_SEARCH && textFilter.trim() !== ''
-    const emitted = new Set<string>()
-    const out: VisibleRow[] = []
-    for (const e of entries) {
-      const f = e.row.family
-      // A family needs ≥2 SURVIVING members — filters can orphan one, which
-      // then renders as the plain instance it is.
-      if (!f || (byFam.get(f.key)?.length ?? 0) < 2) {
-        out.push({ kind: 'instance', entry: e })
-        continue
-      }
-      if (emitted.has(f.key)) continue
-      emitted.add(f.key)
-      const members = byFam.get(f.key)!
-
-      const cellMap = new Map<string, FamilyCell>()
-      const kinds: Record<string, number> = {}
-      const compMap = new Map<AppWorkloadClass, number>()
-      let ready = 0
-      let desired = 0
-      let health: AppHealth = 'unknown'
-      for (const m of members) {
-        const env = m.row.family!.env
-        const v = newest(m)
-        const cur = cellMap.get(env)
-        if (!cur) {
-          cellMap.set(env, { env, health: m.health, version: v, count: 1, firstKey: m.row.key })
-        } else {
-          cur.count++
-          if ((HEALTH_RANK[m.health] ?? 0) > (HEALTH_RANK[cur.health] ?? 0)) cur.health = m.health
-          if (v && (!cur.version || compareVersions(v, cur.version) === 1)) cur.version = v
-        }
-        if ((HEALTH_RANK[m.health] ?? 0) > (HEALTH_RANK[health] ?? 0)) health = m.health
-        ready += m.ready
-        desired += m.desired
-        for (const [k, n] of Object.entries(m.kinds)) kinds[k] = (kinds[k] ?? 0) + n
-        for (const c of m.classComposition) compMap.set(c.cls, (compMap.get(c.cls) ?? 0) + c.count)
-      }
-      const cells = orderEnvs([...cellMap.keys()]).map((env) => cellMap.get(env)!)
-      const classComposition = CLASS_ORDER.filter((c) => compMap.has(c)).map((c) => ({ cls: c, count: compMap.get(c)! }))
-      const known = classComposition.map((c) => c.cls).filter((c) => c !== 'unknown')
-      const workloadClass: AppWorkloadClass =
-        known.length === 0 ? 'unknown'
-        : known.includes('service') && !known.includes('job') ? 'service'
-        : known.length === 1 ? known[0]
-        : 'mixed'
-      out.push({
-        kind: 'family',
-        key: f.key,
-        members,
-        expanded: searching || expandedFamilies.has(f.key),
-        cells,
-        lag: familyLagMessage(cells),
-        health,
-        ready,
-        desired,
-        kinds,
-        classComposition,
-        workloadClass,
-        confidence: members.some((m) => m.row.family!.confidence === 'high') ? 'high' : 'medium',
-      })
-      if (searching || expandedFamilies.has(f.key)) {
-        for (const m of members) out.push({ kind: 'instance', entry: m, child: true })
-      }
-    }
-    return out
-  }, [entries, expandedFamilies, textFilter])
+  const visibleRows = useMemo<FoldedRow<AppEntry>[]>(
+    () => foldFamilies(entries, expandedFamilies, FAMILY_AUTO_EXPAND_ON_SEARCH && textFilter.trim() !== ''),
+    [entries, expandedFamilies, textFilter],
+  )
 
   // Row keyboard navigation — same contract as the Resources table: j/k or
   // arrows move a highlight, g g / G jump, Enter opens, Escape clears the

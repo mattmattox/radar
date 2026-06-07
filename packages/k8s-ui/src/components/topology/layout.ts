@@ -810,7 +810,7 @@ function computeGridDimensions(cardCount: number, groupKey: string): { width: nu
 }
 
 // Two-phase layout: first layout groups internally, then position groups based on connections
-// Layout is performed in a Web Worker to avoid blocking the main thread
+// Layout runs via the active engine — a Web Worker when available, else inline
 export async function applyHierarchicalLayout(
   elkGraph: ElkGraph,
   topologyNodes: TopologyNode[],
@@ -829,7 +829,7 @@ export async function applyHierarchicalLayout(
   try {
     const padding = hideGroupHeader ? GROUP_PADDING_NO_HEADER : GROUP_PADDING
 
-    // Run layout in worker (off main thread)
+    // Run layout via the active engine
     const workerResult = await runLayout(elkGraph, groupingMode, hideGroupHeader, padding)
 
     if (workerResult.error) {

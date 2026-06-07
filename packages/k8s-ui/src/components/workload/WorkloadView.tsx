@@ -315,7 +315,6 @@ export function WorkloadView({
     // startViewTransitionSafe handles the API-missing fallback AND
     // swallows the InvalidStateError that the API rejects with when
     // a new transition supersedes an in-flight one (rapid clicks).
-    // (SKY-833 bug 49)
     startViewTransitionSafe(() => flushSync(() => setShowYaml(yaml)))
   }, [])
 

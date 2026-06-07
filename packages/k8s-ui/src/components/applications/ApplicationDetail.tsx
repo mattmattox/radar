@@ -13,6 +13,7 @@ import {
   type AppRow,
   type AppWorkload,
   type AppHealth,
+  CHIP,
   CHIP_TONE,
   HEALTH_META,
   healthOf,
@@ -45,7 +46,7 @@ import { ReadyBar } from './ReadyBar'
 
 export type SelectedAppWorkload = NeighborhoodSeed
 
-/** One env instance in the family band — a sibling app row's digest. */
+/** One env instance in the family switcher — a sibling app row's digest. */
 export interface FamilyBandInstance {
   appKey: string
   name: string
@@ -78,14 +79,17 @@ export type ApplicationDetailProps = {
   topologyLoading?: boolean
   /** Open a related (non-workload) resource clicked in the app graph. */
   onNavigateToResource?: (resource: { kind: string; namespace: string; name: string; group?: string }) => void
-  /** Env-family siblings (this instance included, ladder-ordered) — renders
-   *  the family band above the title row. Family is classification, not
-   *  identity: the band is a switcher between REAL instances, never an
-   *  aggregate page. */
+  /** Env-family siblings (this instance included, ladder-ordered) — turns the
+   *  context strip's Environment fact into a switcher. Family is
+   *  classification, not identity: it switches between REAL instances, never
+   *  an aggregate page. */
   familyInstances?: FamilyBandInstance[] | null
   /** Switch to a sibling instance (host swaps ?app= and, when it can match
    *  the current workload in the target, preserves ?workload= + ?tab=). */
   onSwitchInstance?: (appKey: string) => void
+  /** Env tokens the cluster proved (the list derives the same set) — keeps a
+   *  familyless app's Environment fact consistent between list and detail. */
+  discoveredEnvs?: ReadonlySet<string>
 } & SelectionProps
 
 function ContextFact({ label, children }: { label: string; children: ReactNode }) {
@@ -97,7 +101,7 @@ function ContextFact({ label, children }: { label: string; children: ReactNode }
   )
 }
 
-export function ApplicationDetail({ app, onBack, renderWorkload, topology, topologyLoading, onNavigateToResource, familyInstances, onSwitchInstance, selectedWorkloadKey, onSelectWorkload }: ApplicationDetailProps) {
+export function ApplicationDetail({ app, onBack, renderWorkload, topology, topologyLoading, onNavigateToResource, familyInstances, onSwitchInstance, discoveredEnvs, selectedWorkloadKey, onSelectWorkload }: ApplicationDetailProps) {
   // Stable order regardless of API ordering: rail rows and the per-workload
   // color assignment both follow this array, so an order flap between
   // refetches must not reshuffle rows or reassign a workload's hue.
@@ -121,7 +125,7 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
   // apps get the count, never an arbitrary pick.
   const namespace = namespaceOf(app)
   const namespaces = namespacesOf(app)
-  const resolvedEnv = resolveEnv(undefined, namespace)
+  const resolvedEnv = resolveEnv(undefined, namespace, discoveredEnvs)
   const env = app.family?.env ?? resolvedEnv.env
   const inferred = app.family ? app.family.confidence !== 'high' : resolvedEnv.inferred
 
@@ -491,10 +495,11 @@ function restartWarning(workloads: AppWorkload[]): { restarts: number; reason?: 
 }
 
 // EnvSwitcher — the Environment fact's interactive form when one app runs in
-// several environments. ≤4 envs: inline pills (the at-a-glance ladder). More:
-// a picker popover with the full ladder-ordered list — same affordance at 3
-// envs or 100. Always ends with the evidence chip (FamilyTooltip) and, when a
-// ranked lower env outruns a ranked higher one, the amber lag chip.
+// several environments. Up to MAX_INLINE_ENVS: inline pills (the at-a-glance
+// ladder). More: a picker popover with the full ladder-ordered list — same
+// affordance at 5 envs or 100. Always ends with the evidence chip
+// (FamilyTooltip) and, when a ranked lower env outruns a ranked higher one,
+// the amber lag chip.
 const MAX_INLINE_ENVS = 4
 
 function EnvSwitcher({
@@ -538,7 +543,7 @@ function EnvSwitcher({
       </span>
     </Tooltip>
   )
-  const lagChip = lag && <span className={`${CHIP_TONE.amber} inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset`}>{lag}</span>
+  const lagChip = lag && <span className={`${CHIP} ${CHIP_TONE.amber}`}>{lag}</span>
 
   if (instances.length <= MAX_INLINE_ENVS) {
     return (

@@ -142,6 +142,14 @@ function EvidenceLine({ evidence }: { evidence: string }) {
       </>
     )
   }
+  m = evidence.match(/^environment label "(.+)"$/)
+  if (m) {
+    return (
+      <>
+        Environment label <code className="inline-code">{m[1]}</code>
+      </>
+    )
+  }
   m = evidence.match(/^Argo CD source path (\S+) \(env overlay (\S+)\)$/)
   if (m) {
     return (

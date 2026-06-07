@@ -6,7 +6,7 @@ import {
   CenteredEmpty,
   useToast,
   orderEnvs,
-  stripEnvAffix,
+  matchWorkloadAcrossInstances,
   healthOf,
   compareVersions,
   type AppRow,
@@ -117,9 +117,9 @@ function AppDetailRoute({ app, apps, onBack, onOpenResource }: { app: AppRow; ap
     [searchParams, setSearchParams],
   )
 
-  // Env-family band: this instance's siblings (ladder-ordered digests). The
-  // band switches between REAL instances — ?app= changes, deep links stay
-  // instance-keyed.
+  // Env-family switcher data: this instance's siblings (ladder-ordered
+  // digests). It switches between REAL instances — ?app= changes, deep links
+  // stay instance-keyed.
   const { showSuccess } = useToast();
   const familyInstances = useMemo<FamilyBandInstance[] | null>(() => {
     const fam = app.family;
@@ -154,10 +154,10 @@ function AppDetailRoute({ app, apps, onBack, onOpenResource }: { app: AppRow; ap
       const wk = params.get('workload');
       let matched = false;
       if (wk && target) {
-        const [kind, , name] = wk.split('/');
-        const m =
-          (target.workloads ?? []).find((w) => w.kind === kind && w.name === name) ??
-          (target.workloads ?? []).find((w) => w.kind === kind && stripEnvAffix(w.name) === stripEnvAffix(name));
+        // Stem matching strips this family's own env tokens too, so
+        // discovered envs (loadtest, …) carry position like the trio does.
+        const familyEnvs = new Set((familyInstances ?? []).map((i) => i.env));
+        const m = matchWorkloadAcrossInstances(wk, target.workloads, familyEnvs);
         if (m) {
           params.set('workload', `${m.kind}/${m.namespace}/${m.name}`);
           matched = true;
@@ -175,7 +175,12 @@ function AppDetailRoute({ app, apps, onBack, onOpenResource }: { app: AppRow; ap
       }
       setSearchParams(params);
     },
-    [apps, searchParams, setSearchParams, showSuccess],
+    [apps, familyInstances, searchParams, setSearchParams, showSuccess],
+  );
+
+  const discoveredEnvs = useMemo(
+    () => new Set(apps.map((a) => a.family?.env).filter((e): e is string => !!e)),
+    [apps],
   );
 
   return (
@@ -187,6 +192,7 @@ function AppDetailRoute({ app, apps, onBack, onOpenResource }: { app: AppRow; ap
         topologyLoading={topologyLoading}
         familyInstances={familyInstances}
         onSwitchInstance={switchInstance}
+        discoveredEnvs={discoveredEnvs}
         onNavigateToResource={onOpenResource}
         selectedWorkloadKey={selectedWorkloadKey}
         onSelectWorkload={selectWorkload}

@@ -28,6 +28,9 @@ type resourceLister interface {
 // honestly and degrade to flat instances.
 //
 // Evidence tiers:
+//   F0 (high)   — an explicit environment label on the workload or its
+//                 namespace (envLabelKeys) — the user's word beats every
+//                 heuristic.
 //   F1 (high)   — a declared source path with an env segment: the in-cluster
 //                 Argo Application's spec.source(.s).path, e.g.
 //                 billing/deploy/overlays/staging → stem billing/deploy.
@@ -48,7 +51,7 @@ type appFamily struct {
 	Key string `json:"key"`
 	// Env is this instance's canonical env token (dev|staging|prod|autopush|…).
 	Env string `json:"env"`
-	// Confidence: high (declared source path) | medium (name stem + shared repo).
+	// Confidence: high (env label or declared source path) | medium (name stem + shared repo).
 	Confidence string `json:"confidence"`
 	// Evidence is the human-readable why, rendered in the family chip tooltip.
 	Evidence string `json:"evidence"`
@@ -58,7 +61,7 @@ type appFamily struct {
 // promotion DIRECTION (dev < staging < prod) cannot be derived from a
 // snapshot. Everything else — autopush, qa, loadtest, e2e, whatever a team
 // calls its environments — is DISCOVERED per cluster: a token qualifies as an
-// env when the cluster's own structure says so (see qualifyEnvTokens).
+// env when the cluster's own structure says so (resolveAppFamilies, phase 1).
 // Discovered tokens group and label but never rank (wrong lag arrows are
 // trust-fatal; ranking beyond the trio needs explicit config).
 var envCanonical = map[string]string{
@@ -121,16 +124,15 @@ func namespaceEnvLabels(cache namespaceLister) map[string]string {
 // when the CLUSTER's structure says so:
 //   - it's the trio (dev/staging/prod + synonyms) — always an env; or
 //   - a declared GitOps path names it as the overlay segment; or
-//   - it recurs as the differing affix/namespace across ≥2 viable stem-groups
-//     (a stem-group = same stem, ≥2 rows, distinct tokens, shared image
-//     repo); or
-//   - it appears in 1 viable stem-group AND is itself a namespace in the
-//     cluster (env-per-namespace corroboration).
+//   - it recurs across ≥3 viable stem-groups whose members spread over ≥2
+//     namespaces (a stem-group = same stem, ≥2 rows, distinct tokens, shared
+//     image repo); or
+//   - it appears as a NAME AFFIX in a viable stem-group AND is itself a
+//     namespace in the cluster (env-per-namespace corroboration).
 // "billing-staging"/"billing" qualifies staging; OUR "autopush" qualifies on
 // recurrence + namespace existence; a customer's "loadtest"/"e2e" qualifies on
 // THEIR cluster the same way — zero code, zero config. One-off oddities
-// ("myapp-v2", a lone "load-test") never qualify, replacing the old
-// conservative token lists with structure.
+// ("myapp-v2", a lone "load-test") never qualify.
 
 // reading is one way a row could split into (stem, env token).
 type reading struct {
@@ -173,8 +175,9 @@ func canonicalEnvToken(tok string) string {
 }
 
 // pathStemEnv extracts (stem, env) from a declared GitOps source path using
-// STRUCTURE, not vocabulary: the segment after an "overlays"/"envs" directory
-// is the env (kustomize convention); else a trio segment. The stem drops the
+// STRUCTURE, not vocabulary: the segment after an "overlays"/"envs"/
+// "environments" directory is the env (kustomize convention); else a trio
+// segment. The stem drops the
 // env segment and the convention directory.
 func pathStemEnv(path string) (stem, env string) {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
@@ -321,30 +324,51 @@ func resolveAppFamilies(rows []appRow, argoSourcePaths map[string]string, nsEnvL
 			}
 		}
 	}
-	for stem, g := range stems {
+	for _, g := range stems {
 		if len(g.members) < 2 || len(g.tokens) < 2 {
 			continue
 		}
-		// shared-repo check across the group's members
-		var cands []*familyCandidate
-		for row, rd := range g.members {
-			var repos map[string]bool
+		// Viability is judged per repo-corroborated SUBSET: some repo must be
+		// shared by ≥2 members carrying ≥2 distinct tokens. Computing one
+		// intersection across ALL members would let a coincidence-named row
+		// with a foreign repo suppress the whole group — and with it both the
+		// trio tokens and any recurrence counting.
+		repoRows := map[string][]*appRow{}
+		repos := func(row *appRow) map[string]bool {
 			for j := range infos {
 				if infos[j].row == row {
-					repos = infos[j].repos
-					break
+					return infos[j].repos
 				}
 			}
-			cands = append(cands, &familyCandidate{row: row, stem: stem, env: rd.token, repos: repos})
+			return nil
 		}
-		if sharedRepo(cands) == "" {
+		for row := range g.members {
+			for repo := range repos(row) {
+				repoRows[repo] = append(repoRows[repo], row)
+			}
+		}
+		tokens := map[string]bool{}
+		nss := map[string]bool{}
+		for _, members := range repoRows {
+			if len(members) < 2 {
+				continue
+			}
+			sub := map[string]bool{}
+			for _, row := range members {
+				sub[g.members[row].token] = true
+			}
+			if len(sub) < 2 {
+				continue
+			}
+			for _, row := range members {
+				tokens[g.members[row].token] = true
+				nss[rowNs(row)] = true
+			}
+		}
+		if len(tokens) < 2 {
 			continue
 		}
-		nss := map[string]bool{}
-		for row := range g.members {
-			nss[rowNs(row)] = true
-		}
-		for tok := range g.tokens {
+		for tok := range tokens {
 			tokenViableGroups[tok]++
 			if len(nss) >= 2 {
 				tokenNsSpread[tok] = true
@@ -395,7 +419,10 @@ func resolveAppFamilies(rows []appRow, argoSourcePaths map[string]string, nsEnvL
 		}
 		for j := range info.readings {
 			rd := info.readings[j]
-			if !qualified[rd.token] {
+			// The trio is universally recognized — its qualification must not
+			// depend on any stem-group existing (formation still requires the
+			// core to share a repo, so this loosens recognition, not proof).
+			if _, isTrio := trioEnv(rd.token); !isTrio && !qualified[rd.token] {
 				continue
 			}
 			if chosen == nil || better(&rd, chosen) {
@@ -443,22 +470,31 @@ func resolveAppFamilies(rows []appRow, argoSourcePaths map[string]string, nsEnvL
 			continue // ambiguous declarations — refuse to group by name stem
 		}
 		envs := map[string]bool{}
-		core := 0
+		coreCands := make([]*familyCandidate, 0, len(cands))
 		for _, c := range cands {
 			if !c.adopted {
 				envs[c.env] = true
-				core++
+				coreCands = append(coreCands, c)
 			}
 		}
-		if core < 2 || len(envs) < 2 {
+		if len(coreCands) < 2 || len(envs) < 2 {
 			continue // the CORE must prove the family; adoption never bootstraps
 		}
-		shared := sharedRepo(cands)
+		// Proof is computed over the core ONLY: an adoptee can join a proven
+		// family or stay out of it, but a coincidence-named row in some
+		// single-token namespace must never veto the core's corroboration.
+		shared := sharedRepo(coreCands)
 		anyDeclared := len(declared) == 1
 		if shared == "" && !anyDeclared {
 			continue // uncorroborated name coincidence — refuse
 		}
+		members := coreCands
 		for _, c := range cands {
+			if c.adopted && shared != "" && c.repos[shared] {
+				members = append(members, c)
+			}
+		}
+		for _, c := range members {
 			conf, why := "medium", ""
 			switch {
 			case c.labelEnv != "":

@@ -1,9 +1,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // famRow builds an app row the family resolver sees. key "" derives a
@@ -308,5 +312,114 @@ func TestEnvLabelOf(t *testing.T) {
 	}
 	if v := envLabelOf(map[string]string{"app.kubernetes.io/name": "x"}); v != "" {
 		t.Fatalf("no env keys = %q, want empty", v)
+	}
+}
+
+// ADOPTION (happy path): a single-token-namespace sibling that shares the
+// core's repo joins a family the core has already proven.
+func TestFamilies_AdoptionJoinsProvenCore(t *testing.T) {
+	rows := []appRow{
+		famRow("project-infra", "dev", 7, "dev/app/project-infra", "repo.dev/koala/pi:x"),
+		famRow("project-infra", "staging", 7, "staging/app/project-infra", "repo.dev/koala/pi:y"),
+		famRow("project-infra", "sandboxx", 7, "sandboxx/app/project-infra", "repo.dev/koala/pi:z"),
+	}
+	resolveAppFamilies(rows, nil, nil)
+	f := famOf(t, rows, "project-infra")
+	got := rows[2].Family
+	if f == nil || got == nil || got.Key != "project-infra" || got.Env != "sandboxx" {
+		t.Fatalf("adoptee = %+v, want key=project-infra env=sandboxx", got)
+	}
+}
+
+// Adoption never bootstraps: one qualified core member + adoptees must NOT
+// form a family (the core alone has a single env).
+func TestFamilies_AdoptionNeverBootstraps(t *testing.T) {
+	rows := []appRow{
+		famRow("api", "dev", 0, "dev/app/api", "repo.dev/koala/api:1"),
+		famRow("api", "teamspace", 0, "teamspace/app/api", "repo.dev/koala/api:2"),
+	}
+	resolveAppFamilies(rows, nil, nil)
+	if rows[0].Family != nil || rows[1].Family != nil {
+		t.Fatalf("adoption bootstrapped a family: %+v / %+v", rows[0].Family, rows[1].Family)
+	}
+}
+
+// A coincidence-named row with a DIFFERENT repo in some single-token
+// namespace must neither join NOR veto the proven core (the poisoning case:
+// repo corroboration is computed over the core only).
+func TestFamilies_AdopteeNeverVetoesCore(t *testing.T) {
+	rows := []appRow{
+		famRow("billing", "dev", 0, "dev/app/billing", "repo.dev/koala/billing:1"),
+		famRow("billing", "staging", 0, "staging/app/billing", "repo.dev/koala/billing:2"),
+		famRow("billing", "team", 0, "team/app/billing", "repo.dev/other/thing:1"),
+	}
+	resolveAppFamilies(rows, nil, nil)
+	dev, st, stranger := rows[0].Family, rows[1].Family, rows[2].Family
+	if dev == nil || st == nil || dev.Key != "billing" {
+		t.Fatalf("coincidence row vetoed the proven core: %+v / %+v", dev, st)
+	}
+	if stranger != nil {
+		t.Fatalf("different-repo stranger joined the family: %+v", stranger)
+	}
+}
+
+func TestPathStemEnv(t *testing.T) {
+	cases := []struct{ path, stem, env string }{
+		{"billing/deploy/overlays/staging", "billing/deploy", "staging"},
+		{"deploy/environments/loadtest/api", "deploy/api", "loadtest"}, // declared dir names ANY env
+		{"deploy/prod/billing", "deploy/billing", "prod"},              // trio segment without a convention dir
+		{"apps/overlays", "", ""},                                      // trailing convention dir, no env
+		{"charts/api", "", ""},                                         // no env signal at all
+	}
+	for _, c := range cases {
+		stem, env := pathStemEnv(c.path)
+		if stem != c.stem || env != c.env {
+			t.Errorf("pathStemEnv(%q) = (%q, %q), want (%q, %q)", c.path, stem, env, c.stem, c.env)
+		}
+	}
+}
+
+type stubLister struct{ items []*unstructured.Unstructured }
+
+func (s *stubLister) ListDynamicWithGroup(_ context.Context, kind, _, group string) ([]*unstructured.Unstructured, error) {
+	if kind != "Application" || group != "argoproj.io" {
+		return nil, fmt.Errorf("unexpected list %s/%s", group, kind)
+	}
+	return s.items, nil
+}
+
+func argoApp(name string, spec map[string]any) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": name},
+		"spec":     spec,
+	}}
+}
+
+// argoSourcePaths is the F1 feed — a silent shape mismatch here degrades
+// every declared family with no error anywhere, which is exactly why the
+// lister is an interface.
+func TestArgoSourcePaths(t *testing.T) {
+	lister := &stubLister{items: []*unstructured.Unstructured{
+		argoApp("billing-staging", map[string]any{"source": map[string]any{"path": "billing/deploy/overlays/staging"}}),
+		// multi-source: the first env-bearing path wins, env-less ones skipped
+		argoApp("multi", map[string]any{"sources": []any{
+			map[string]any{"path": "charts/shared"},
+			map[string]any{"path": "apps/overlays/dev"},
+		}}),
+		argoApp("no-env-path", map[string]any{"source": map[string]any{"path": "charts/api"}}),
+		argoApp("malformed", map[string]any{"source": "not-a-map"}),
+	}}
+	got := argoSourcePaths(context.Background(), lister)
+	want := map[string]string{
+		"billing-staging": "billing/deploy/overlays/staging",
+		"multi":           "apps/overlays/dev",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("argoSourcePaths = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("argoSourcePaths[%s] = %q, want %q", k, got[k], v)
+		}
 	}
 }
