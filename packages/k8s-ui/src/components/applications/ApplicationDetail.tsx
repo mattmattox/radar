@@ -1,5 +1,5 @@
-import { useMemo, useState, useCallback, type ReactNode } from 'react'
-import { ArrowLeft, Boxes, Network, Layers } from 'lucide-react'
+import { useMemo, useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
+import { ArrowLeft, Boxes, Network, Layers, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { Topology, TopologyNode } from '../../types'
 import { StatusDot, mapHealthToTone } from '../ui/status-tone'
@@ -196,46 +196,8 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
     [workloads, onNavigateToResource, setSelected],
   )
 
-  const familyLag = familyInstances && familyInstances.length > 1 ? familyLagMessage(familyInstances) : null
-
   return (
     <div className="flex w-full flex-col">
-      {/* Family band — env siblings of this instance. A switcher between real
-          instances (URL stays the instance key), never an aggregate view. */}
-      {familyInstances && familyInstances.length > 1 && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-theme-border bg-theme-base px-4 py-2 sm:px-6">
-          <Tooltip
-            content={<FamilyTooltip familyKey={app.family?.key ?? ''} members={familyInstances.map((i) => ({ name: i.name, env: i.env, confidence: i.confidence, evidence: i.evidence }))} />}
-            delay={150}
-          >
-            <span className={`${CHIP_TONE.neutral} inline-flex items-center gap-1 rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset`}>
-              <Layers className="h-3 w-3" aria-hidden />{app.family?.key}
-            </span>
-          </Tooltip>
-          <span className="flex flex-wrap items-center gap-1">
-            {familyInstances.map((inst) => {
-              const active = inst.appKey === app.key
-              return (
-                <button
-                  key={inst.appKey}
-                  type="button"
-                  disabled={active}
-                  onClick={() => !active && onSwitchInstance?.(inst.appKey)}
-                  className={clsx(
-                    'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs ring-1 ring-inset transition-colors',
-                    active ? 'selection selection-ring font-medium' : 'bg-theme-surface ring-theme-border hover:bg-theme-hover',
-                  )}
-                >
-                  <StatusDot tone={mapHealthToTone(inst.health)} />
-                  {inst.env}
-                  {inst.version && <span className="font-mono text-[10px] text-theme-text-tertiary">{midTruncate(inst.version, 20)}</span>}
-                </button>
-              )
-            })}
-          </span>
-          {familyLag && <span className={`${CHIP_TONE.amber} ml-auto inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset`}>{familyLag}</span>}
-        </div>
-      )}
       {/* Title row */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-theme-border px-4 py-3 sm:px-6">
         <button type="button" onClick={onBack} className="flex items-center gap-1.5 text-xs text-theme-text-tertiary hover:text-theme-text-primary">
@@ -273,7 +235,15 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
 
       {/* Context strip */}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-theme-border px-4 py-2 sm:px-6">
-        {env && (
+        {familyInstances && familyInstances.length > 1 ? (
+          // The Environment fact IS the switcher when this app runs in several
+          // envs — prominent, in existing header space, no extra row. Inline
+          // pills for a handful; a picker beyond that (scales to ~any count).
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">Environment</span>
+            <EnvSwitcher familyKey={app.family?.key ?? ''} instances={familyInstances} activeKey={app.key} onSwitch={onSwitchInstance} />
+          </div>
+        ) : env ? (
           <ContextFact label="Environment">
             {inferred ? (
               <Tooltip content={`Inferred from namespace "${namespace || env}".`} delay={150}>
@@ -283,7 +253,7 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
               env
             )}
           </ContextFact>
-        )}
+        ) : null}
         {namespace ? (
           <ContextFact label="Namespace">
             <span className="font-mono">{namespace}</span>
@@ -516,4 +486,126 @@ function restartWarning(workloads: AppWorkload[]): { restarts: number; reason?: 
     }
   }
   return worst
+}
+
+// EnvSwitcher — the Environment fact's interactive form when one app runs in
+// several environments. ≤4 envs: inline pills (the at-a-glance ladder). More:
+// a picker popover with the full ladder-ordered list — same affordance at 3
+// envs or 100. Always ends with the evidence chip (FamilyTooltip) and, when a
+// ranked lower env outruns a ranked higher one, the amber lag chip.
+const MAX_INLINE_ENVS = 4
+
+function EnvSwitcher({
+  familyKey,
+  instances,
+  activeKey,
+  onSwitch,
+}: {
+  familyKey: string
+  instances: FamilyBandInstance[]
+  activeKey: string
+  onSwitch?: (appKey: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const lag = familyLagMessage(instances)
+  const active = instances.find((i) => i.appKey === activeKey)
+  const evidenceChip = (
+    <Tooltip
+      content={<FamilyTooltip familyKey={familyKey} members={instances.map((i) => ({ name: i.name, env: i.env, confidence: i.confidence, evidence: i.evidence }))} />}
+      delay={150}
+    >
+      <span className="inline-flex cursor-default items-center rounded-sm bg-theme-hover px-1 py-px ring-1 ring-inset ring-theme-border">
+        <Layers className="h-3 w-3 text-theme-text-tertiary" aria-hidden />
+      </span>
+    </Tooltip>
+  )
+  const lagChip = lag && <span className={`${CHIP_TONE.amber} inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset`}>{lag}</span>
+
+  if (instances.length <= MAX_INLINE_ENVS) {
+    return (
+      <span className="flex flex-wrap items-center gap-1">
+        {instances.map((inst) => {
+          const isActive = inst.appKey === activeKey
+          return (
+            <Tooltip key={inst.appKey} content={`${inst.name}${inst.version ? ` · ${inst.version}` : ''}`} delay={150}>
+              <button
+                type="button"
+                disabled={isActive}
+                onClick={() => !isActive && onSwitch?.(inst.appKey)}
+                className={clsx(
+                  'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs ring-1 ring-inset transition-colors',
+                  isActive ? 'selection selection-ring font-medium' : 'bg-theme-surface ring-theme-border hover:bg-theme-hover',
+                )}
+              >
+                <StatusDot tone={mapHealthToTone(inst.health)} />
+                {inst.env}
+              </button>
+            </Tooltip>
+          )
+        })}
+        {evidenceChip}
+        {lagChip}
+      </span>
+    )
+  }
+
+  return (
+    <div ref={rootRef} className="relative flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1.5 rounded-md bg-theme-surface px-2 py-0.5 text-xs ring-1 ring-inset ring-theme-border hover:bg-theme-hover"
+      >
+        {active && <StatusDot tone={mapHealthToTone(active.health)} />}
+        <span className="font-medium">{active?.env ?? '—'}</span>
+        <span className="text-theme-text-tertiary">· {instances.length} environments</span>
+        <ChevronDown className={clsx('h-3 w-3 text-theme-text-tertiary transition-transform', open && 'rotate-180')} aria-hidden />
+      </button>
+      {evidenceChip}
+      {lagChip}
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 max-h-80 w-80 overflow-y-auto rounded-md border border-theme-border bg-theme-surface p-1 shadow-theme-md">
+          {instances.map((inst) => {
+            const isActive = inst.appKey === activeKey
+            return (
+              <button
+                key={inst.appKey}
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  if (!isActive) onSwitch?.(inst.appKey)
+                }}
+                className={clsx(
+                  'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs',
+                  isActive ? 'selection selection-ring' : 'hover:bg-theme-hover',
+                )}
+              >
+                <StatusDot tone={mapHealthToTone(inst.health)} />
+                <span className="w-20 shrink-0 font-medium text-theme-text-primary">{inst.env}</span>
+                <span className="min-w-0 flex-1 truncate text-theme-text-secondary">{inst.name}</span>
+                {inst.version && <span className="font-mono text-[10px] text-theme-text-tertiary">{midTruncate(inst.version, 18)}</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }

@@ -118,10 +118,10 @@ export function FamilyTooltip({
   return (
     <div className="max-w-sm space-y-1.5">
       <div className="text-xs font-semibold text-theme-text-primary">
-        Env family <code className="inline-code">{familyKey}</code>
+        <code className="inline-code">{familyKey}</code> across environments
       </div>
       <div className="text-[11px] leading-snug text-theme-text-secondary">
-        Grouped for display — each instance keeps its own identity, health, and URL.
+        One app, {members.length} environments — grouped by evidence; each keeps its own identity, health, and URL.
       </div>
       <ul className="space-y-0.5">
         {members.map((m, i) => (

@@ -514,7 +514,9 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                       <td className="px-2 py-2.5">
                         {/* The ladder: env-ordered cells; click drills into that env's instance. */}
                         <span className="flex flex-wrap items-center gap-1">
-                          {r.cells.map((c) => (
+                          {/* Ladder cells scale-capped: a handful inline, the
+                              rest behind "+N" (expand shows every instance). */}
+                          {r.cells.slice(0, 4).map((c) => (
                             <Tooltip key={c.env} content={`${c.env}${c.version ? ` · ${c.version}` : ''}${c.count > 1 ? ` · ${c.count} instances` : ''} — open`} delay={150}>
                               <button
                                 type="button"
@@ -525,6 +527,17 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                               </button>
                             </Tooltip>
                           ))}
+                          {r.cells.length > 4 && (
+                            <Tooltip content={`${r.cells.length - 4} more environments — expand to see all instances`} delay={150}>
+                              <button
+                                type="button"
+                                onClick={(ev) => { ev.stopPropagation(); toggleFamily(r.key) }}
+                                className={`${CHIP} ${CHIP_TONE.muted} hover:bg-theme-hover`}
+                              >
+                                +{r.cells.length - 4}
+                              </button>
+                            </Tooltip>
+                          )}
                         </span>
                       </td>
                       <td className="px-2 py-2.5"><ClassBadge workloadClass={r.workloadClass} composition={r.classComposition} /></td>
