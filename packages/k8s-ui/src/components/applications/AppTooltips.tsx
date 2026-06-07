@@ -1,4 +1,5 @@
 import { provenanceSource, HEALTH_META, type AppWorkload } from '../../utils/applications'
+import { midTruncate } from '../../utils/format'
 
 // Structured tooltip content for the application chips. Both render a short
 // title/phrase plus the technical signal (label key, resource name, selector)
@@ -104,42 +105,50 @@ export function CategoryTooltip({
   )
 }
 
-// FamilyTooltip — why these instances are grouped: per-env members plus the
-// distinct evidence lines (declared path and/or stem+repo), confidence-aware.
+// FamilyTooltip — why these instances are grouped. One line per distinct
+// evidence in the ProvenanceTooltip idiom (signals as inline-code, long repo
+// refs mid-truncated), plus a small flag when the grouping is heuristic-only.
+// No member list — the env pills next to this chip already show the instances.
 export function FamilyTooltip({
-  familyKey,
   members,
 }: {
-  familyKey: string
+  familyKey?: string
   members: { name: string; env: string; confidence: string; evidence: string }[]
 }) {
   const evidences = Array.from(new Set(members.map((m) => m.evidence).filter(Boolean)))
   const heuristicOnly = members.every((m) => m.confidence !== 'high')
   return (
-    <div className="max-w-sm space-y-1.5">
-      <div className="text-xs font-semibold text-theme-text-primary">
-        <code className="inline-code">{familyKey}</code> across environments
-      </div>
-      <div className="text-[11px] leading-snug text-theme-text-secondary">
-        One app, {members.length} environments — grouped by evidence; each keeps its own identity, health, and URL.
-      </div>
-      <ul className="space-y-0.5">
-        {members.map((m, i) => (
-          <li key={i} className="flex items-baseline justify-between gap-3">
-            <span className="truncate text-[11px] text-theme-text-secondary">{m.name}</span>
-            <code className="inline-code text-[10px]">{m.env}</code>
-          </li>
-        ))}
-      </ul>
-      <div className="space-y-0.5 border-t border-theme-border pt-1.5">
-        <div className="text-[10px] font-medium uppercase tracking-wide text-theme-text-tertiary">Evidence</div>
-        {evidences.map((e, i) => (
-          <div key={i} className="text-[11px] leading-snug text-theme-text-secondary">{e}</div>
-        ))}
-        {heuristicOnly && (
-          <div className={`text-[10px] uppercase tracking-wide ${HEALTH_META.degraded.text}`}>heuristic grouping</div>
-        )}
-      </div>
+    <div className="max-w-xs space-y-1">
+      {evidences.map((e, i) => (
+        <div key={i} className="text-xs text-theme-text-primary">
+          <EvidenceLine evidence={e} />
+        </div>
+      ))}
+      {heuristicOnly && (
+        <div className={`text-[10px] uppercase tracking-wide ${HEALTH_META.degraded.text}`}>heuristic · medium confidence</div>
+      )}
     </div>
   )
+}
+
+// Renders the resolver's evidence string with its signals as inline-code.
+// Known shapes from applications_family.go; anything else passes through raw.
+function EvidenceLine({ evidence }: { evidence: string }) {
+  let m = evidence.match(/^name stem "(.+)" \+ shared image repo (\S+)$/)
+  if (m) {
+    return (
+      <>
+        Same name <code className="inline-code">{m[1]}</code> + image <code className="inline-code">{midTruncate(m[2], 32)}</code>
+      </>
+    )
+  }
+  m = evidence.match(/^Argo CD source path (\S+) \(env overlay (\S+)\)$/)
+  if (m) {
+    return (
+      <>
+        Argo CD source path <code className="inline-code">{m[1]}</code>
+      </>
+    )
+  }
+  return <>{evidence}</>
 }
