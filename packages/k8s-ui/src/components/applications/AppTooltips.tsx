@@ -103,3 +103,43 @@ export function CategoryTooltip({
     </div>
   )
 }
+
+// FamilyTooltip — why these instances are grouped: per-env members plus the
+// distinct evidence lines (declared path and/or stem+repo), confidence-aware.
+export function FamilyTooltip({
+  familyKey,
+  members,
+}: {
+  familyKey: string
+  members: { name: string; env: string; confidence: string; evidence: string }[]
+}) {
+  const evidences = Array.from(new Set(members.map((m) => m.evidence).filter(Boolean)))
+  const heuristicOnly = members.every((m) => m.confidence !== 'high')
+  return (
+    <div className="max-w-sm space-y-1.5">
+      <div className="text-xs font-semibold text-theme-text-primary">
+        Env family <code className="inline-code">{familyKey}</code>
+      </div>
+      <div className="text-[11px] leading-snug text-theme-text-secondary">
+        Grouped for display — each instance keeps its own identity, health, and URL.
+      </div>
+      <ul className="space-y-0.5">
+        {members.map((m, i) => (
+          <li key={i} className="flex items-baseline justify-between gap-3">
+            <span className="truncate text-[11px] text-theme-text-secondary">{m.name}</span>
+            <code className="inline-code text-[10px]">{m.env}</code>
+          </li>
+        ))}
+      </ul>
+      <div className="space-y-0.5 border-t border-theme-border pt-1.5">
+        <div className="text-[10px] font-medium uppercase tracking-wide text-theme-text-tertiary">Evidence</div>
+        {evidences.map((e, i) => (
+          <div key={i} className="text-[11px] leading-snug text-theme-text-secondary">{e}</div>
+        ))}
+        {heuristicOnly && (
+          <div className={`text-[10px] uppercase tracking-wide ${HEALTH_META.degraded.text}`}>heuristic grouping</div>
+        )}
+      </div>
+    </div>
+  )
+}

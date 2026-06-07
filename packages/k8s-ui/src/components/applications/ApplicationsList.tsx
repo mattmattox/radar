@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
-import { ChevronRight, ChevronUp, ChevronDown } from 'lucide-react'
+import { ChevronRight, ChevronUp, ChevronDown, Layers } from 'lucide-react'
 import { clsx } from 'clsx'
 import { StatusDot, mapHealthToTone } from '../ui/status-tone'
 import { Tooltip } from '../ui/Tooltip'
@@ -35,9 +35,13 @@ import {
   workloadClassOf,
   classSetOf,
   classCompositionOf,
+  orderEnvs,
+  familyLagMessage,
+  compareVersions,
 } from '../../utils/applications'
 import { ReadyBar } from './ReadyBar'
 import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo } from './AppChips'
+import { FamilyTooltip } from './AppTooltips'
 
 // ApplicationsList — pure, single-cluster dense list of logical apps. Health
 // dot + name + provenance/add-on/mixed chips; a Namespace column; an env pill
@@ -229,27 +233,139 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
     return filtered
   }, [all, textFilter, fHealth, fEnv, fSource, fClass, fType, sort])
 
+  // ── Env families ──────────────────────────────────────────────────────────
+  // Instances sharing a wire `family` fold into one ladder row. THE COLLAPSE
+  // EXPERIMENT: default collapsed, contingent on (a) text search auto-expanding
+  // into hidden instances, (b) instance rows one chevron away, (c) the family
+  // chip visibly carrying confidence. Flip this constant to default-expand if
+  // heuristic precision disappoints in the field (plan §8.6 amendment).
+  const FAMILY_AUTO_EXPAND_ON_SEARCH = true
+  const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set())
+  const toggleFamily = (key: string) =>
+    setExpandedFamilies((s) => {
+      const n = new Set(s)
+      n.has(key) ? n.delete(key) : n.add(key)
+      return n
+    })
+
+  interface FamilyCell { env: string; health: AppHealth; version?: string; count: number; firstKey: string }
+  interface FamilyRow {
+    kind: 'family'
+    key: string
+    members: AppEntry[]
+    expanded: boolean
+    cells: FamilyCell[]
+    lag: string | null
+    health: AppHealth
+    ready: number
+    desired: number
+    kinds: Record<string, number>
+    classComposition: { cls: AppWorkloadClass; count: number }[]
+    workloadClass: AppWorkloadClass
+    confidence: string
+  }
+  type VisibleRow = FamilyRow | { kind: 'instance'; entry: AppEntry; child?: boolean }
+
+  const visibleRows = useMemo<VisibleRow[]>(() => {
+    const newest = (e: AppEntry): string | undefined =>
+      e.versions.reduce<string | undefined>((best, v) => (!best || compareVersions(v, best) === 1 ? v : best), undefined) ?? e.row.appVersion
+    const byFam = new Map<string, AppEntry[]>()
+    for (const e of entries) {
+      const f = e.row.family
+      if (f) byFam.set(f.key, [...(byFam.get(f.key) ?? []), e])
+    }
+    const searching = FAMILY_AUTO_EXPAND_ON_SEARCH && textFilter.trim() !== ''
+    const emitted = new Set<string>()
+    const out: VisibleRow[] = []
+    for (const e of entries) {
+      const f = e.row.family
+      // A family needs ≥2 SURVIVING members — filters can orphan one, which
+      // then renders as the plain instance it is.
+      if (!f || (byFam.get(f.key)?.length ?? 0) < 2) {
+        out.push({ kind: 'instance', entry: e })
+        continue
+      }
+      if (emitted.has(f.key)) continue
+      emitted.add(f.key)
+      const members = byFam.get(f.key)!
+
+      const cellMap = new Map<string, FamilyCell>()
+      const kinds: Record<string, number> = {}
+      const compMap = new Map<AppWorkloadClass, number>()
+      let ready = 0
+      let desired = 0
+      let health: AppHealth = 'unknown'
+      for (const m of members) {
+        const env = m.row.family!.env
+        const v = newest(m)
+        const cur = cellMap.get(env)
+        if (!cur) {
+          cellMap.set(env, { env, health: m.health, version: v, count: 1, firstKey: m.row.key })
+        } else {
+          cur.count++
+          if ((HEALTH_RANK[m.health] ?? 0) > (HEALTH_RANK[cur.health] ?? 0)) cur.health = m.health
+          if (v && (!cur.version || compareVersions(v, cur.version) === 1)) cur.version = v
+        }
+        if ((HEALTH_RANK[m.health] ?? 0) > (HEALTH_RANK[health] ?? 0)) health = m.health
+        ready += m.ready
+        desired += m.desired
+        for (const [k, n] of Object.entries(m.kinds)) kinds[k] = (kinds[k] ?? 0) + n
+        for (const c of m.classComposition) compMap.set(c.cls, (compMap.get(c.cls) ?? 0) + c.count)
+      }
+      const cells = orderEnvs([...cellMap.keys()]).map((env) => cellMap.get(env)!)
+      const classComposition = CLASS_ORDER.filter((c) => compMap.has(c)).map((c) => ({ cls: c, count: compMap.get(c)! }))
+      const known = classComposition.map((c) => c.cls).filter((c) => c !== 'unknown')
+      const workloadClass: AppWorkloadClass =
+        known.length === 0 ? 'unknown'
+        : known.includes('service') && !known.includes('job') ? 'service'
+        : known.length === 1 ? known[0]
+        : 'mixed'
+      out.push({
+        kind: 'family',
+        key: f.key,
+        members,
+        expanded: searching || expandedFamilies.has(f.key),
+        cells,
+        lag: familyLagMessage(cells),
+        health,
+        ready,
+        desired,
+        kinds,
+        classComposition,
+        workloadClass,
+        confidence: members.some((m) => m.row.family!.confidence === 'high') ? 'high' : 'medium',
+      })
+      if (searching || expandedFamilies.has(f.key)) {
+        for (const m of members) out.push({ kind: 'instance', entry: m, child: true })
+      }
+    }
+    return out
+  }, [entries, expandedFamilies, textFilter])
+
   // Row keyboard navigation — same contract as the Resources table: j/k or
   // arrows move a highlight, g g / G jump, Enter opens, Escape clears the
   // highlight. The search box hands off via ArrowDown.
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
-  const entriesRef = useRef(entries)
-  entriesRef.current = entries
+  const rowsRef = useRef(visibleRows)
+  rowsRef.current = visibleRows
   useEffect(() => setHighlightedIndex(-1), [entries])
   const moveHighlight = (delta: number) =>
-    setHighlightedIndex((i) => Math.min(Math.max(i + delta, 0), entriesRef.current.length - 1))
+    setHighlightedIndex((i) => Math.min(Math.max(i + delta, 0), rowsRef.current.length - 1))
   useRegisterShortcuts([
     { id: 'applications-nav-down', keys: 'j', description: 'Next row', category: 'Table', scope: 'applications', handler: () => moveHighlight(1) },
     { id: 'applications-nav-down-arrow', keys: 'ArrowDown', description: 'Next row', category: 'Table', scope: 'applications', handler: () => moveHighlight(1) },
     { id: 'applications-nav-up', keys: 'k', description: 'Previous row', category: 'Table', scope: 'applications', handler: () => moveHighlight(-1) },
     { id: 'applications-nav-up-arrow', keys: 'ArrowUp', description: 'Previous row', category: 'Table', scope: 'applications', handler: () => moveHighlight(-1) },
-    { id: 'applications-nav-top', keys: 'g g', description: 'Jump to first row', category: 'Table', scope: 'applications', handler: () => setHighlightedIndex(entriesRef.current.length > 0 ? 0 : -1) },
-    { id: 'applications-nav-bottom', keys: 'G', description: 'Jump to last row', category: 'Table', scope: 'applications', handler: () => setHighlightedIndex(entriesRef.current.length - 1) },
+    { id: 'applications-nav-top', keys: 'g g', description: 'Jump to first row', category: 'Table', scope: 'applications', handler: () => setHighlightedIndex(rowsRef.current.length > 0 ? 0 : -1) },
+    { id: 'applications-nav-bottom', keys: 'G', description: 'Jump to last row', category: 'Table', scope: 'applications', handler: () => setHighlightedIndex(rowsRef.current.length - 1) },
     {
       id: 'applications-open', keys: 'Enter', description: 'Open application', category: 'Table', scope: 'applications',
       handler: () => {
-        const e = entriesRef.current[highlightedIndex]
-        if (e) onSelect(e.row.key)
+        const r = rowsRef.current[highlightedIndex]
+        if (!r) return
+        // Enter on a family toggles it; on an instance, opens it.
+        if (r.kind === 'family') toggleFamily(r.key)
+        else onSelect(r.entry.row.key)
       },
       enabled: highlightedIndex >= 0,
     },
@@ -365,7 +481,69 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {entries.map((e, idx) => (
+                  {visibleRows.map((r, idx) => r.kind === 'family' ? (
+                    <tr
+                      key={`family:${r.key}`}
+                      ref={idx === highlightedIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                      className={clsx(
+                        'group/row cursor-pointer border-b-subtle',
+                        idx === highlightedIndex ? 'selection selection-ring' : 'hover:bg-theme-hover',
+                      )}
+                      onClick={() => toggleFamily(r.key)}
+                    >
+                      <td className="py-2.5 pl-3 pr-2">
+                        <span className="flex items-center gap-2">
+                          <ChevronRight className={clsx('h-3.5 w-3.5 shrink-0 text-theme-text-tertiary transition-transform', r.expanded && 'rotate-90')} aria-hidden />
+                          <Tooltip content={HEALTH_META[r.health].label} delay={150}>
+                            <span className="inline-flex"><StatusDot tone={mapHealthToTone(r.health)} /></span>
+                          </Tooltip>
+                          <span className="truncate font-semibold text-theme-text-primary">{r.key}</span>
+                          <Tooltip
+                            content={<FamilyTooltip familyKey={r.key} members={r.members.map((m) => ({ name: m.row.name, env: m.row.family!.env, confidence: m.row.family!.confidence, evidence: m.row.family!.evidence }))} />}
+                            delay={150}
+                          >
+                            <span className={`${CHIP} ${r.confidence === 'high' ? CHIP_TONE.emerald : CHIP_TONE.neutral}`}>
+                              <Layers className="mr-1 h-3 w-3" aria-hidden />{r.cells.length} envs
+                            </span>
+                          </Tooltip>
+                        </span>
+                      </td>
+                      <td className="px-2 py-2.5">
+                        <span className="text-xs text-theme-text-tertiary">{pluralize(r.members.length, 'instance')}</span>
+                      </td>
+                      <td className="px-2 py-2.5">
+                        {/* The ladder: env-ordered cells; click drills into that env's instance. */}
+                        <span className="flex flex-wrap items-center gap-1">
+                          {r.cells.map((c) => (
+                            <Tooltip key={c.env} content={`${c.env}${c.version ? ` · ${c.version}` : ''}${c.count > 1 ? ` · ${c.count} instances` : ''} — open`} delay={150}>
+                              <button
+                                type="button"
+                                onClick={(ev) => { ev.stopPropagation(); onSelect(c.firstKey) }}
+                                className={`${CHIP} ${CHIP_TONE.neutral} gap-1 hover:bg-theme-hover`}
+                              >
+                                <StatusDot tone={mapHealthToTone(c.health)} />{c.env}
+                              </button>
+                            </Tooltip>
+                          ))}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2.5"><ClassBadge workloadClass={r.workloadClass} composition={r.classComposition} /></td>
+                      <td className="px-2 py-2.5"><ReadyBar ready={r.ready} desired={r.desired} /></td>
+                      <td className="px-2 py-2.5">
+                        {r.lag ? (
+                          <Tooltip content={`Promotion lag: ${r.lag} (${r.cells.filter((c) => c.version).map((c) => `${c.env}=${c.version}`).join(', ')})`} delay={150}>
+                            <span className={`${CHIP} ${CHIP_TONE.amber}`}>{r.lag}</span>
+                          </Tooltip>
+                        ) : (
+                          <span className="text-theme-text-tertiary">—</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-2.5">
+                        <span className="text-xs text-theme-text-secondary">{Object.entries(r.kinds).map(([k, n]) => pluralize(n, k)).join(' · ')}</span>
+                      </td>
+                      <td className="pr-2 text-right" />
+                    </tr>
+                  ) : ((e) => (
                     <tr
                       key={e.row.key}
                       ref={idx === highlightedIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
@@ -375,7 +553,7 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                       )}
                       onClick={() => onSelect(e.row.key)}
                     >
-                      <td className="py-2.5 pl-3 pr-2">
+                      <td className={clsx('py-2.5 pr-2', r.child ? 'pl-10' : 'pl-3')}>
                         <span className="flex items-center gap-2">
                           <Tooltip content={HEALTH_META[e.health].label} delay={150}>
                             <span className="inline-flex"><StatusDot tone={mapHealthToTone(e.health)} /></span>
@@ -423,7 +601,7 @@ export function ApplicationsList({ apps, onSelect }: ApplicationsListProps) {
                       </td>
                       <td className="pr-2 text-right"><ChevronRight className="inline h-4 w-4 text-theme-text-tertiary" /></td>
                     </tr>
-                  ))}
+                  ))(r.entry))}
                 </tbody>
               </table>
             </div>

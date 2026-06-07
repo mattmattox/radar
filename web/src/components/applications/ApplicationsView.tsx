@@ -4,7 +4,13 @@ import {
   ApplicationsList,
   ApplicationDetail,
   CenteredEmpty,
+  useToast,
+  orderEnvs,
+  stripEnvAffix,
+  healthOf,
+  compareVersions,
   type AppRow,
+  type FamilyBandInstance,
   type SelectedAppWorkload,
   type SelectedResource,
 } from '@skyhook-io/k8s-ui'
@@ -55,7 +61,7 @@ export function ApplicationsView({ namespaces, onOpenResource }: ApplicationsVie
   }, [selectedKey, selected, query.isSuccess, searchParams, setSearchParams])
 
   if (selectedKey && selected) {
-    return <AppDetailRoute app={selected} onBack={() => selectApp(null)} onOpenResource={onOpenResource} />
+    return <AppDetailRoute app={selected} apps={apps} onBack={() => selectApp(null)} onOpenResource={onOpenResource} />
   }
 
   return (
@@ -86,7 +92,7 @@ export function ApplicationsView({ namespaces, onOpenResource }: ApplicationsVie
 // the resources-view topology over the app's namespaces (for the app graph)
 // and the per-workload WorkloadView (which fetches its own topology for the
 // Topology tab). Split out so useTopology runs unconditionally (Rules of Hooks).
-function AppDetailRoute({ app, onBack, onOpenResource }: { app: AppRow; onBack: () => void; onOpenResource: (resource: SelectedResource) => void }) {
+function AppDetailRoute({ app, apps, onBack, onOpenResource }: { app: AppRow; apps: AppRow[]; onBack: () => void; onOpenResource: (resource: SelectedResource) => void }) {
   const appNamespaces = useMemo(
     () => Array.from(new Set((app.workloads ?? []).map((w) => w.namespace).filter(Boolean))).sort(),
     [app.workloads],
@@ -111,6 +117,67 @@ function AppDetailRoute({ app, onBack, onOpenResource }: { app: AppRow; onBack: 
     [searchParams, setSearchParams],
   )
 
+  // Env-family band: this instance's siblings (ladder-ordered digests). The
+  // band switches between REAL instances — ?app= changes, deep links stay
+  // instance-keyed.
+  const { showSuccess } = useToast();
+  const familyInstances = useMemo<FamilyBandInstance[] | null>(() => {
+    const fam = app.family;
+    if (!fam) return null;
+    const sibs = apps.filter((a) => a.family?.key === fam.key);
+    if (sibs.length < 2) return null;
+    const newest = (a: AppRow) =>
+      (a.versions ?? []).reduce<string | undefined>((best, v) => (!best || compareVersions(v, best) === 1 ? v : best), undefined) ?? a.appVersion;
+    const order = orderEnvs(sibs.map((a) => a.family!.env));
+    return [...sibs]
+      .sort((a, b) => order.indexOf(a.family!.env) - order.indexOf(b.family!.env) || a.name.localeCompare(b.name))
+      .map((a) => ({
+        appKey: a.key,
+        name: a.name,
+        env: a.family!.env,
+        health: healthOf(a.health),
+        version: newest(a),
+        confidence: a.family!.confidence,
+        evidence: a.family!.evidence,
+      }));
+  }, [apps, app]);
+
+  // Position-preserving env switch: carry the selected workload + tab into the
+  // sibling when a matching workload exists there (exact kind+name, else the
+  // env-affix-stripped stem); otherwise land on the instance overview and say
+  // the workload wasn't found.
+  const switchInstance = useCallback(
+    (targetKey: string) => {
+      const target = apps.find((a) => a.key === targetKey);
+      const params = new URLSearchParams(searchParams);
+      params.set('app', targetKey);
+      const wk = params.get('workload');
+      let matched = false;
+      if (wk && target) {
+        const [kind, , name] = wk.split('/');
+        const m =
+          (target.workloads ?? []).find((w) => w.kind === kind && w.name === name) ??
+          (target.workloads ?? []).find((w) => w.kind === kind && stripEnvAffix(w.name) === stripEnvAffix(name));
+        if (m) {
+          params.set('workload', `${m.kind}/${m.namespace}/${m.name}`);
+          matched = true;
+        }
+      }
+      if (!matched && wk) {
+        // A workload WAS selected but has no counterpart — land on the target
+        // instance's overview and say so. (With no workload selected the tab
+        // rides along: it applies to the lone workload either side.)
+        params.delete('workload');
+        params.delete('tab');
+        if (target) {
+          showSuccess(`No matching workload in ${target.family?.env ?? target.name}`, 'Showing the instance overview instead.');
+        }
+      }
+      setSearchParams(params);
+    },
+    [apps, searchParams, setSearchParams, showSuccess],
+  );
+
   return (
     <div className="flex-1 overflow-auto">
       <ApplicationDetail
@@ -118,6 +185,8 @@ function AppDetailRoute({ app, onBack, onOpenResource }: { app: AppRow; onBack: 
         onBack={onBack}
         topology={topology}
         topologyLoading={topologyLoading}
+        familyInstances={familyInstances}
+        onSwitchInstance={switchInstance}
         onNavigateToResource={onOpenResource}
         selectedWorkloadKey={selectedWorkloadKey}
         onSelectWorkload={selectWorkload}

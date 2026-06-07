@@ -316,6 +316,63 @@ export function namespaceOf(app: AppRow): string {
   return nss.length === 1 ? nss[0] : ''
 }
 
+// -----------------------------------------------------------------------------
+// Env families — client helpers over the wire `family` block. Folding rows
+// into families is presentation; these helpers keep the semantics (ladder
+// order, lag, affix stripping) in one place for the list, the detail band,
+// and later the hub.
+// -----------------------------------------------------------------------------
+
+/** Name-affix env tokens, the conservative set the server uses for names
+ *  (mirror of applications_family.go's splitNameEnv — namespace-only tokens
+ *  like "test"/"demo" are deliberately absent). */
+const NAME_ENV_TOKENS = new Set([
+  'dev', 'development', 'staging', 'stage', 'stg', 'prod', 'production', 'prd',
+  'autopush', 'qa', 'uat', 'preprod', 'preview', 'canary',
+])
+
+/** Strip a recognized env affix from a workload/app name —
+ *  "billing-staging" → "billing", "autopush-koala-backend" → "koala-backend".
+ *  Used to match "the same workload" across a family's env instances. */
+export function stripEnvAffix(name: string): string {
+  const i = name.lastIndexOf('-')
+  if (i > 0 && NAME_ENV_TOKENS.has(name.slice(i + 1).toLowerCase())) return name.slice(0, i)
+  const j = name.indexOf('-')
+  if (j > 0 && NAME_ENV_TOKENS.has(name.slice(0, j).toLowerCase())) return name.slice(j + 1)
+  return name
+}
+
+/** Ladder order: ranked envs by rank (dev → staging → prod), then
+ *  recognized-but-unranked alphabetically (autopush, qa, …). */
+export function orderEnvs(envs: string[]): string[] {
+  return [...envs].sort((a, b) => {
+    const ra = envRank(a)
+    const rb = envRank(b)
+    if (ra !== null && rb !== null) return ra - rb
+    if (ra !== null) return -1
+    if (rb !== null) return 1
+    return a.localeCompare(b)
+  })
+}
+
+/** Promotion lag across a family's env cells: fires only between RANKED envs,
+ *  when a strictly-lower env runs a strictly-newer comparable version.
+ *  Returns the human message ("staging is behind dev") or null. */
+export function familyLagMessage(cells: { env: string; version?: string }[]): string | null {
+  const ranked = cells
+    .map((c) => ({ ...c, rank: envRank(c.env) }))
+    .filter((c): c is { env: string; version?: string; rank: number } => c.rank !== null && !!c.version)
+    .sort((a, b) => a.rank - b.rank)
+  for (let i = 0; i < ranked.length; i++) {
+    for (let j = i + 1; j < ranked.length; j++) {
+      if (compareVersions(ranked[i].version, ranked[j].version) === 1) {
+        return `${ranked[j].env} is behind ${ranked[i].env}`
+      }
+    }
+  }
+  return null
+}
+
 /** Normalize a wire health string to the AppHealth union (the health twin of
  *  workloadClassOf — keeps `as AppHealth` casts out of components). */
 export function healthOf(value: string | undefined): AppHealth {

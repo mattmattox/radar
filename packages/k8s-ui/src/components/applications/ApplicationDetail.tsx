@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback, type ReactNode } from 'react'
-import { ArrowLeft, Boxes, Network } from 'lucide-react'
+import { ArrowLeft, Boxes, Network, Layers } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { Topology, TopologyNode } from '../../types'
 import { StatusDot, mapHealthToTone } from '../ui/status-tone'
@@ -12,6 +12,7 @@ import { workloadHue, NEUTRAL_OWNER, type WorkloadFocus } from '../../utils/work
 import {
   type AppRow,
   type AppWorkload,
+  type AppHealth,
   CHIP_TONE,
   HEALTH_META,
   healthOf,
@@ -21,9 +22,11 @@ import {
   workloadClassOf,
   classCompositionOf,
   worstHealth,
+  familyLagMessage,
 } from '../../utils/applications'
 import { PaneLoader } from '../ui/PaneLoader'
-import { VersionTooltip } from './AppTooltips'
+import { midTruncate } from '../../utils/format'
+import { VersionTooltip, FamilyTooltip } from './AppTooltips'
 import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo } from './AppChips'
 import { ReadyBar } from './ReadyBar'
 
@@ -41,6 +44,17 @@ import { ReadyBar } from './ReadyBar'
 // adds nothing.
 
 export type SelectedAppWorkload = NeighborhoodSeed
+
+/** One env instance in the family band — a sibling app row's digest. */
+export interface FamilyBandInstance {
+  appKey: string
+  name: string
+  env: string
+  health: AppHealth
+  version?: string
+  confidence: string
+  evidence: string
+}
 
 /** Workload selection is either fully controlled (key + callback, the host
  *  wires it to the URL so back/forward works) or fully internal — providing
@@ -64,6 +78,14 @@ export type ApplicationDetailProps = {
   topologyLoading?: boolean
   /** Open a related (non-workload) resource clicked in the app graph. */
   onNavigateToResource?: (resource: { kind: string; namespace: string; name: string; group?: string }) => void
+  /** Env-family siblings (this instance included, ladder-ordered) — renders
+   *  the family band above the title row. Family is classification, not
+   *  identity: the band is a switcher between REAL instances, never an
+   *  aggregate page. */
+  familyInstances?: FamilyBandInstance[] | null
+  /** Switch to a sibling instance (host swaps ?app= and, when it can match
+   *  the current workload in the target, preserves ?workload= + ?tab=). */
+  onSwitchInstance?: (appKey: string) => void
 } & SelectionProps
 
 function ContextFact({ label, children }: { label: string; children: ReactNode }) {
@@ -75,7 +97,7 @@ function ContextFact({ label, children }: { label: string; children: ReactNode }
   )
 }
 
-export function ApplicationDetail({ app, onBack, renderWorkload, topology, topologyLoading, onNavigateToResource, selectedWorkloadKey, onSelectWorkload }: ApplicationDetailProps) {
+export function ApplicationDetail({ app, onBack, renderWorkload, topology, topologyLoading, onNavigateToResource, familyInstances, onSwitchInstance, selectedWorkloadKey, onSelectWorkload }: ApplicationDetailProps) {
   // Stable order regardless of API ordering: rail rows and the per-workload
   // color assignment both follow this array, so an order flap between
   // refetches must not reshuffle rows or reassign a workload's hue.
@@ -174,8 +196,46 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
     [workloads, onNavigateToResource, setSelected],
   )
 
+  const familyLag = familyInstances && familyInstances.length > 1 ? familyLagMessage(familyInstances) : null
+
   return (
     <div className="flex w-full flex-col">
+      {/* Family band — env siblings of this instance. A switcher between real
+          instances (URL stays the instance key), never an aggregate view. */}
+      {familyInstances && familyInstances.length > 1 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-theme-border bg-theme-base px-4 py-2 sm:px-6">
+          <Tooltip
+            content={<FamilyTooltip familyKey={app.family?.key ?? ''} members={familyInstances.map((i) => ({ name: i.name, env: i.env, confidence: i.confidence, evidence: i.evidence }))} />}
+            delay={150}
+          >
+            <span className={`${CHIP_TONE.neutral} inline-flex items-center gap-1 rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset`}>
+              <Layers className="h-3 w-3" aria-hidden />{app.family?.key}
+            </span>
+          </Tooltip>
+          <span className="flex flex-wrap items-center gap-1">
+            {familyInstances.map((inst) => {
+              const active = inst.appKey === app.key
+              return (
+                <button
+                  key={inst.appKey}
+                  type="button"
+                  disabled={active}
+                  onClick={() => !active && onSwitchInstance?.(inst.appKey)}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs ring-1 ring-inset transition-colors',
+                    active ? 'selection selection-ring font-medium' : 'bg-theme-surface ring-theme-border hover:bg-theme-hover',
+                  )}
+                >
+                  <StatusDot tone={mapHealthToTone(inst.health)} />
+                  {inst.env}
+                  {inst.version && <span className="font-mono text-[10px] text-theme-text-tertiary">{midTruncate(inst.version, 20)}</span>}
+                </button>
+              )
+            })}
+          </span>
+          {familyLag && <span className={`${CHIP_TONE.amber} ml-auto inline-flex items-center rounded-sm px-1.5 py-px text-[10px] font-medium ring-1 ring-inset`}>{familyLag}</span>}
+        </div>
+      )}
       {/* Title row */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-theme-border px-4 py-3 sm:px-6">
         <button type="button" onClick={onBack} className="flex items-center gap-1.5 text-xs text-theme-text-tertiary hover:text-theme-text-primary">
