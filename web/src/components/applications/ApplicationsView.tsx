@@ -114,6 +114,9 @@ function AppDetailRoute({ app, onBack, onOpenResource }: { app: AppRow; onBack: 
               namespace={workload.namespace}
               name={workload.name}
               onBack={() => selectWorkload(null)}
+              // "Back" returns to the app graph — meaningless for a
+              // single-workload app, which has no graph to return to.
+              hideBackButton={(app.workloads?.length ?? 0) <= 1}
               onNavigateToResource={onOpenResource}
             />
           </div>

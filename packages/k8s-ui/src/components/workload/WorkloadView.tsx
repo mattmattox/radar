@@ -51,6 +51,7 @@ import { ResourceRendererDispatch, getResourceStatus, type RendererOverrides } f
 import { DetailShell, type DetailShellTab } from '../shared/DetailShell'
 import { HelmManagedByChip, ManagedByChip, type HelmOwnerRef } from '../shared/ManagedByChip'
 import { getKindColorOutline, formatKindName } from '../ui/drawer-components'
+import { midTruncate } from '../../utils/format'
 
 export type WorkloadTabType = 'overview' | 'topology' | 'timeline' | 'logs' | 'metrics' | 'yaml'
 type TabType = WorkloadTabType
@@ -85,6 +86,9 @@ interface WorkloadViewProps {
    * the Escape shortcut.
    */
   breadcrumb?: ReactNode
+  /** Suppress the standalone back arrow — for embeddings where "back" has no
+   *  meaningful target (a single-workload app has no app graph to return to). */
+  hideBackButton?: boolean
   /**
    * Controls injected into the shell's tab-row scope slot — e.g. a cluster /
    * workload picker in Radar Cloud. Absent in standalone Radar.
@@ -191,6 +195,12 @@ interface WorkloadViewProps {
   }) => ReactNode
   /** Render the metrics tab content */
   renderMetricsTab?: (props: { kind: string; namespace: string; name: string }) => ReactNode
+  /** Render a read-only YAML view for a related object from the workload's
+   *  neighborhood. Providing this turns the YAML tab into an object explorer
+   *  (rail of the workload + its Services/config/policies/pods); omitting it
+   *  keeps the single-manifest YAML tab. Injected because resource fetching
+   *  lives host-side. */
+  renderRelatedYaml?: (ref: { kind: string; namespace: string; name: string; group?: string }) => ReactNode
   /** Whether metrics are available for this resource kind */
   isMetricsAvailable?: (kind: string, resource: any) => boolean
   /** Render extra content at the bottom of the overview tab (e.g. audit findings) */
@@ -226,6 +236,7 @@ export function WorkloadView({
   initialTab,
   group,
   breadcrumb,
+  hideBackButton,
   scopeControls,
   compactHeader,
   // Data
@@ -256,6 +267,7 @@ export function WorkloadView({
   onTabChange,
   // Render props
   renderLogsTab,
+  renderRelatedYaml,
   renderMetricsTab,
   isMetricsAvailable,
   // Duplicate
@@ -338,6 +350,37 @@ export function WorkloadView({
     () => (topology ? seedNodeIds(topology, neighborhoodSeed)[0] : undefined),
     [topology, neighborhoodSeed],
   )
+
+  // YAML tab object rail — the same neighborhood, as a manifest list: the
+  // workload first, then routing → config → policy/scaling → ownership.
+  const yamlObjects = useMemo(() => {
+    if (!neighborhood) return []
+    const order: Record<string, number> = {
+      Service: 1, Ingress: 1, HTTPRoute: 1,
+      ConfigMap: 2, Secret: 2,
+      HorizontalPodAutoscaler: 3, PodDisruptionBudget: 3, NetworkPolicy: 3,
+      ReplicaSet: 4, Pod: 5,
+    }
+    return neighborhood.nodes
+      .filter((n) => n.kind !== 'Internet' && n.kind !== 'PodGroup')
+      .map((n) => ({
+        id: n.id,
+        kind: n.kind as string,
+        namespace: (n.data?.namespace as string) || namespace,
+        name: n.name,
+        group: apiVersionToGroup(n.data?.apiVersion as string | undefined),
+        primary: n.id === neighborhoodFocusId,
+      }))
+      .sort((a, b) =>
+        a.primary !== b.primary
+          ? (a.primary ? -1 : 1)
+          : (order[a.kind] ?? 9) - (order[b.kind] ?? 9) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name),
+      )
+  }, [neighborhood, neighborhoodFocusId, namespace])
+  // null = the workload's own manifest (the editable one).
+  const [yamlObjectId, setYamlObjectId] = useState<string | null>(null)
+  useEffect(() => setYamlObjectId(null), [kind, namespace, name])
+  const yamlObject = yamlObjectId ? yamlObjects.find((o) => o.id === yamlObjectId) : undefined
   const handleTopologyNodeClick = useCallback(
     (node: TopologyNode) => {
       if (!onNavigateToResource || !node.kind || !node.name) return
@@ -629,7 +672,7 @@ export function WorkloadView({
     <DetailShell
       breadcrumb={breadcrumb}
       nav={
-        breadcrumb ? undefined : (
+        breadcrumb || hideBackButton ? undefined : (
           <button
             onClick={onBack}
             className="p-1.5 mt-0.5 text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded-lg transition-colors"
@@ -786,24 +829,50 @@ export function WorkloadView({
           </div>
         )}
         {activeTab === 'yaml' && (
-          <div className="h-full overflow-auto">
-            {!resource ? (
-              <FetchResult loading={resourceLoading} error={resourceError} className="h-32" />
-            ) : (
-              <EditableYamlView
-                resource={selectedResource}
-                data={resource}
-                onCopy={(text) => copyToClipboard(text, 'yaml')}
-                copied={copied === 'yaml'}
-                readOnly={readOnlyYaml}
-                onSaved={handleSaved}
-                onSave={onUpdateResource}
-                isSaving={isUpdatingResource}
-                saveError={updateResourceError}
-                onDuplicate={onDuplicate}
-                onDownload={onDownload}
-              />
+          <div className="flex h-full min-h-0">
+            {renderRelatedYaml && yamlObjects.length > 1 && (
+              <div className="flex w-56 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-theme-border bg-theme-base px-2 py-2">
+                <div className="px-1.5 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-theme-text-tertiary">Objects</div>
+                {yamlObjects.map((o) => {
+                  const active = o.primary ? yamlObjectId === null : yamlObjectId === o.id
+                  return (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => setYamlObjectId(o.primary ? null : o.id)}
+                      className={clsx(
+                        'flex w-full flex-col rounded-md px-1.5 py-1.5 text-left transition-colors',
+                        active ? 'selection selection-ring' : 'hover:bg-theme-hover',
+                      )}
+                    >
+                      <span className="truncate text-xs font-medium text-theme-text-primary">{midTruncate(o.name, 26)}</span>
+                      <span className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">{formatKindName(o.kind)}</span>
+                    </button>
+                  )
+                })}
+              </div>
             )}
+            <div className="h-full min-w-0 flex-1 overflow-auto">
+              {yamlObject && !yamlObject.primary && renderRelatedYaml ? (
+                renderRelatedYaml(yamlObject)
+              ) : !resource ? (
+                <FetchResult loading={resourceLoading} error={resourceError} className="h-32" />
+              ) : (
+                <EditableYamlView
+                  resource={selectedResource}
+                  data={resource}
+                  onCopy={(text) => copyToClipboard(text, 'yaml')}
+                  copied={copied === 'yaml'}
+                  readOnly={readOnlyYaml}
+                  onSaved={handleSaved}
+                  onSave={onUpdateResource}
+                  isSaving={isUpdatingResource}
+                  saveError={updateResourceError}
+                  onDuplicate={onDuplicate}
+                  onDownload={onDownload}
+                />
+              )}
+            </div>
           </div>
         )}
     </DetailShell>
