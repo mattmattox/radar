@@ -75,6 +75,7 @@
     "vite": "^8.0.12"
   },
   "sideEffects": [
-    "*.css"
+    "*.css",
+    "./src/monaco-setup.ts"
   ]
 }
