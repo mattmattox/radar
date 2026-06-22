@@ -46,7 +46,11 @@ func handleListHelmReleases(ctx context.Context, req *mcp.CallToolRequest, input
 	}
 
 	username, groups := userFromContext(ctx)
-	releases, err := helmClient.ListReleasesAsUser(input.Namespace, username, groups)
+	namespaces := resolveHelmListNamespaces(ctx, input.Namespace)
+	if namespaces != nil && len(namespaces) == 0 {
+		return toJSONResult([]helm.HelmRelease{})
+	}
+	releases, err := helmClient.ListReleasesAcrossNamespaces(namespaces, username, groups)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list helm releases: %w", err)
 	}
@@ -55,6 +59,16 @@ func handleListHelmReleases(ctx context.Context, req *mcp.CallToolRequest, input
 	// health fields (ResourceHealth, HealthIssue, HealthSummary) which
 	// provide the AI with actionable status information.
 	return toJSONResult(releases)
+}
+
+func resolveHelmListNamespaces(ctx context.Context, namespace string) []string {
+	if namespace != "" {
+		return []string{namespace}
+	}
+	if pkgauth.UserFromContext(ctx) != nil {
+		return filterNamespacesForUser(ctx, nil)
+	}
+	return helm.ResolveNoAuthListNamespaces(ctx)
 }
 
 func handleGetHelmRelease(ctx context.Context, req *mcp.CallToolRequest, input getHelmReleaseInput) (*mcp.CallToolResult, any, error) {

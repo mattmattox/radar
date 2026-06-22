@@ -379,7 +379,7 @@ func (s *Server) setupRoutes() {
 			r.Get("/workloads/{kind}/{namespace}/{name}/pods", s.handleWorkloadPods)
 
 			// Helm routes
-			helmHandlers := helm.NewHandlers()
+			helmHandlers := helm.NewHandlers(s.resolveHelmNamespaces)
 			helmHandlers.RegisterRoutes(r)
 
 			// Image inspection routes
@@ -828,6 +828,70 @@ func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 	return filtered
 }
 
+// resolveHelmNamespaces decides which namespaces a Helm list (releases, upgrade
+// checks, dashboard summary) should query for this request. Helm releases are
+// always namespaced (stored as Secrets/ConfigMaps in a namespace), so unlike
+// cluster-scoped kinds it is always safe to narrow an "all namespaces" request
+// to the identity's accessible namespaces — which is what lets a
+// namespace-restricted ServiceAccount read Helm without a cluster-wide
+// `list secrets`.
+//
+// Returns:
+//   - (nil, true)        cluster-wide: a single AllNamespaces list
+//   - (namespaces, true) list each and merge
+//   - (nil, false)       no namespace access — caller returns an empty result
+func (s *Server) resolveHelmNamespaces(r *http.Request) ([]string, bool) {
+	// An explicit ?namespace=/?namespaces= request is honored as-is. Helm reads
+	// run as the caller (user impersonation, or the SA when auth is off), so the
+	// apiserver authorizes the secrets read directly — routing this through
+	// parseNamespacesForUser would intersect it with the pod/deployment-based
+	// namespace discovery and wrongly drop a namespace where the caller has
+	// secrets but no pod access. A denied namespace surfaces as a 403 from the
+	// per-namespace list rather than a silent empty result.
+	//
+	// Guard on len > 0, not != nil: parseNamespaces returns an empty non-nil
+	// slice for a degenerate query like ?namespaces=,, — treat that as "no
+	// explicit filter" and fall through, rather than short-circuiting to a
+	// zero-namespace (empty) result.
+	if explicit := parseNamespaces(r.URL.Query()); len(explicit) > 0 {
+		return explicit, true
+	}
+
+	namespaces := s.parseNamespacesForUser(r)
+	if noNamespaceAccess(namespaces) {
+		return nil, false
+	}
+	if namespaces == nil && auth.UserFromContext(r.Context()) == nil {
+		// "All namespaces" in no-auth mode. A namespace-restricted
+		// ServiceAccount can't list cluster-wide; resolve to the namespaces it
+		// can actually see so the Helm list degrades gracefully instead of
+		// 403-ing. Authenticated users are handled by parseNamespacesForUser
+		// above, and Helm lists impersonate them directly; narrowing them with
+		// the backend client's fallback namespaces would under-list users whose
+		// RBAC is wider than Radar's own ServiceAccount.
+		if fallback := helm.ResolveNoAuthListNamespaces(r.Context()); len(fallback) > 0 {
+			return fallback, true
+		}
+	}
+	return namespaces, true
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := values[:0]
+	for _, v := range values {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
 // noNamespaceAccess returns true when a namespace filter explicitly grants no access
 // (non-nil empty slice from auth filtering). Handlers with custom namespace logic
 // should check this and return empty results.
@@ -953,7 +1017,7 @@ func parseNamespaces(query url.Values) []string {
 				result = append(result, trimmed)
 			}
 		}
-		return result
+		return dedupeStrings(result)
 	}
 	// Fall back to "namespace" (singular) for backward compatibility
 	if ns := query.Get("namespace"); ns != "" {
