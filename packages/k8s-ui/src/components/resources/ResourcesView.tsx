@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef, useContext, u
 import { TableVirtuoso, type TableVirtuosoHandle } from 'react-virtuoso'
 import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
 import { PaneLoader } from '../ui/PaneLoader'
+import { RestrictedState } from '../ui/RestrictedState'
 import type { TopPodMetrics, TopNodeMetrics } from '../../types'
 import {
   Search,
@@ -1840,6 +1841,9 @@ interface ResourcesViewProps {
   // Lightweight counts for sidebar badges (from /api/resource-counts)
   resourceCounts?: Record<string, number>
   resourceForbidden?: string[]
+  /** Per-kind reason a forbidden kind is hidden ("rbac_denied" | "unavailable"),
+   *  keyed by the same count key as resourceForbidden. Drives RestrictedState copy. */
+  resourceReasons?: Record<string, string>
   resourceUnavailable?: string[]
   // Single query for the currently selected kind's full data
   selectedKindQuery?: ResourceQueryResult
@@ -2058,6 +2062,7 @@ export function ResourcesView({
   resourceQueries: resourceQueriesProp,
   resourceCounts: resourceCountsProp,
   resourceForbidden: resourceForbiddenProp,
+  resourceReasons,
   resourceUnavailable: resourceUnavailableProp,
   selectedKindQuery: selectedKindQueryProp,
   largeListGuard,
@@ -3232,7 +3237,6 @@ export function ResourcesView({
   }, [resources])
   const isLoading = selectedQuery?.isLoading ?? true
   const selectedQueryError = selectedQuery?.error
-  const isSelectedForbidden = isForbiddenError(selectedQueryError)
   const refetchFn = selectedQuery?.refetch
   const dataUpdatedAt = selectedQuery?.dataUpdatedAt
 
@@ -3293,6 +3297,23 @@ export function ResourcesView({
     })
     return result
   }, [useNewCountsMode, resourceForbiddenProp, resourcesToCount, resourceQueries])
+
+  // Render the restricted state when EITHER the list query 403s (namespaced
+  // denials) OR the selected kind is in the counts `forbidden` set. Denied
+  // cluster-scoped kinds return 200 with `[]` from the list endpoint, so the
+  // 403 signal alone misses them — they'd fall through to "No <kind> found".
+  const selectedKindCountKey = selectedKind.group
+    ? `${selectedKind.group}/${selectedKind.kind}`
+    : selectedKind.kind
+  // Actual rows win over a stale counts `forbidden` entry: a kind can be marked
+  // forbidden/unavailable in counts (e.g. an informer not yet synced at counts
+  // time) while the list query has since returned data — show the table, not
+  // RestrictedState. A 403 on the list itself never carries rows, so it still
+  // forces the restricted state.
+  const selectedHasRows = Array.isArray(resources) && resources.length > 0
+  const isSelectedForbidden =
+    isForbiddenError(selectedQueryError) ||
+    (!selectedHasRows && forbiddenKinds.has(selectedKindCountKey))
 
   // Reset sort and filters when kind changes (but not when syncing from URL navigation)
   // Track previous kind to skip on mount (where the effect fires but kind hasn't actually changed)
@@ -4505,10 +4526,18 @@ export function ResourcesView({
           {isLoading ? (
             <PaneLoader className="absolute inset-0" />
           ) : isSelectedForbidden ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-theme-text-tertiary">
-              <Shield className="w-8 h-8 text-amber-400 mb-2" />
-              <p className="text-theme-text-secondary font-medium">Access Restricted</p>
-              <p className="text-sm mt-1">Insufficient permissions to list {selectedKind.kind} resources</p>
+            // overflow-y-auto + min-h-full: centered when the panel is short
+            // (collapsed), scrollable (no top clip) when the RBAC snippet is
+            // expanded on a shorter pane.
+            <div className="absolute inset-0 overflow-y-auto">
+              <div className="min-h-full flex items-center justify-center">
+                <RestrictedState
+                  kindLabel={selectedKind.kind}
+                  group={selectedKind.group}
+                  resource={selectedKind.name}
+                  reason={resourceReasons?.[selectedKindCountKey]}
+                />
+              </div>
             </div>
           ) : largeListGuard ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-theme-text-tertiary px-6 text-center">
