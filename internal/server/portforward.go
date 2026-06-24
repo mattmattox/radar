@@ -19,13 +19,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	pfpkg "github.com/skyhook-io/radar/pkg/portforward"
 )
 
 // PortForwardSession represents an active port forward
@@ -290,12 +290,10 @@ func runPortForward(ctx context.Context, session *PortForwardSession) error {
 			Ports: []int32{int32(session.PodPort)},
 		}, scheme.ParameterCodec)
 
-	transport, upgrader, err := spdy.RoundTripperFor(config)
+	dialer, err := pfpkg.NewDialer(config, req.URL())
 	if err != nil {
-		return fmt.Errorf("failed to create round tripper: %w", err)
+		return err
 	}
-
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", req.URL())
 
 	ports := []string{fmt.Sprintf("%d:%d", session.LocalPort, session.PodPort)}
 	addresses := []string{session.ListenAddress}
