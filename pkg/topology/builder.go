@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/perfstats"
 )
 
@@ -292,7 +293,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			ID:     deployID,
 			Kind:   KindDeployment,
 			Name:   deploy.Name,
-			Status: getDeploymentStatus(ready, total),
+			Status: healthLevelToStatus(health.Workload(deploy, time.Now()).Level),
 			Data: map[string]any{
 				"namespace":     deploy.Namespace,
 				"readyReplicas": ready,
@@ -2385,7 +2386,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			ID:     dsID,
 			Kind:   KindDaemonSet,
 			Name:   ds.Name,
-			Status: getDeploymentStatus(ready, total),
+			Status: healthLevelToStatus(health.Workload(ds, time.Now()).Level),
 			Data: map[string]any{
 				"namespace":     ds.Namespace,
 				"readyReplicas": ready,
@@ -2447,7 +2448,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			ID:     stsID,
 			Kind:   KindStatefulSet,
 			Name:   sts.Name,
-			Status: getDeploymentStatus(ready, total),
+			Status: healthLevelToStatus(health.Workload(sts, time.Now()).Level),
 			Data: map[string]any{
 				"namespace":     sts.Namespace,
 				"readyReplicas": ready,
@@ -2491,17 +2492,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		cjID := fmt.Sprintf("cronjob/%s/%s", cj.Namespace, cj.Name)
 		cronJobIDs[cj.Namespace+"/"+cj.Name] = cjID
 
-		// Determine status based on last schedule time and active jobs
-		status := StatusHealthy
-		if len(cj.Status.Active) > 0 {
-			status = StatusDegraded // Running
-		}
-
 		nodes = append(nodes, Node{
 			ID:     cjID,
 			Kind:   KindCronJob,
 			Name:   cj.Name,
-			Status: status,
+			Status: healthLevelToStatus(health.Workload(cj, time.Now()).Level),
 			Data: map[string]any{
 				"namespace":        cj.Namespace,
 				"schedule":         cj.Spec.Schedule,
@@ -2650,7 +2645,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				ID:     rsID,
 				Kind:   KindReplicaSet,
 				Name:   rs.Name,
-				Status: getDeploymentStatus(ready, total),
+				Status: healthLevelToStatus(health.Workload(rs, time.Now()).Level),
 				Data: map[string]any{
 					"namespace":     rs.Namespace,
 					"readyReplicas": ready,
@@ -3254,7 +3249,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					ID:     pvcID,
 					Kind:   KindPVC,
 					Name:   pvc.Name,
-					Status: getPVCStatus(pvc.Status.Phase),
+					Status: getPVCStatus(pvc),
 					Data: map[string]any{
 						"namespace":    pvc.Namespace,
 						"storageClass": storageClass,
@@ -6843,7 +6838,7 @@ func addPodHealth(summaries map[string]*PodSummary, nodeID string, pod *corev1.P
 		summaries[nodeID] = s
 	}
 	s.Total++
-	switch getPodStatus(string(pod.Status.Phase)) {
+	switch podSummaryStatus(pod) {
 	case StatusHealthy:
 		s.Healthy++
 	case StatusDegraded:
@@ -6966,17 +6961,12 @@ func (b *Builder) createPodOwnerEdges(
 	return edges
 }
 
-func getPodStatus(phase string) HealthStatus {
-	switch phase {
-	case "Running", "Succeeded":
-		return StatusHealthy
-	case "Pending":
-		return StatusDegraded
-	case "Failed", "CrashLoopBackOff":
-		return StatusUnhealthy
-	default:
-		return StatusUnknown
-	}
+// getPodStatus returns the node-coloring health of a pod via the canonical
+// classifier. It inspects container state (crashloop, OOM, fatal waiting), not
+// just pod.Status.Phase — so a crashlooping pod (phase Running) now reads
+// unhealthy here instead of healthy, matching the resource table.
+func getPodStatus(pod *corev1.Pod) HealthStatus {
+	return healthLevelToStatus(topoPodLevel(pod))
 }
 
 func getDeploymentStatus(ready, total int32) HealthStatus {
@@ -6993,33 +6983,11 @@ func getDeploymentStatus(ready, total int32) HealthStatus {
 }
 
 func getJobStatus(job *batchv1.Job) HealthStatus {
-	// Check completion conditions
-	for _, cond := range job.Status.Conditions {
-		if cond.Type == batchv1.JobComplete && cond.Status == corev1.ConditionTrue {
-			return StatusHealthy
-		}
-		if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
-			return StatusUnhealthy
-		}
-	}
-	// Still running
-	if job.Status.Active > 0 {
-		return StatusDegraded
-	}
-	return StatusUnknown
+	return healthLevelToStatus(health.Workload(job, time.Now()).Level)
 }
 
-func getPVCStatus(phase corev1.PersistentVolumeClaimPhase) HealthStatus {
-	switch phase {
-	case corev1.ClaimBound:
-		return StatusHealthy
-	case corev1.ClaimPending:
-		return StatusDegraded
-	case corev1.ClaimLost:
-		return StatusUnhealthy
-	default:
-		return StatusUnknown
-	}
+func getPVCStatus(pvc *corev1.PersistentVolumeClaim) HealthStatus {
+	return healthLevelToStatus(health.Workload(pvc, time.Now()).Level)
 }
 
 // getFluxReadyStatus extracts the Ready condition status from a FluxCD resource's status map.
@@ -7461,10 +7429,16 @@ func extractKarpenterNodeClaimStatus(nc unstructured.Unstructured) HealthStatus 
 func extractNodeStatus(node corev1.Node) HealthStatus {
 	for _, cond := range node.Status.Conditions {
 		if cond.Type == corev1.NodeReady {
-			if cond.Status == corev1.ConditionTrue {
-				return StatusHealthy
+			if cond.Status != corev1.ConditionTrue {
+				return StatusUnhealthy
 			}
-			return StatusUnhealthy
+			// Ready but cordoned = lost scheduling capacity — degraded (amber),
+			// matching the node table badge + drawer + Cordoned audit, so the same
+			// node doesn't read green here while it's flagged elsewhere.
+			if node.Spec.Unschedulable {
+				return StatusDegraded
+			}
+			return StatusHealthy
 		}
 	}
 	return StatusUnknown
@@ -7472,14 +7446,15 @@ func extractNodeStatus(node corev1.Node) HealthStatus {
 
 // extractKedaScaledObjectStatus reads conditions and annotations from a KEDA ScaledObject
 func extractKedaScaledObjectStatus(so unstructured.Unstructured) HealthStatus {
-	// Check for Paused annotation (two variants)
+	// Check for Paused annotation (two variants). Paused = an operator
+	// deliberately froze autoscaling — intentional, so neutral (sky), not amber.
 	annotations := so.GetAnnotations()
 	if annotations != nil {
 		if paused, ok := annotations["autoscaling.keda.sh/paused"]; ok && paused == "true" {
-			return StatusDegraded
+			return StatusNeutral
 		}
 		if _, ok := annotations["autoscaling.keda.sh/paused-replicas"]; ok {
-			return StatusDegraded
+			return StatusNeutral
 		}
 	}
 
@@ -7519,7 +7494,10 @@ func extractKedaScaledObjectStatus(so unstructured.Unstructured) HealthStatus {
 		case "True":
 			return StatusHealthy
 		case "False":
-			return StatusDegraded
+			// Idle (no triggers firing, scaled to zero) is the normal resting
+			// state of a Ready scaler — intentional/off, so neutral (sky), not the
+			// green of an actively-serving workload.
+			return StatusNeutral
 		}
 	}
 
@@ -7551,23 +7529,25 @@ func extractKedaScaledJobStatus(sj unstructured.Unstructured) HealthStatus {
 		}
 	}
 
-	// Ready condition takes priority
-	if readyCond != nil {
-		switch readyCond["status"] {
-		case "True":
-			return StatusHealthy
-		case "False":
-			return StatusDegraded
-		}
+	// Ready=False = not operational; surface it before the idle check.
+	if readyCond != nil && readyCond["status"] == "False" {
+		return StatusDegraded
 	}
 
+	// Check Active before treating Ready=True as healthy: an operational scaler
+	// with no jobs running (Active=False) is intentionally idle → neutral (sky),
+	// not the green of a busy one. (Ready=True first would make Idle unreachable.)
 	if activeCond != nil {
 		switch activeCond["status"] {
 		case "True":
 			return StatusHealthy
 		case "False":
-			return StatusDegraded
+			return StatusNeutral
 		}
+	}
+
+	if readyCond != nil && readyCond["status"] == "True" {
+		return StatusHealthy
 	}
 
 	return StatusUnknown

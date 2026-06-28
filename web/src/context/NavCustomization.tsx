@@ -13,6 +13,14 @@
 import { createContext, useContext } from 'react';
 import type { ReactNode } from 'react';
 
+/**
+ * Per-cluster destinations an embedded host can take over with its own
+ * fleet-scoped pages. See `fleetTakeoverHref`. 'issues' | 'gitops' | 'checks'
+ * are also Radar view names (so route entry redirects too); 'certs' is
+ * card-only (Radar has no certs view).
+ */
+export type FleetTakeoverTarget = 'issues' | 'gitops' | 'checks' | 'certs';
+
 interface NavCustomizationBase {
   /** Replaces Radar's Skyhook/radar logo + wordmark. */
   brandSlot?: ReactNode;
@@ -32,17 +40,48 @@ interface NavCustomizationBase {
     group?: string;
   }) => string;
   /**
-   * When set, Radar treats the host's fleet Checks page as the one canonical
-   * Checks surface in Cloud: it removes its own per-cluster Audit tab and
-   * redirects any route to /audit (the Home "Cluster Audit" card, ⌘K,
-   * bookmarks) to the URL returned here — the host's fleet Checks page scoped
-   * to this cluster. Navigated via window.location.replace (a cross-document
-   * hop into the host's router) so the transient /audit URL stays out of
-   * history. This keeps the per-cluster view and the host's fleet nav from
-   * presenting two diverging Checks surfaces. Standalone Radar omits this and
-   * keeps its single-cluster Audit tab.
+   * Lets an embedded host (e.g. Radar Cloud) take over selected per-cluster
+   * destinations with its OWN fleet pages scoped to this cluster, instead of
+   * Radar rendering them inline. Given a semantic target the host returns the
+   * URL to navigate to, or `undefined`/omits the hook to let Radar render its
+   * own view as usual (standalone OSS does the latter for everything).
+   *
+   * This is how the Home dashboard's "fleet-shaped" cards reach the host's
+   * canonical surfaces rather than a second, diverging per-cluster copy:
+   *   - 'issues'  → the Active Issues panel + cluster-health issues count
+   *   - 'gitops'  → the GitOps controllers card
+   *   - 'checks'  → the Cluster Audit card (and any route to /audit; legacy
+   *                 `clusterChecksHref` folded in here)
+   *   - 'certs'   → the Certificate Health card
+   *
+   * View-shaped targets (issues / gitops / checks) are honored for every entry:
+   * in-app nav (Home cards, ⌘K, "view all") hands straight to the host from
+   * `setMainView` via `onHostNavigate` (smooth same-document hand-off, no
+   * intermediate /<view> mount); a direct /<view> URL (bookmark/deep link)
+   * funnels through a redirect effect that uses `window.location.replace` so
+   * the transient URL stays out of history. 'certs' has no Radar view, so only
+   * the card consults it. `onHostNavigate` is optional — without it everything
+   * falls back to `window.location` (a hard reload).
+   */
+  fleetTakeoverHref?: (target: FleetTakeoverTarget) => string | undefined;
+  /**
+   * @deprecated Superseded by `fleetTakeoverHref('checks')`. Kept so consumers
+   * still on the pre-1.7 hook keep working (App.tsx folds it into the 'checks'
+   * target) — this makes adding `fleetTakeoverHref` an additive, non-breaking
+   * change. Remove in a major release once all consumers have migrated.
    */
   clusterChecksHref?: () => string;
+  /**
+   * Optional smooth navigator for host-owned URLs. When the host takes a
+   * destination over (`fleetTakeoverHref`, `crossClusterCompareHref`), Radar
+   * would otherwise hand off via `window.location` — a full document reload
+   * that cold-boots the host (white flash, re-auth, chrome teardown). A host
+   * that can navigate SAME-DOCUMENT (e.g. Radar Cloud's cross-tree swap with a
+   * View Transition) passes this so the hand-off morphs instead of reloading.
+   * Omitted → Radar falls back to `window.location` (hard nav), so standalone
+   * OSS / other hosts are unaffected.
+   */
+  onHostNavigate?: (url: string) => void;
   /**
    * Chrome level for embedded hosts. Default ('full', or omitted) renders
    * Radar's top bar + the view-switcher. 'none' suppresses BOTH — the host

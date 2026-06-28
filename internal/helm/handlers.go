@@ -33,11 +33,30 @@ func userCreds(r *http.Request) (string, []string) {
 }
 
 // Handlers provides HTTP handlers for Helm endpoints
-type Handlers struct{}
+type Handlers struct {
+	// resolveNamespaces maps a request to the namespaces a Helm list should
+	// query. It returns (nil, true) for cluster-wide access, (namespaces, true)
+	// to list those namespaces and merge, and (_, false) when the identity has
+	// no namespace access. Injected by the server so the helm package doesn't
+	// depend on its per-user RBAC plumbing. May be nil in tests that don't
+	// exercise the list endpoints.
+	resolveNamespaces func(r *http.Request) ([]string, bool)
+}
 
-// NewHandlers creates a new Handlers instance
-func NewHandlers() *Handlers {
-	return &Handlers{}
+// NewHandlers creates a new Handlers instance. resolveNamespaces lets the list
+// endpoints degrade gracefully for namespace-restricted identities (see
+// handleListReleases); pass nil only in tests that don't hit those routes.
+func NewHandlers(resolveNamespaces func(r *http.Request) ([]string, bool)) *Handlers {
+	return &Handlers{resolveNamespaces: resolveNamespaces}
+}
+
+// listNamespaces resolves which namespaces a Helm list should query. Falls back
+// to cluster-wide (nil, true) when no resolver is wired.
+func (h *Handlers) listNamespaces(r *http.Request) ([]string, bool) {
+	if h.resolveNamespaces == nil {
+		return nil, true
+	}
+	return h.resolveNamespaces(r)
 }
 
 // RegisterRoutes registers Helm routes on the given router
@@ -49,9 +68,13 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Post("/releases/install-stream", h.handleInstallStream)
 		r.Get("/releases/{namespace}/{name}", h.handleGetRelease)
 		r.Get("/releases/{namespace}/{name}/manifest", h.handleGetManifest)
+		r.Get("/releases/{namespace}/{name}/values/diff", h.handleGetValuesDiff)
 		r.Get("/releases/{namespace}/{name}/values", h.handleGetValues)
 		r.Get("/releases/{namespace}/{name}/diff", h.handleGetDiff)
+		r.Get("/releases/{namespace}/{name}/notes/diff", h.handleGetNotesDiff)
+		r.Get("/releases/{namespace}/{name}/resources/diff", h.handleGetResourceDiff)
 		r.Get("/releases/{namespace}/{name}/upgrade-info", h.handleCheckUpgrade)
+		r.Get("/releases/{namespace}/{name}/versions", h.handleAvailableVersions)
 		r.Get("/upgrade-check", h.handleBatchUpgradeCheck)
 		// Actions (write operations)
 		r.Post("/releases/{namespace}/{name}/rollback", h.handleRollback)
@@ -65,6 +88,12 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		// Chart browser (local repositories)
 		r.Get("/repositories", h.handleListRepositories)
 		r.Post("/repositories/{name}/update", h.handleUpdateRepository)
+
+		// Registered OCI chart sources (the OCI analog of `helm repo add`) — let
+		// Radar track upgrades for the user's own OCI-published charts.
+		r.Get("/oci-sources", h.handleListOCISources)
+		r.Post("/oci-sources", h.handleAddOCISource)
+		r.Delete("/oci-sources", h.handleRemoveOCISource)
 		r.Get("/charts", h.handleSearchCharts)
 		r.Get("/charts/{repo}/{chart}", h.handleGetChartDetail)
 		r.Get("/charts/{repo}/{chart}/{version}", h.handleGetChartDetailVersion)
@@ -84,10 +113,18 @@ func (h *Handlers) handleListReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	namespace := r.URL.Query().Get("namespace")
+	// Resolve which namespaces to list. An explicit ?namespace= is honored by
+	// the resolver (via the request query); when none is given, a
+	// namespace-restricted identity resolves to its accessible namespaces
+	// instead of a cluster-wide `list secrets` that would 403.
+	namespaces, ok := h.listNamespaces(r)
+	if !ok {
+		writeJSON(w, []HelmRelease{})
+		return
+	}
 
 	username, groups := userCreds(r)
-	releases, err := client.ListReleasesAsUser(namespace, username, groups)
+	releases, err := client.ListReleasesAcrossNamespaces(namespaces, username, groups)
 	if err != nil {
 		if IsForbiddenError(err) {
 			writeError(w, http.StatusForbidden, "insufficient permissions to list Helm releases")
@@ -121,6 +158,7 @@ func (h *Handlers) handleGetRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	EnrichHookDiagnosticsWithClusterEvidence(r.Context(), release, k8s.ClientFromContext(r.Context()))
 
 	writeJSON(w, release)
 }
@@ -177,15 +215,53 @@ func (h *Handlers) handleGetValues(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	allValues := r.URL.Query().Get("all") == "true"
+	revision := 0
+	if revStr := r.URL.Query().Get("revision"); revStr != "" {
+		rev, err := strconv.Atoi(revStr)
+		if err != nil || rev <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid revision parameter")
+			return
+		}
+		revision = rev
+	}
 
 	username, groups := userCreds(r)
-	values, err := client.GetValuesAsUser(namespace, name, allValues, username, groups)
+	values, err := client.GetValuesRevisionAsUser(namespace, name, allValues, revision, username, groups)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	writeJSON(w, values)
+}
+
+// handleGetValuesDiff returns a values diff between two release revisions.
+// Member+ only — values often contain credentials.
+func (h *Handlers) handleGetValuesDiff(w http.ResponseWriter, r *http.Request) {
+	if !requireCloudRole(w, r, auth.RoleMember, "diff Helm release values") {
+		return
+	}
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+
+	rev1, rev2, ok := parseRevisionPair(w, r)
+	if !ok {
+		return
+	}
+
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	allValues := r.URL.Query().Get("all") == "true"
+	username, groups := userCreds(r)
+	diff, err := client.GetValuesDiffAsUser(namespace, name, rev1, rev2, allValues, username, groups)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, diff)
 }
 
 // handleGetDiff returns the diff between two revisions. Member+ only
@@ -203,23 +279,8 @@ func (h *Handlers) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	rev1Str := r.URL.Query().Get("revision1")
-	rev2Str := r.URL.Query().Get("revision2")
-
-	if rev1Str == "" || rev2Str == "" {
-		writeError(w, http.StatusBadRequest, "revision1 and revision2 parameters are required")
-		return
-	}
-
-	rev1, err := strconv.Atoi(rev1Str)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid revision1 parameter")
-		return
-	}
-
-	rev2, err := strconv.Atoi(rev2Str)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid revision2 parameter")
+	rev1, rev2, ok := parseRevisionPair(w, r)
+	if !ok {
 		return
 	}
 
@@ -231,6 +292,80 @@ func (h *Handlers) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, diff)
+}
+
+// handleGetNotesDiff returns a release notes diff between two revisions.
+func (h *Handlers) handleGetNotesDiff(w http.ResponseWriter, r *http.Request) {
+	if !requireCloudRole(w, r, auth.RoleMember, "diff Helm release notes") {
+		return
+	}
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+	rev1, rev2, ok := parseRevisionPair(w, r)
+	if !ok {
+		return
+	}
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	username, groups := userCreds(r)
+	diff, err := client.GetNotesDiffAsUser(namespace, name, rev1, rev2, username, groups)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, diff)
+}
+
+// handleGetResourceDiff returns added/removed rendered resources between revisions.
+func (h *Handlers) handleGetResourceDiff(w http.ResponseWriter, r *http.Request) {
+	if !requireCloudRole(w, r, auth.RoleMember, "diff Helm release resources") {
+		return
+	}
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+	rev1, rev2, ok := parseRevisionPair(w, r)
+	if !ok {
+		return
+	}
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	username, groups := userCreds(r)
+	diff, err := client.GetResourceDiffAsUser(namespace, name, rev1, rev2, username, groups)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, diff)
+}
+
+func parseRevisionPair(w http.ResponseWriter, r *http.Request) (int, int, bool) {
+	rev1Str := r.URL.Query().Get("revision1")
+	rev2Str := r.URL.Query().Get("revision2")
+	if rev1Str == "" || rev2Str == "" {
+		writeError(w, http.StatusBadRequest, "revision1 and revision2 parameters are required")
+		return 0, 0, false
+	}
+	rev1, err := strconv.Atoi(rev1Str)
+	if err != nil || rev1 <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid revision1 parameter")
+		return 0, 0, false
+	}
+	rev2, err := strconv.Atoi(rev2Str)
+	if err != nil || rev2 <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid revision2 parameter")
+		return 0, 0, false
+	}
+	if rev1 == rev2 {
+		writeError(w, http.StatusBadRequest, "revision1 and revision2 must differ")
+		return 0, 0, false
+	}
+	return rev1, rev2, true
 }
 
 // handleCheckUpgrade checks if a newer version is available
@@ -254,6 +389,36 @@ func (h *Handlers) handleCheckUpgrade(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, info)
 }
 
+// handleAvailableVersions returns the newest-first list of chart versions this
+// release could be upgraded/downgraded to, so the upgrade dialog can offer a
+// specific target version. Returns [] when the source can't be resolved.
+func (h *Handlers) handleAvailableVersions(w http.ResponseWriter, r *http.Request) {
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	username, groups := userCreds(r)
+	versions, err := client.AvailableVersionsAsUser(namespace, name, username, groups)
+	if err != nil {
+		if IsForbiddenError(err) {
+			writeError(w, http.StatusForbidden, "insufficient permissions to read Helm release")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if versions == nil {
+		versions = []string{}
+	}
+	writeJSON(w, versions)
+}
+
 // handleBatchUpgradeCheck checks all releases for upgrades at once
 func (h *Handlers) handleBatchUpgradeCheck(w http.ResponseWriter, r *http.Request) {
 	client := GetClient()
@@ -262,10 +427,14 @@ func (h *Handlers) handleBatchUpgradeCheck(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	namespace := r.URL.Query().Get("namespace")
+	namespaces, ok := h.listNamespaces(r)
+	if !ok {
+		writeJSON(w, &BatchUpgradeInfo{Releases: map[string]*UpgradeInfo{}})
+		return
+	}
 
 	username, groups := userCreds(r)
-	info, err := client.BatchCheckUpgradesAsUser(namespace, username, groups)
+	info, err := client.BatchCheckUpgradesAcrossNamespaces(namespaces, username, groups)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -717,6 +886,54 @@ func (h *Handlers) handleUpdateRepository(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, map[string]string{"status": "success", "message": "Repository updated"})
+}
+
+// ociSourceRequest is the body for registering/unregistering an OCI chart source.
+type ociSourceRequest struct {
+	Source string `json:"source"`
+}
+
+// handleListOCISources returns the registered OCI chart-source prefixes.
+func (h *Handlers) handleListOCISources(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, ListOCISources())
+}
+
+// handleAddOCISource registers an OCI chart-source prefix. Gated by
+// requireHelmWrite (same as repo refresh): it mutates pod-local config and
+// underpins later upgrades, but is not a cluster mutation.
+func (h *Handlers) handleAddOCISource(w http.ResponseWriter, r *http.Request) {
+	if !requireHelmWrite(w, r) {
+		return
+	}
+	var req ociSourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	sources, err := AddOCISource(req.Source)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, sources)
+}
+
+// handleRemoveOCISource unregisters an OCI chart-source prefix.
+func (h *Handlers) handleRemoveOCISource(w http.ResponseWriter, r *http.Request) {
+	if !requireHelmWrite(w, r) {
+		return
+	}
+	var req ociSourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	sources, err := RemoveOCISource(req.Source)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, sources)
 }
 
 // handleSearchCharts searches for charts across all repositories

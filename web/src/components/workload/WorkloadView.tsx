@@ -39,10 +39,11 @@ import { useResourceAudit, useResources } from '../../api/client'
 import { AuditAlerts } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
 import { LogsViewer } from '../logs/LogsViewer'
-import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities } from '../../contexts/CapabilitiesContext'
+import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities, useIsLocalDeployment } from '../../contexts/CapabilitiesContext'
 import { useOpenTerminal, useOpenLogs, useOpenWorkloadLogs, useOpenNodeTerminal } from '../dock'
 import { PortForwardButton } from '../portforward/PortForwardButton'
 import { useToast } from '../ui/Toast'
+import { Tooltip } from '../ui/Tooltip'
 import { PodRenderer } from '../resources/renderers/PodRenderer'
 import { NodeRenderer } from '../resources/renderers/NodeRenderer'
 import { ServiceRenderer } from '../resources/renderers/ServiceRenderer'
@@ -98,14 +99,6 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
   const name = parts.slice(3).map(decode).join('/')
   const group = searchParams.get('apiGroup') || ''
 
-  if (!kind || !namespace || !name) {
-    return (
-      <div className="flex items-center justify-center h-full text-theme-text-tertiary">
-        Invalid workload URL
-      </div>
-    )
-  }
-
   const handleBack = useCallback(() => {
     if (window.history.length > 1) {
       navigate(-1)
@@ -117,6 +110,15 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
   const handleNavigate = useCallback((resource: SelectedResource) => {
     navigate(buildWorkloadPath(resource))
   }, [navigate])
+
+  // Hooks must run unconditionally — the invalid-URL guard comes after them.
+  if (!kind || !namespace || !name) {
+    return (
+      <div className="flex items-center justify-center h-full text-theme-text-tertiary">
+        Invalid workload URL
+      </div>
+    )
+  }
 
   return (
     <WorkloadView
@@ -157,6 +159,10 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
   const openWorkloadLogs = useOpenWorkloadLogs()
   const openNodeTerminal = useOpenNodeTerminal()
   const { canExec, canViewLogs, canPortForward } = useNamespacedCapabilities(namespace)
+  // Live forward when local+RBAC; otherwise (in-cluster/Cloud) still surface the
+  // copy-paste kubectl command. The button picks live vs. copy by deployment mode.
+  const isLocal = useIsLocalDeployment()
+  const showPortForward = canPortForward || !isLocal
 
   const deleteMutation = useDeleteResource()
   const restartWorkloadMutation = useRestartWorkload()
@@ -188,7 +194,7 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
   return {
     canExec,
     canViewLogs,
-    canPortForward,
+    canPortForward: showPortForward,
     onOpenTerminal: openTerminal,
     onOpenLogs: openLogs,
     onOpenWorkloadLogs: openWorkloadLogs,
@@ -197,45 +203,45 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
     renderPortForward: ({ type, namespace: ns, name: n, className }: { type: 'pod' | 'service'; namespace: string; name: string; className?: string }) => (
       <PortForwardButton type={type} namespace={ns} name={n} className={className} />
     ),
-    onDelete: (params: any, callbacks?: any) => deleteMutation.mutate(params, { onSuccess: callbacks?.onSuccess }),
+    onDelete: (params: Parameters<typeof deleteMutation.mutate>[0], callbacks?: { onSuccess?: () => void }) => deleteMutation.mutate(params, { onSuccess: callbacks?.onSuccess }),
     isDeleting: deleteMutation.isPending,
     cascadeDependents: cascadePreview?.dependents,
     cascadeLoading,
-    onRestart: (params: any) => restartWorkloadMutation.mutate(params),
+    onRestart: (params: Parameters<typeof restartWorkloadMutation.mutate>[0]) => restartWorkloadMutation.mutate(params),
     isRestarting: restartWorkloadMutation.isPending,
     revisions: revisionsList,
     revisionsLoading,
     revisionsError: revisionsError ?? null,
-    onRollback: (params: any, callbacks?: any) => rollbackMutation.mutate(params, { onSuccess: callbacks?.onSuccess }),
+    onRollback: (params: Parameters<typeof rollbackMutation.mutate>[0], callbacks?: { onSuccess?: () => void }) => rollbackMutation.mutate(params, { onSuccess: callbacks?.onSuccess }),
     isRollingBack: rollbackMutation.isPending,
-    onTriggerCronJob: (params: any) => triggerCronJobMutation.mutate(params),
+    onTriggerCronJob: (params: Parameters<typeof triggerCronJobMutation.mutate>[0]) => triggerCronJobMutation.mutate(params),
     isTriggeringCronJob: triggerCronJobMutation.isPending,
-    onSuspendCronJob: (params: any) => suspendCronJobMutation.mutate(params),
+    onSuspendCronJob: (params: Parameters<typeof suspendCronJobMutation.mutate>[0]) => suspendCronJobMutation.mutate(params),
     isSuspendingCronJob: suspendCronJobMutation.isPending,
-    onResumeCronJob: (params: any) => resumeCronJobMutation.mutate(params),
+    onResumeCronJob: (params: Parameters<typeof resumeCronJobMutation.mutate>[0]) => resumeCronJobMutation.mutate(params),
     isResumingCronJob: resumeCronJobMutation.isPending,
-    onFluxReconcile: (params: any) => fluxReconcileMutation.mutate(params),
+    onFluxReconcile: (params: Parameters<typeof fluxReconcileMutation.mutate>[0]) => fluxReconcileMutation.mutate(params),
     isFluxReconciling: fluxReconcileMutation.isPending,
-    onFluxSyncWithSource: (params: any) => fluxSyncWithSourceMutation.mutate(params),
+    onFluxSyncWithSource: (params: Parameters<typeof fluxSyncWithSourceMutation.mutate>[0]) => fluxSyncWithSourceMutation.mutate(params),
     isFluxSyncing: fluxSyncWithSourceMutation.isPending,
-    onFluxSuspend: (params: any) => fluxSuspendMutation.mutate(params),
+    onFluxSuspend: (params: Parameters<typeof fluxSuspendMutation.mutate>[0]) => fluxSuspendMutation.mutate(params),
     isFluxSuspending: fluxSuspendMutation.isPending,
-    onFluxResume: (params: any) => fluxResumeMutation.mutate(params),
+    onFluxResume: (params: Parameters<typeof fluxResumeMutation.mutate>[0]) => fluxResumeMutation.mutate(params),
     isFluxResuming: fluxResumeMutation.isPending,
-    onArgoSync: (params: any) => argoSyncMutation.mutate(params),
+    onArgoSync: (params: Parameters<typeof argoSyncMutation.mutate>[0]) => argoSyncMutation.mutate(params),
     isArgoSyncing: argoSyncMutation.isPending,
-    onArgoRefresh: (params: any) => argoRefreshMutation.mutate(params),
+    onArgoRefresh: (params: Parameters<typeof argoRefreshMutation.mutate>[0]) => argoRefreshMutation.mutate(params),
     isArgoRefreshing: argoRefreshMutation.isPending,
-    onArgoSuspend: (params: any) => argoSuspendMutation.mutate(params),
+    onArgoSuspend: (params: Parameters<typeof argoSuspendMutation.mutate>[0]) => argoSuspendMutation.mutate(params),
     isArgoSuspending: argoSuspendMutation.isPending,
-    onArgoResume: (params: any) => argoResumeMutation.mutate(params),
+    onArgoResume: (params: Parameters<typeof argoResumeMutation.mutate>[0]) => argoResumeMutation.mutate(params),
     isArgoResuming: argoResumeMutation.isPending,
     canNodeWrite,
-    onCordonNode: (params: any) => cordonMutation.mutate(params),
+    onCordonNode: (params: Parameters<typeof cordonMutation.mutate>[0]) => cordonMutation.mutate(params),
     isCordoningNode: cordonMutation.isPending,
-    onUncordonNode: (params: any) => uncordonMutation.mutate(params),
+    onUncordonNode: (params: Parameters<typeof uncordonMutation.mutate>[0]) => uncordonMutation.mutate(params),
     isUncordoningNode: uncordonMutation.isPending,
-    onDrainNode: (params: any) => drainMutation.mutate(params),
+    onDrainNode: (params: Parameters<typeof drainMutation.mutate>[0]) => drainMutation.mutate(params),
     isDrainingNode: drainMutation.isPending,
   }
 }
@@ -879,15 +885,18 @@ function FluxSourceConsumersInner({ sourceKind, namespace, name }: { sourceKind:
       </h3>
       <div className="flex flex-wrap gap-1.5">
         {consumers.map((c) => (
-          <button
+          <Tooltip
             key={`${c.kind}/${c.namespace}/${c.name}`}
+            content={`${c.kind} ${c.namespace}/${c.name}`}
+          >
+          <button
             onClick={() => navigate(`/gitops/detail/${c.plural}/${encodeURIComponent(c.namespace)}/${encodeURIComponent(c.name)}`)}
             className="inline-flex items-center gap-1.5 rounded border border-theme-border bg-theme-surface px-1.5 py-0.5 text-[11px] text-theme-text-secondary hover:border-skyhook-500/60 hover:text-skyhook-500 transition-colors"
-            title={`${c.kind} ${c.namespace}/${c.name}`}
           >
             <span className="text-theme-text-tertiary">{c.kind === 'HelmRelease' ? 'HR' : 'K'}</span>
             <span>{c.namespace}/{c.name}</span>
           </button>
+          </Tooltip>
         ))}
       </div>
     </div>

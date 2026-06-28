@@ -29,6 +29,7 @@ import { DURATION_DOCK } from '@skyhook-io/k8s-ui/utils/animation'
 import { ContextSwitcher } from './components/ContextSwitcher'
 import { NamespaceSwitcher, type NamespaceSwitcherHandle } from './components/NamespaceSwitcher'
 import { useNavCustomization } from './context/NavCustomization'
+import type { FleetTakeoverTarget } from './context/NavCustomization'
 import { PrimaryNavRail } from './components/nav/PrimaryNavRail'
 import { useNavRailPinned } from './hooks/useNavRailPinned'
 import { useMediaQuery } from './hooks/useMediaQuery'
@@ -132,19 +133,24 @@ function AuthBarrier({ authMode }: { authMode: string }) {
   if (authMode === 'oidc') {
     return (
       <div className="flex-1 relative bg-theme-base">
-        <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute inset-0 pointer-events-none">
           <img
             src={radarLoadingIcon}
             alt=""
             aria-hidden
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-11 h-11"
+            // Integer offset (50% − 22) — matches the Connecting/Opening splashes;
+            // avoids sub-pixel jitter from translate(-50%) on odd-width viewports.
+            className="absolute w-11 h-11"
+            style={{ left: 'calc(50% - 22px)', top: 'calc(50% - 22px)' }}
           />
-          <p
-            className="absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-[17px] font-semibold tracking-tight text-theme-text-primary"
+          <div
+            className="absolute left-1/2 -translate-x-1/2 text-center"
             style={{ top: 'calc(50% + 34px)' }}
           >
-            Redirecting to login…
-          </p>
+            <p className="whitespace-nowrap text-[17px] font-semibold tracking-tight text-theme-text-primary">
+              Redirecting to login…
+            </p>
+          </div>
         </div>
       </div>
     )
@@ -170,6 +176,15 @@ function AuthBarrier({ authMode }: { authMode: string }) {
   )
 }
 
+// Identity of the "page" a non-URL-backed peek drawer belongs to. Pathname alone
+// is not enough: Applications keeps the list and an app's detail on the same
+// `/applications` pathname and distinguishes them with `?app=`, so a Back from
+// detail to list would otherwise leave the peek orphaned. Only `app` is included
+// (not the whole query) so filter/tab/namespace churn doesn't close the peek.
+function peekOwnerKey(pathname: string, search: string): string {
+  return `${pathname}\n${new URLSearchParams(search).get('app') ?? ''}`
+}
+
 function AppInner() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -178,6 +193,32 @@ function AppInner() {
   const capabilities = useCapabilitiesContext()
   const openLocalTerminal = useOpenLocalTerminal()
   const navCustomization = useNavCustomization()
+  // Hand off to a host-owned URL. The host's `onHostNavigate` (Radar Cloud's
+  // cross-tree swap) navigates same-document so the chrome morphs instead of
+  // cold-booting; without it we fall back to a hard `window.location` nav.
+  const goHost = useCallback(
+    (url: string) => {
+      if (navCustomization.onHostNavigate) navCustomization.onHostNavigate(url)
+      else window.location.assign(url)
+    },
+    [navCustomization],
+  )
+  // Resolve every host-takeover URL ONCE (memoized on navCustomization) so the
+  // setMainView intercept, redirect effect, nav-pill filtering, inline-view
+  // gating, and the cert click handler all consume the SAME value — host
+  // callbacks aren't guaranteed idempotent (scope / flags / signed URLs can
+  // shift between calls). undefined = not taken over → Radar renders the view
+  // itself. `clusterChecksHref` is the deprecated pre-1.7 hook, folded into the
+  // 'checks' target for back-compat.
+  const takeover: Record<FleetTakeoverTarget, string | undefined> = useMemo(
+    () => ({
+      issues: navCustomization.fleetTakeoverHref?.('issues'),
+      gitops: navCustomization.fleetTakeoverHref?.('gitops'),
+      checks: navCustomization.fleetTakeoverHref?.('checks') ?? navCustomization.clusterChecksHref?.(),
+      certs: navCustomization.fleetTakeoverHref?.('certs'),
+    }),
+    [navCustomization],
+  )
   const { pinned: navRailPinned, togglePinned: toggleNavRailPinned } = useNavRailPinned()
   // Standalone Radar gets the left nav rail; embedded hosts (Radar Hub) own
   // the left chrome via their own fleet rail and keep Radar's top-bar pills.
@@ -257,6 +298,20 @@ function AppInner() {
 
   // Set mainView by navigating to the path
   const setMainView = useCallback((view: ExtendedMainView, params?: Record<string, string>) => {
+    // Host takeover: fleet-shaped views (issues/gitops/checks) are owned by the
+    // host's fleet pages. Hand straight to the host instead of navigating to
+    // our own /<view> first — that intermediate hop mounts the view machinery
+    // and flashes the "Opening…" splash before the redirect effect bounces out.
+    // Skipping it makes the hand-off a single smooth cross-tree swap. (Direct
+    // /<view> URL entry still funnels through the redirect effect below.)
+    if (view === 'issues' || view === 'gitops' || view === 'checks') {
+      const href = takeover[view]
+      if (href) {
+        goHost(href)
+        return
+      }
+    }
+
     const path = view === 'home' ? '/' : `/${view}`
 
     // Start fresh — keep only cross-view params (namespaces), discard all view-specific ones
@@ -274,23 +329,31 @@ function AppInner() {
     }
 
     navigate({ pathname: path, search: newParams.toString() })
-  }, [navigate, searchParams])
+  }, [navigate, searchParams, takeover, goHost])
 
-  // Cloud (embedded) makes the host's fleet Checks queue the one canonical
-  // surface — owned by the host's left rail — so Radar drops its own Audit
-  // pill (see the nav below) and any route to /audit redirects to the fleet
-  // Checks queue scoped to this cluster. Entry points that still land on
-  // /audit — the Home "Cluster Audit" card, ⌘K, WorkloadView's "view all"
-  // findings, bookmarks/deep links — all funnel through here. `replace` (not
-  // assign) keeps the transient /audit URL out of history so Back doesn't
-  // bounce off the redirect. Standalone OSS (no clusterChecksHref) is
-  // unaffected and renders the in-app audit view as before.
-  const clusterChecksHref = navCustomization.clusterChecksHref
+  // Cloud (embedded) takes over the "fleet-shaped" per-cluster views with its
+  // own fleet pages scoped to this cluster — owned by the host's left rail — so
+  // Radar drops the matching pills (see the nav below). In-app nav hands off in
+  // setMainView (above); direct /<view> URL entry funnels through the redirect
+  // effect below. Both consume the memoized `takeover` resolved above. Standalone
+  // OSS (no fleetTakeoverHref) is unaffected and renders the in-app view.
+  //
+  // Has the host claimed this view? View-shaped targets only ('certs' has no
+  // Radar view — only its Home card consults `takeover`). Used to drop the nav
+  // pill and gate the inline view render in favor of the "Opening…" splash.
+  const isViewTakenOver = (view: ExtendedMainView): boolean =>
+    (view === 'issues' || view === 'gitops' || view === 'checks') && !!takeover[view]
+  // The host's URL for the CURRENT view, if taken over. Drives the redirect
+  // effect and the "Opening…" splash.
+  const viewTakeoverHref =
+    mainView === 'issues' || mainView === 'gitops' || mainView === 'checks'
+      ? takeover[mainView]
+      : undefined
   useEffect(() => {
-    if (clusterChecksHref && mainView === 'checks') {
-      window.location.replace(clusterChecksHref())
+    if (viewTakeoverHref) {
+      window.location.replace(viewTakeoverHref)
     }
-  }, [clusterChecksHref, mainView])
+  }, [viewTakeoverHref])
 
   const [namespaces, setNamespaces] = useState<string[]>(getInitialState().namespaces)
   // For large clusters: force SSE to reconnect with namespace filter
@@ -361,6 +424,9 @@ function AppInner() {
   // selected drawer resource. This covers both in-view kind switches and
   // cross-kind navigations from expanded drawers (for example Node -> View Pods).
   const prevResourcesKindKeyRef = useRef<string | null>(null)
+  // Owner-key (pathname + ?app) a non-URL-backed peek was opened on; see
+  // navigateToResource and peekOwnerKey.
+  const peekOwnerKeyRef = useRef<string | null>(null)
   const currentResourceKindSlug = normalizedResourcesKindSlug.toLowerCase()
   const currentResourceGroup = searchParams.get('apiGroup') ?? ''
   const selectedResourceKindSlug = selectedResource ? kindToPlural(selectedResource.kind).toLowerCase() : ''
@@ -372,9 +438,28 @@ function AppInner() {
   const resourcesKindRouteChanged = mainView === 'resources' &&
     prevResourcesKindKeyRef.current !== null &&
     prevResourcesKindKeyRef.current !== `${currentResourceGroup}/${currentResourceKindSlug}`
-  const routeSelectedResource = resourcesKindRouteChanged && selectedResourceRouteMismatch
-    ? null
-    : selectedResource
+
+  // A peek opened outside /resources (topology, GitOps, Applications) carries no
+  // URL backing, so the only signal that the page beneath it has navigated is
+  // that its owner-key (pathname + ?app) no longer matches where it was opened.
+  // Hiding it here, at render time, closes the orphan on Back without adding
+  // another clearing effect that would race the `suppressViewClearRef` lifecycle.
+  // The /resources case is URL-backed and handled above; an expanded drawer
+  // (drawerExpanded) legitimately lives at /workload and must stay open there.
+  const peekRouteOrphaned = !!selectedResource && !drawerExpanded && mainView !== 'resources' &&
+    peekOwnerKeyRef.current !== null &&
+    peekOwnerKeyRef.current !== peekOwnerKey(location.pathname, location.search)
+
+  // In Applications the inline WorkloadView (?workload) and the peek drawer are
+  // mutually exclusive — never two detail surfaces at once. ?workload is the
+  // single source of truth: while it's set the peek yields to the inline view.
+  // (Opening a child peek from Applications clears ?workload, see onOpenResource.)
+  const appsInlineWorkloadActive = mainView === 'applications' && searchParams.has('workload')
+
+  const routeSelectedResource =
+    (resourcesKindRouteChanged && selectedResourceRouteMismatch) || peekRouteOrphaned || appsInlineWorkloadActive
+      ? null
+      : selectedResource
 
   useEffect(() => {
     if (mainView !== 'resources') {
@@ -409,6 +494,13 @@ function AppInner() {
 
   // Navigate to a resource — uses View Transitions cross-fade when drawer is already open
   const navigateToResource = useCallback((res: SelectedResource, tab: 'detail' | 'yaml' = 'detail') => {
+    // Record the page this peek was opened on. Outside /resources the drawer is
+    // not URL-backed, so this ref is what lets the render-time gate below close
+    // the peek when the page under it changes (e.g. browser Back off a GitOps
+    // detail page, or Applications detail → list via ?app). window.location is
+    // read (not the `location` closure) so the value is always current
+    // regardless of this callback's memoization.
+    peekOwnerKeyRef.current = peekOwnerKey(window.location.pathname, window.location.search)
     const update = () => { setDrawerInitialTab(tab); setSelectedResource(res) }
     // Skip the cross-fade animation entirely on first open (no
     // `selectedResource`); otherwise route through
@@ -631,6 +723,16 @@ function AppInner() {
 
   // Connection state (for graceful startup)
   const { connection, retry: retryConnection, isRetrying, updateFromSSE: updateConnectionFromSSE } = useConnection()
+
+  // The app's content surface is ready to show: auth resolved, not mid context-
+  // switch, and the cluster connection is live. The main content area gates on
+  // exactly this, and so do the overlay drawers — otherwise a deep-link/refresh
+  // with `?resource=`/`?release=` renders the drawer on top of the connecting/
+  // switching splash, pushing the centered loading logo off-center and showing an
+  // empty drawer over a not-yet-loaded view. Gating both on the SAME readiness so
+  // a drawer only ever sits over a real content surface.
+  const contentReady = !isSwitching && !authMePending &&
+    !(authMe?.authEnabled && !authMe?.username) && connection.state === 'connected'
 
   // Query client for cache invalidation
   const queryClient = useQueryClient()
@@ -871,7 +973,7 @@ function AppInner() {
       name: node.name,
       group: apiVersionToGroup(node.data.apiVersion as string | undefined),
     })
-  }, [navigate])
+  }, [navigate, navigateToResource])
 
   // Serialize namespaces for stable dependency tracking
   const namespacesKey = namespaces.join(',')
@@ -1087,6 +1189,11 @@ function AppInner() {
       // Switching to specific namespaces - disable namespace grouping
       setGroupingMode('none')
     }
+    // Intentionally runs ONLY when the namespace selection changes. It reads the
+    // current groupingMode but must not re-run when grouping changes, or it would
+    // immediately revert a manual/fleet grouping choice. namespacesKey is the
+    // manual dependency standing in for the namespaces array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [namespacesKey])
 
   // Clear resource selection when changing views or namespaces
@@ -1281,14 +1388,15 @@ function AppInner() {
                 </span>
               )}
               {!connected && (
+                <Tooltip content="Reconnect">
                 <button
                   onClick={reconnect}
                   disabled={isReconnecting}
-                  className="p-1 text-theme-text-secondary hover:text-theme-text-primary disabled:opacity-50"
-                  title="Reconnect"
+                  className="p-1 text-theme-text-secondary hover:text-theme-text-primary disabled:opacity-50 disabled:pointer-events-none"
                 >
                   <RefreshCw className={`w-3 h-3 ${isReconnecting ? 'animate-spin' : ''}`} />
                 </button>
+                </Tooltip>
               )}
             </div>
             {/* Port forwards indicator — shown only when sessions exist */}
@@ -1312,21 +1420,20 @@ function AppInner() {
             // the bar is full, and the view's primary home is Cloud's fleet
             // rail. The view still exists and is reachable via /applications
             // and the view-switching shortcuts. Same treatment as Cost below.
-            { view: 'traffic' as const, icon: Activity, label: 'Traffic' },
+            { view: 'traffic' as const, icon: Activity, label: 'Live Traffic' },
             // Cost is intentionally hidden from the pill bar for now — the view still
             // exists and is reachable via /cost, the Home dashboard card, and the
             // command palette (⌘K). Remove this comment to restore it.
             { view: 'checks' as const, icon: ShieldCheck, label: 'Checks' },
           ] as const)
-            // In Cloud, Checks is a fleet-scoped feature owned by the host's
-            // left rail; the per-cluster view is just that fleet queue filtered
-            // to this cluster, so duplicating it as a peer pill here would be a
-            // second "Checks" that teleports out of the cluster shell. Drop the
-            // Audit tab when embedded — cluster-scoped access stays available
-            // via the Home "Cluster Audit" card (→ /audit, redirected to the
-            // scoped fleet Checks by the clusterChecksHref effect above), ⌘K,
-            // and bookmarks. Standalone OSS keeps the Audit tab.
-            .filter(({ view }) => !(view === 'checks' && clusterChecksHref))
+            // In Cloud, fleet-shaped views (Checks, Issues, GitOps) are owned by
+            // the host's left rail; the per-cluster view is just that fleet page
+            // filtered to this cluster, so duplicating it as a peer pill here
+            // would be a second copy that teleports out of the cluster shell.
+            // Drop any pill the host took over — cluster-scoped access stays
+            // available via the Home cards (redirected by the takeover effect
+            // above), ⌘K, and bookmarks. Standalone OSS keeps every pill.
+            .filter(({ view }) => !isViewTakenOver(view))
             .map(({ view, icon: Icon, label }) => (
             <Tooltip key={view} content={label} delay={100} position="bottom">
               <button
@@ -1382,8 +1489,6 @@ function AppInner() {
         <div className="flex items-center gap-3 shrink-0">
           <NamespaceSwitcher
             ref={namespaceSwitcherRef}
-            disabled={mainView === 'helm'}
-            disabledTooltip="Helm view always shows all namespaces"
           />
 
 
@@ -1410,13 +1515,14 @@ function AppInner() {
 
           {/* Local terminal */}
           {capabilities.localTerminal && (
+            <Tooltip content="Open local terminal">
             <button
               onClick={() => openLocalTerminal()}
               className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
-              title="Open local terminal"
             >
               <SquareTerminal className="w-4 h-4" />
             </button>
+            </Tooltip>
           )}
 
           {/* Theme toggle — hidden in embedded mode. Host apps (e.g. Radar
@@ -1436,20 +1542,22 @@ function AppInner() {
               old floating bottom-right pair. Settings moved to the rail bottom. */}
           {showNavRail && (
             <>
+              <Tooltip content="Keyboard shortcuts (?)">
               <button
                 onClick={() => setShowHelp(true)}
                 className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
-                title="Keyboard shortcuts (?)"
               >
                 <HelpCircle className="w-4 h-4" />
               </button>
+              </Tooltip>
+              <Tooltip content="Report a bug / Diagnostics">
               <button
                 onClick={() => setShowDiagnostics(true)}
                 className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
-                title="Report a bug / Diagnostics"
               >
                 <Bug className="w-4 h-4" />
               </button>
+              </Tooltip>
             </>
           )}
 
@@ -1481,20 +1589,20 @@ function AppInner() {
       )}
 
       {/* Connecting view — shown during initial connection or retry.
-          Icon is viewport-anchored so its screen position matches the
+          Icon is pane-anchored so its screen position matches the
           host hub splash across cross-document transitions. */}
       {!isSwitching && !(authMe?.authEnabled && !authMe?.username) && connection.state === 'connecting' && (
         <div className="flex-1 relative bg-theme-base">
-          {/* Icon absolutely anchored to viewport-center. The label block
+          {/* Icon absolutely anchored to the pane center. The label block
               sits at a fixed offset below — independent of label height
               so multi-line messages (context + progress) don't shift the
               icon's screen position. */}
-          <div className="fixed inset-0 pointer-events-none">
+          <div className="absolute inset-0 pointer-events-none">
             <img
               src={radarLoadingIcon}
               alt=""
               aria-hidden
-              // Integer offset (vw/2 − 22) — avoids sub-pixel jitter from
+              // Integer offset (50% − 22) — avoids sub-pixel jitter from
               // `translate(-50%, -50%)` on odd-width viewports.
               className="absolute w-11 h-11"
               style={{ left: 'calc(50% - 22px)', top: 'calc(50% - 22px)' }}
@@ -1522,15 +1630,15 @@ function AppInner() {
         </div>
       )}
 
-      {/* Context switching overlay — icon viewport-anchored, label below. */}
+      {/* Context switching overlay — icon pane-anchored, label below. */}
       {isSwitching && (
         <div className="flex-1 relative bg-theme-base">
-          <div className="fixed inset-0 pointer-events-none">
+          <div className="absolute inset-0 pointer-events-none">
             <img
               src={radarLoadingIcon}
               alt=""
               aria-hidden
-              // Integer offset (vw/2 − 22) — avoids sub-pixel jitter from
+              // Integer offset (50% − 22) — avoids sub-pixel jitter from
               // `translate(-50%, -50%)` on odd-width viewports.
               className="absolute w-11 h-11"
               style={{ left: 'calc(50% - 22px)', top: 'calc(50% - 22px)' }}
@@ -1576,7 +1684,7 @@ function AppInner() {
       )}
 
       {/* Main content - only show when connected and authenticated */}
-      {!isSwitching && !authMePending && !(authMe?.authEnabled && !authMe?.username) && connection.state === 'connected' && <div className="flex-1 flex overflow-hidden">
+      {contentReady && <div className="flex-1 flex overflow-hidden">
         <ErrorBoundary>
         {/* Home dashboard */}
         {mainView === 'home' && (
@@ -1611,6 +1719,15 @@ function AppInner() {
               navigate({ pathname: `/resources/${kind}`, search: newParams.toString() })
             }}
             onNavigateToResource={navigateFromIssue}
+            // Certs has no Radar view, so it can't ride the view-redirect effect
+            // above — wire the Certificate Health card straight to the host's
+            // fleet Certs page (scoped to this cluster) when claimed. `assign`
+            // (not replace): the user is navigating forward from a card, so this
+            // belongs in history. Omitted → the card falls back to Radar's own
+            // TLS-secrets resource list.
+            onNavigateToCerts={
+              takeover.certs ? () => goHost(takeover.certs!) : undefined
+            }
           />
         )}
 
@@ -1686,7 +1803,7 @@ function AppInner() {
                   <TopologySearch
                     nodes={filteredTopology?.nodes ?? []}
                     allNodes={topology?.nodes}
-                    viewModeLabel={topologyMode === 'fleet' ? 'Fleet' : topologyMode === 'traffic' ? 'Traffic' : 'Resources'}
+                    viewModeLabel={topologyMode === 'fleet' ? 'Fleet' : topologyMode === 'traffic' ? 'Network Flow' : 'Resources'}
                     onNodeSelect={handleNodeClick}
                     onZoomToNode={(id) => setTopologyFocus((prev) => ({ id, nonce: (prev?.nonce ?? 0) + 1 }))}
                     // Stack below the namespace breadcrumb (shown only for a single
@@ -1708,6 +1825,7 @@ function AppInner() {
                     showPolicyEffect={showPolicyEffect}
                     onShowPolicyEffectChange={setShowPolicyEffect}
                     showFleetMode={displayedTopology?.nodes?.some(n => FLEET_MODE_KINDS.has(n.kind as NodeKind)) ?? false}
+                    onNavigateToTraffic={() => setMainView('traffic')}
                   />
                 </div>
               </>
@@ -1746,10 +1864,9 @@ function AppInner() {
           />
         )}
 
-        {/* Helm view - always show all namespaces since releases span multiple ns */}
         {mainView === 'helm' && (
           <HelmView
-            namespace=""
+            namespaces={namespaces}
             selectedRelease={selectedHelmRelease}
             onReleaseClick={(ns, name, storageNamespace) => {
               setSelectedHelmRelease({ namespace: ns, name, storageNamespace })
@@ -1765,12 +1882,16 @@ function AppInner() {
           />
         )}
 
-        {/* GitOps view */}
-        {mainView === 'gitops' && (
+        {/* GitOps view (inline only when the host hasn't taken it over — see
+            the takeover splash below). */}
+        {mainView === 'gitops' && !isViewTakenOver('gitops') && (
           <GitOpsView
             namespaces={namespaces}
             onOpenResource={(resource) => {
-              setSelectedResource(resource)
+              // Route through navigateToResource so the peek records the page it
+              // opened on — that's what lets Back off the GitOps detail page close
+              // the drawer instead of orphaning it on the list.
+              navigateToResource(resource)
             }}
             onClearNamespaces={clearAllNamespaces}
           />
@@ -1781,7 +1902,17 @@ function AppInner() {
           <ApplicationsView
             namespaces={namespaces}
             onOpenResource={(resource) => {
-              setSelectedResource(resource)
+              // The peek and the inline WorkloadView are mutually exclusive: drop
+              // the inline workload selection so the app graph (not a second
+              // detail panel) sits behind the peek. Search-only change keeps the
+              // pathname — and thus the peek's owner-path — intact.
+              const params = new URLSearchParams(window.location.search)
+              if (params.has('workload') || params.has('tab')) {
+                params.delete('workload')
+                params.delete('tab')
+                navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
+              }
+              navigateToResource(resource)
             }}
           />
         )}
@@ -1796,17 +1927,38 @@ function AppInner() {
           <CostView onBack={() => setMainView('home')} />
         )}
 
-        {/* Best practices detail view. In Cloud this redirects to the host's
-            fleet Checks queue (clusterChecksHref effect above) — render a brief
-            splash instead of the single-cluster view while the cross-document
-            nav lands. */}
-        {mainView === 'checks' && clusterChecksHref && (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3 bg-theme-base">
-            <img src={radarLoadingIcon} alt="" aria-hidden className="w-11 h-11" />
-            <p className="text-sm text-theme-text-secondary">Opening Checks…</p>
+        {/* Takeover splash. When the host claims the current view via
+            fleetTakeoverHref, the redirect effect above is mid-flight — render a
+            brief splash instead of the inline view (which would flash + fire its
+            own fetches) while the cross-document nav lands. Covers checks /
+            issues / gitops with one block since only one view is active. */}
+        {viewTakeoverHref && (
+          <div className="flex-1 relative bg-theme-base">
+            {/* Viewport-anchored, 17px — identical to the "Connecting" splash so
+                the mark doesn't move or resize across the takeover hand-off. */}
+            <div className="absolute inset-0 pointer-events-none">
+              <img
+                src={radarLoadingIcon}
+                alt=""
+                aria-hidden
+                className="absolute w-11 h-11"
+                style={{ left: 'calc(50% - 22px)', top: 'calc(50% - 22px)' }}
+              />
+              <div
+                className="absolute left-1/2 -translate-x-1/2 text-center"
+                style={{ top: 'calc(50% + 34px)' }}
+              >
+                <p className="whitespace-nowrap text-[17px] font-semibold tracking-tight text-theme-text-primary">
+                  Opening…
+                </p>
+              </div>
+            </div>
           </div>
         )}
-        {mainView === 'checks' && !clusterChecksHref && (
+
+        {/* Best practices detail view (inline only when the host hasn't taken
+            Checks over — standalone OSS, or Cloud without a checks takeover). */}
+        {mainView === 'checks' && !isViewTakenOver('checks') && (
           <AuditView
             namespaces={namespaces}
             onNavigateToResource={navigateToResourceList}
@@ -1816,8 +1968,9 @@ function AppInner() {
         {/* Issues — per-cluster live triage queue (hidden route: not yet in the
             nav `views` list; reachable at /issues). Same shared <IssuesView> the
             Hub fleet uses; a GitOps reconciler subject routes to its detail page,
-            other resources open the standard resource view. */}
-        {mainView === 'issues' && (
+            other resources open the standard resource view. Inline only when the
+            host hasn't taken it over. */}
+        {mainView === 'issues' && !isViewTakenOver('issues') && (
           <IssuesPane
             namespaces={namespaces}
             onNavigateToResource={navigateFromIssue}
@@ -1839,8 +1992,10 @@ function AppInner() {
         </ErrorBoundary>
       </div>}
 
-      {/* Resource detail drawer — stays mounted, expands to full-screen WorkloadView */}
-      {resourceDrawer.shouldRender && drawerResource && (
+      {/* Resource detail drawer — stays mounted, expands to full-screen WorkloadView.
+          Gated on contentReady so it never renders over the connecting/switching
+          splash (which would push the centered logo off-center). */}
+      {contentReady && resourceDrawer.shouldRender && drawerResource && (
         <ResourceDetailDrawer
           resource={drawerResource}
           initialTab={drawerInitialTab}
@@ -1864,8 +2019,8 @@ function AppInner() {
         />
       )}
 
-      {/* Helm release drawer */}
-      {helmDrawer.shouldRender && drawerHelmRelease && (
+      {/* Helm release drawer — same contentReady gate as the resource drawer. */}
+      {contentReady && helmDrawer.shouldRender && drawerHelmRelease && (
         <HelmReleaseDrawer
           release={drawerHelmRelease}
           isOpen={helmDrawer.isOpen}
@@ -1960,8 +2115,9 @@ function AppInner() {
       />
       <MyPermissionsDialog open={showMyPermissions} onClose={() => setShowMyPermissions(false)} />
 
-      {/* Debug overlay - only in dev mode */}
-      {import.meta.env.DEV && <DebugOverlay />}
+      {/* Debug overlay — dev mode, standalone only. Embedded hosts (Radar Hub)
+          own their own dev tooling; ours would collide with theirs bottom-right. */}
+      {import.meta.env.DEV && showNavRail && <DebugOverlay />}
       </div>
     </div>
     </PortForwardProvider>
@@ -2205,10 +2361,10 @@ function ThemeToggle() {
   const { theme, toggleTheme } = useTheme()
 
   return (
+    <Tooltip content={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
     <button
       onClick={toggleTheme}
       className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
-      title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
     >
       {theme === 'dark' ? (
         <Sun className="w-4 h-4" />
@@ -2216,6 +2372,7 @@ function ThemeToggle() {
         <Moon className="w-4 h-4" />
       )}
     </button>
+    </Tooltip>
   )
 }
 

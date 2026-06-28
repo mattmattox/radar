@@ -39,6 +39,7 @@ var (
 	refDeprecatedAPI   = Reference{Label: "K8s: Deprecated API Migration Guide", URL: "https://kubernetes.io/docs/reference/using-api/deprecation-guide/"}
 	refService         = Reference{Label: "K8s: Service", URL: "https://kubernetes.io/docs/concepts/services-networking/service/"}
 	refIngress         = Reference{Label: "K8s: Ingress", URL: "https://kubernetes.io/docs/concepts/services-networking/ingress/"}
+	refTraefikCRD      = Reference{Label: "Traefik: Kubernetes IngressRoute", URL: "https://doc.traefik.io/traefik/routing/providers/kubernetes-crd/"}
 	refFinalizers      = Reference{Label: "K8s: Finalizers", URL: "https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/"}
 	refCrossplane      = Reference{Label: "Crossplane: Managed Resources", URL: "https://docs.crossplane.io/latest/concepts/managed-resources/"}
 )
@@ -314,6 +315,38 @@ var CheckRegistry = map[string]CheckMeta{
 		Description: "The ingress backend references a service that does not exist, so incoming traffic will get 503 errors.",
 		Remediation: "Check the ingress spec and correct the service name, or create the missing service.",
 		References:  []Reference{refIngress},
+	},
+	"traefikRouteMissingService": {
+		ID:          "traefikRouteMissingService",
+		Title:       "Traefik router references missing service",
+		Category:    CategoryReliability,
+		Description: "A Traefik IngressRoute references a Service or TraefikService that does not exist. Traefik ships no admission webhook, so the bad reference is accepted silently and requests to that route fail until someone reads the controller logs.",
+		Remediation: "Correct the service name/namespace in the router's spec.routes[].services, or create the missing Service/TraefikService. Cross-namespace references also require allowCrossNamespace on the Traefik CRD provider.",
+		References:  []Reference{refTraefikCRD},
+	},
+	"traefikRouteMissingMiddleware": {
+		ID:          "traefikRouteMissingMiddleware",
+		Title:       "Traefik router references missing middleware",
+		Category:    CategoryReliability,
+		Description: "A Traefik IngressRoute references a Middleware that does not exist in the resolved namespace. Traefik accepts the route but skips the missing middleware, so auth, rate-limit, or header rules you expect to apply silently do not.",
+		Remediation: "Correct the middleware name/namespace in the router's spec.routes[].middlewares, or create the missing Middleware. A same-name Middleware in a different API group (traefik.io vs traefik.containo.us) does not satisfy the reference.",
+		References:  []Reference{refTraefikCRD},
+	},
+	"traefikChainMissingMiddleware": {
+		ID:          "traefikChainMissingMiddleware",
+		Title:       "Traefik chain references missing middleware",
+		Category:    CategoryReliability,
+		Description: "A Traefik chain Middleware lists a Middleware in spec.chain.middlewares that does not exist in the resolved namespace. Traefik accepts the chain but skips the missing link, so part of the intended middleware pipeline silently does not run.",
+		Remediation: "Correct the middleware name/namespace in spec.chain.middlewares, or create the missing Middleware. A same-name Middleware in a different API group (traefik.io vs traefik.containo.us) does not satisfy the reference.",
+		References:  []Reference{refTraefikCRD},
+	},
+	"traefikErrorsMissingService": {
+		ID:          "traefikErrorsMissingService",
+		Title:       "Traefik errors middleware references missing service",
+		Category:    CategoryReliability,
+		Description: "A Traefik errors Middleware references a Service in spec.errors.service that does not exist. Traefik accepts the middleware, but when an error page is needed the backend isn't there, so users get the default error instead of the custom one.",
+		Remediation: "Correct the service name/namespace in spec.errors.service, or create the missing Service. Cross-namespace references also require allowCrossNamespace on the Traefik CRD provider.",
+		References:  []Reference{refTraefikCRD},
 	},
 	"stuckTerminating": {
 		ID:          "stuckTerminating",

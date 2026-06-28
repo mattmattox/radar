@@ -12,6 +12,7 @@ import { clsx } from 'clsx'
 import { useQueryClient } from '@tanstack/react-query'
 import { useDock } from '../dock'
 import { EmptyState, PaneLoader } from '@skyhook-io/k8s-ui'
+import { Tooltip } from '../ui/Tooltip'
 
 // Addon types for filtering
 export type AddonMode = 'show' | 'group' | 'hide'
@@ -619,13 +620,13 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
 
   // Toggle L7 filter helpers
   const toggleL7Method = useCallback((method: string) => {
-    setL7Methods(prev => { const next = new Set(prev); next.has(method) ? next.delete(method) : next.add(method); return next })
+    setL7Methods(prev => { const next = new Set(prev); if (next.has(method)) next.delete(method); else next.add(method); return next })
   }, [])
   const toggleL7StatusRange = useCallback((range: string) => {
-    setL7StatusRanges(prev => { const next = new Set(prev); next.has(range) ? next.delete(range) : next.add(range); return next })
+    setL7StatusRanges(prev => { const next = new Set(prev); if (next.has(range)) next.delete(range); else next.add(range); return next })
   }, [])
   const toggleL7Verdict = useCallback((verdict: string) => {
-    setL7Verdicts(prev => { const next = new Set(prev); next.has(verdict) ? next.delete(verdict) : next.add(verdict); return next })
+    setL7Verdicts(prev => { const next = new Set(prev); if (next.has(verdict)) next.delete(verdict); else next.add(verdict); return next })
   }, [])
 
   // Toggle namespace visibility
@@ -1117,11 +1118,12 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
                 {/* Top-right: stats + actions */}
                 <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
                   {flowsData?.flows && flowsData.flows.length > 0 && (
+                    <Tooltip content="Open flow list in dock">
                     <button onClick={openFlowListDock}
-                      className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border text-theme-text-secondary hover:text-theme-text-primary transition-colors"
-                      title="Open flow list in dock">
+                      className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border text-theme-text-secondary hover:text-theme-text-primary transition-colors">
                       <List className="w-3 h-3" /> Flows
                     </button>
+                    </Tooltip>
                   )}
                   <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border text-[10px] text-theme-text-tertiary">
                     {flowStats.shown}/{flowStats.total}

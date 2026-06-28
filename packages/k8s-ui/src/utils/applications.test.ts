@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { compareVersions, appGroupLagMessage, matchWorkloadAcrossInstances, foldAppGroups, identityEnvInferred, type AppGroupFoldEntry } from './applications'
+import { compareVersions, appGroupingExplainer, APP_IDENTITY_ANNOTATION, appGroupLagMessage, matchWorkloadAcrossInstances, foldAppGroups, identityEnvInferred, worstHealth, type AppGroupFoldEntry } from './applications'
 
 describe('compareVersions', () => {
   it('orders semver', () => {
@@ -203,5 +203,96 @@ describe('foldAppGroups', () => {
       localScope: (e) => e.row.key,
     })
     expect(grouped.map((r) => r.kind)).toEqual(['group'])
+  })
+})
+
+describe('worstHealth', () => {
+  // Mirrors pkg/health.WorseOf: unhealthy > degraded > unknown > healthy > neutral,
+  // with neutral as the most-benign identity. Regression for the rank-inversion
+  // fix — seeding the fold with `unknown` (now rank 2) made all-healthy/all-idle
+  // sets wrongly return `unknown`.
+  it('all-healthy stays healthy (not unknown)', () => {
+    expect(worstHealth(['healthy', 'healthy'])).toBe('healthy')
+  })
+  it('all-neutral stays neutral', () => {
+    expect(worstHealth(['neutral', 'neutral'])).toBe('neutral')
+  })
+  it('healthy + neutral resolves to healthy (healthy out-ranks idle)', () => {
+    expect(worstHealth(['healthy', 'neutral'])).toBe('healthy')
+    expect(worstHealth(['neutral', 'healthy'])).toBe('healthy')
+  })
+  it('unknown out-ranks healthy (a node-lost workload is worse than a running one)', () => {
+    expect(worstHealth(['unknown', 'healthy'])).toBe('unknown')
+  })
+  it('unhealthy dominates everything', () => {
+    expect(worstHealth(['unhealthy', 'degraded', 'unknown', 'healthy', 'neutral'])).toBe('unhealthy')
+  })
+  it('empty set is the most-benign identity', () => {
+    expect(worstHealth([])).toBe('neutral')
+  })
+})
+
+describe('foldAppGroups health rollup', () => {
+  const grp = (env: string, health: string): AppGroupFoldEntry => ({
+    row: { key: `k-${env}`, name: `billing-${env}`, identity: { key: 'billing', env, confidence: 'medium', evidence: 'e' } },
+    health: health as AppGroupFoldEntry['health'],
+    versions: [],
+    ready: 1,
+    desired: 1,
+    kinds: { Deployment: 1 },
+    classComposition: [{ cls: 'service', count: 1 }],
+  })
+  const rollup = (...hs: string[]) => {
+    const rows = foldAppGroups(hs.map((h, i) => grp(`env${i}`, h)), new Set(), false)
+    return (rows[0] as Extract<(typeof rows)[0], { kind: 'group' }>).health
+  }
+  it('all-healthy group rolls up healthy (regression: was unknown)', () => {
+    expect(rollup('healthy', 'healthy')).toBe('healthy')
+  })
+  it('all-idle group rolls up neutral (Idle), not green', () => {
+    expect(rollup('neutral', 'neutral')).toBe('neutral')
+  })
+  it('mixed healthy + idle reads healthy', () => {
+    expect(rollup('healthy', 'neutral')).toBe('healthy')
+  })
+  it('healthy + unknown reads unknown (node-lost dominates)', () => {
+    expect(rollup('healthy', 'unknown')).toBe('unknown')
+  })
+})
+
+describe('appGroupingExplainer', () => {
+  it('declared origins fold across clusters with no fix needed', () => {
+    for (const source of ['explicit', 'argo-path', 'argo-appset', 'flux-source']) {
+      const e = appGroupingExplainer({ key: 'k', env: 'prod', confidence: 'high', evidence: '', source })
+      expect(e.folds).toBe(true)
+      expect(e.fix).toBeUndefined()
+    }
+  })
+
+  it('NAME sources stay per-cluster and tell the user how to fold', () => {
+    for (const source of ['label', 'name-stem', 'namespace', undefined]) {
+      const e = appGroupingExplainer({ key: 'k', env: 'prod', confidence: 'high', evidence: '', source })
+      expect(e.folds).toBe(false)
+      expect(e.fix).toContain(APP_IDENTITY_ANNOTATION)
+    }
+  })
+})
+
+describe('foldAppGroups pathKey disambiguation', () => {
+  const fleetEntry = (key: string, env: string, pathKey: string): AppGroupFoldEntry => ({
+    row: { key, name: 'billing', identity: { key: 'billing', env, confidence: 'high', evidence: 'e', portable: true, source: 'argo-path', pathKey } },
+    health: 'healthy', versions: [], ready: 1, desired: 1, kinds: { Deployment: 1 }, classComposition: [{ cls: 'service', count: 1 }],
+  })
+  const opts = { localScope: (e: AppGroupFoldEntry) => e.row.key }
+
+  it('folds same-name portable rows that share a pathKey', () => {
+    const rows = foldAppGroups([fleetEntry('cl-a', 'dev', 'apps/billing'), fleetEntry('cl-b', 'prod', 'apps/billing')], new Set(), false, opts)
+    expect(rows.filter((r) => r.kind === 'group').length).toBe(1)
+  })
+
+  it('does NOT fold same-name portable rows with different pathKeys (two teams, two paths)', () => {
+    const rows = foldAppGroups([fleetEntry('cl-a', 'dev', 'teamA/billing'), fleetEntry('cl-b', 'prod', 'teamB/billing')], new Set(), false, opts)
+    expect(rows.filter((r) => r.kind === 'group').length).toBe(0)
+    expect(rows.filter((r) => r.kind === 'instance').length).toBe(2)
   })
 })

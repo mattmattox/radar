@@ -27,6 +27,7 @@ import (
 	"github.com/skyhook-io/radar/internal/summarycontext"
 	"github.com/skyhook-io/radar/internal/timeline"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
+	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/issuesapi"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
@@ -204,7 +205,9 @@ func registerTools(server *mcp.Server) {
 			"ReplicaSet histories or individual audit/log streams, especially when issues " +
 			"are empty or dominated by baseline failures. Pair with since to bound the window; " +
 			"filter by namespace, kind, or name when you know the scope. Omit namespace when " +
-			"the relevant change may be outside the app namespace.",
+			"the relevant change may be outside the app namespace. Helm release deployment " +
+			"history is separate from this Kubernetes timeline; use list_helm_releases or " +
+			"get_helm_release include=history,operations for failed upgrades and rollbacks.",
 		Annotations: readOnly,
 	}, logToolCall("get_changes", handleGetChanges))
 
@@ -234,19 +237,29 @@ func registerTools(server *mcp.Server) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "list_helm_releases",
-		Description: "List all Helm releases in the cluster with their status and health. " +
-			"Returns release name, namespace, chart, version, status (deployed/failed/pending), " +
-			"and resource health (healthy/degraded/unhealthy). " +
-			"Use to get an overview of what's deployed via Helm before inspecting individual releases.",
+		Description: "List all Helm releases in the cluster with their status, resource health, " +
+			"storage namespace, Flux ownership when detected, lastOperation when Helm history " +
+			"indicates a current failed upgrade, rollback-after-failure, rollback, or stuck pending " +
+			"operation, and a capped operations trail for failed upgrades, rollbacks, and stuck operations. " +
+			"Use this first for Helm deployment debugging; if storageNamespace is present, pass that " +
+			"value as namespace to get_helm_release. Follow with get_helm_release include=history,operations " +
+			"for the full revision trail.",
 		Annotations: readOnly,
 	}, logToolCall("list_helm_releases", handleListHelmReleases))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "get_helm_release",
 		Description: "Get detailed information about a specific Helm release including owned resources " +
-			"and their status. Optionally include values, revision history, or manifest diff between revisions " +
-			"using the 'include' parameter (comma-separated: values, history, diff). " +
-			"diff_revision_1 and diff_revision_2 are only used when include contains diff.",
+			"and their status. The namespace parameter is the Helm storage namespace: use storageNamespace " +
+			"from list_helm_releases when present, otherwise use namespace. The default response includes " +
+			"storageNamespace, managedByFluxHelmRelease, resource health, and lastOperation when Helm history " +
+			"indicates a current failed upgrade, rollback-after-failure, rollback, or stuck pending operation, " +
+			"plus hooks and failed/running hookDiagnostics with live Job/Pod/Event/redacted-log evidence when available. " +
+			"Optionally include values, revision history, operation history, manifest diff, values diff, " +
+			"notes diff, or rendered-resource set diff between revisions using the 'include' parameter. " +
+			"Values returned through MCP are key-aware redacted. " +
+			"(comma-separated: values, history, operations, diff, values_diff, notes_diff, resource_diff). " +
+			"diff_revision_1 and diff_revision_2 are used when include contains any *_diff or diff token.",
 		Annotations: readOnly,
 	}, logToolCall("get_helm_release", handleGetHelmRelease))
 
@@ -323,6 +336,8 @@ func registerTools(server *mcp.Server) {
 			"healthy pod can have many audit findings; a crashing pod can have zero). Kyverno " +
 			"PolicyReport violations are not in either — they surface per-resource via " +
 			"get_resource's resourceContext policy rollup. " +
+			"Recovered Helm rollbacks are deploy history, not live issues; use get_changes for " +
+			"Kubernetes timeline changes and list_helm_releases / get_helm_release for Helm release history. " +
 			"After identifying a suspect issue, call diagnose when the affected resource " +
 			"is a workload (Pod/Deployment/StatefulSet/DaemonSet) or GitOps reconciler " +
 			"(Application/Kustomization/HelmRelease). For other non-workload kinds, call " +
@@ -2001,12 +2016,23 @@ type mcpHelmSummary struct {
 }
 
 type mcpHelmRelease struct {
-	Name           string `json:"name"`
-	Namespace      string `json:"namespace"`
-	Chart          string `json:"chart"`
-	ChartVersion   string `json:"chartVersion"`
-	Status         string `json:"status"`
-	ResourceHealth string `json:"resourceHealth,omitempty"`
+	Name                     string              `json:"name"`
+	Namespace                string              `json:"namespace"`
+	StorageNamespace         string              `json:"storageNamespace,omitempty"`
+	Chart                    string              `json:"chart"`
+	ChartVersion             string              `json:"chartVersion"`
+	Status                   string              `json:"status"`
+	Revision                 int                 `json:"revision"`
+	Updated                  time.Time           `json:"updated"`
+	ResourceHealth           string              `json:"resourceHealth,omitempty"`
+	HealthIssue              string              `json:"healthIssue,omitempty"`
+	HealthSummary            string              `json:"healthSummary,omitempty"`
+	LastOperation            *helm.HelmOperation `json:"lastOperation,omitempty"`
+	ManagedByFluxHelmRelease string              `json:"managedByFluxHelmRelease,omitempty"`
+}
+
+func mcpHelmDashboardPriority(r helm.HelmRelease) int {
+	return helm.ReleasePriority(r)
 }
 
 func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace string, includeNodes bool, includeNamespaces bool) mcpDashboard {
@@ -2043,30 +2069,32 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 		}
 		d.ResourceCounts["pods"] = len(pods)
 		for _, pod := range pods {
-			switch k8s.ClassifyPodHealth(pod, now) {
-			case "healthy":
-				d.Health.HealthyPods++
-			case "warning":
+			switch health.Pod(pod, now).Level {
+			case health.LevelDegraded, health.LevelUnknown:
+				// unknown = node-lost / unobservable; surface as warning rather than
+				// letting the legacy collapse hide it in the healthy count.
 				d.Health.WarningPods++
-			case "error":
+			case health.LevelUnhealthy:
 				d.Health.ErrorPods++
 				severity := "critical"
 				// PodProblemReason returns the kubelet's waiting/terminated
 				// reason; ClassifyPodHealth==error implies the pod is in a
 				// failing state, so critical is the right default.
-				restarts, lastTermReason := k8s.PodRestartContext(pod)
+				restarts, lastTermReason := health.PodRestartContext(pod)
 				ageDur := now.Sub(pod.CreationTimestamp.Time)
 				allProblems = append(allProblems, mcpProblem{
 					Kind:                 "Pod",
 					Namespace:            pod.Namespace,
 					Name:                 pod.Name,
 					Severity:             severity,
-					Reason:               k8s.PodProblemReason(pod),
+					Reason:               health.PodProblemReason(pod, now),
 					Age:                  k8s.FormatAge(ageDur),
 					RestartCount:         restarts,
 					LastTerminatedReason: lastTermReason,
 					ageSeconds:           int64(ageDur.Seconds()),
 				})
+			default: // healthy, neutral
+				d.Health.HealthyPods++
 			}
 		}
 	}
@@ -2202,7 +2230,7 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 			d.Nodes.Total = len(nodes)
 
 			for _, node := range nodes {
-				h := k8s.ClassifyNodeHealth(node)
+				h := health.Node(node)
 				if h.Ready {
 					if h.Unschedulable {
 						d.Nodes.Cordoned++
@@ -2267,37 +2295,50 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 		d.HelmReleases.UnavailableReason = "Helm client not initialized."
 	} else {
 		username, groups := userFromContext(ctx)
-		releases, err := helmClient.ListReleasesAsUser(namespace, username, groups)
-		if err != nil {
-			// Not fatal for the dashboard — a viewer with no helm access
-			// still sees everything else. Surface to LLM consumers via
-			// Unavailable so they don't confidently report "Total=0
-			// releases" when in fact the read failed.
-			log.Printf("[mcp] Dashboard helm list failed: %v", err)
-			d.HelmReleases.Unavailable = true
-			if helm.IsForbiddenError(err) {
-				d.HelmReleases.UnavailableReason = "RBAC denied: caller cannot list Helm release secrets in this scope."
-			} else {
-				d.HelmReleases.UnavailableReason = "Helm read failed: " + err.Error()
-			}
+		namespaces := resolveHelmListNamespaces(ctx, namespace)
+		if namespaces != nil && len(namespaces) == 0 {
+			// No namespace access: leave the zero-value Helm summary.
 		} else {
-			d.HelmReleases.Total = len(releases)
+			releases, err := helmClient.ListReleasesAcrossNamespaces(namespaces, username, groups)
+			if err != nil {
+				// Not fatal for the dashboard — a viewer with no helm access
+				// still sees everything else. Surface to LLM consumers via
+				// Unavailable so they don't confidently report "Total=0
+				// releases" when in fact the read failed.
+				log.Printf("[mcp] Dashboard helm list failed: %v", err)
+				d.HelmReleases.Unavailable = true
+				if helm.IsForbiddenError(err) {
+					d.HelmReleases.UnavailableReason = "RBAC denied: caller cannot list Helm release secrets in this scope."
+				} else {
+					d.HelmReleases.UnavailableReason = "Helm read failed: " + err.Error()
+				}
+			} else {
+				d.HelmReleases.Total = len(releases)
 
-			// Sort: failed/pending-install first, then unhealthy/degraded
-			sort.SliceStable(releases, func(i, j int) bool {
-				return helm.StatusPriority(releases[i].Status, releases[i].ResourceHealth) < helm.StatusPriority(releases[j].Status, releases[j].ResourceHealth)
-			})
-
-			limit := min(len(releases), 5)
-			for _, r := range releases[:limit] {
-				d.HelmReleases.Releases = append(d.HelmReleases.Releases, mcpHelmRelease{
-					Name:           r.Name,
-					Namespace:      r.Namespace,
-					Chart:          r.Chart,
-					ChartVersion:   r.ChartVersion,
-					Status:         r.Status,
-					ResourceHealth: r.ResourceHealth,
+				// Sort: failed/pending first, then operation-signaled Helm rollbacks,
+				// then unhealthy/degraded owned resources.
+				sort.SliceStable(releases, func(i, j int) bool {
+					return mcpHelmDashboardPriority(releases[i]) < mcpHelmDashboardPriority(releases[j])
 				})
+
+				limit := min(len(releases), 5)
+				for _, r := range releases[:limit] {
+					d.HelmReleases.Releases = append(d.HelmReleases.Releases, mcpHelmRelease{
+						Name:                     r.Name,
+						Namespace:                r.Namespace,
+						StorageNamespace:         r.StorageNamespace,
+						Chart:                    r.Chart,
+						ChartVersion:             r.ChartVersion,
+						Status:                   r.Status,
+						Revision:                 r.Revision,
+						Updated:                  r.Updated,
+						ResourceHealth:           r.ResourceHealth,
+						HealthIssue:              r.HealthIssue,
+						HealthSummary:            r.HealthSummary,
+						LastOperation:            r.LastOperation,
+						ManagedByFluxHelmRelease: r.ManagedByFluxHelmRelease,
+					})
+				}
 			}
 		}
 	}

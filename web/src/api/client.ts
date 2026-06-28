@@ -16,8 +16,11 @@ import type {
   HelmReleaseDetail,
   HelmValues,
   ManifestDiff,
+  NotesDiff,
+  ResourceDiff,
   UpgradeInfo,
   BatchUpgradeInfo,
+  ValuesDiff,
   ValuesPreviewResponse,
   HelmRepository,
   ChartSearchResult,
@@ -1509,7 +1512,7 @@ export function useAutoPromConnect(): void {
     if (attemptedRef.current === context) return
     let cached: string | null = null
     try { cached = window.localStorage.getItem(promAutoConnectKey(context)) } catch {
-      cached = null
+      // keep the null fallback
     }
 
     attemptedRef.current = context
@@ -2311,11 +2314,15 @@ export function useDrainNode() {
 // Helm API hooks
 // ============================================================================
 
+function helmNamespaceParams(namespaces: string[] = []) {
+  return namespaces.length > 0 ? `?namespaces=${namespaces.join(',')}` : ''
+}
+
 // List all Helm releases
-export function useHelmReleases(namespace?: string) {
-  const params = namespace ? `?namespace=${namespace}` : ''
+export function useHelmReleases(namespaces: string[] = []) {
+  const params = helmNamespaceParams(namespaces)
   return useQuery<HelmRelease[]>({
-    queryKey: ['helm-releases', namespace],
+    queryKey: ['helm-releases', namespaces],
     queryFn: () => fetchJSON(`/helm/releases${params}`),
     staleTime: 30000, // 30 seconds
   })
@@ -2354,11 +2361,14 @@ export function useHelmManifest(namespace: string, name: string, revision?: numb
 }
 
 // Get values for a Helm release. `enabled` see useHelmManifest.
-export function useHelmValues(namespace: string, name: string, allValues?: boolean, enabled = true) {
-  const params = allValues ? '?all=true' : ''
+export function useHelmValues(namespace: string, name: string, allValues?: boolean, enabled = true, revision?: number) {
+  const params = new URLSearchParams()
+  if (allValues) params.set('all', 'true')
+  if (revision && revision > 0) params.set('revision', String(revision))
+  const query = params.toString() ? `?${params.toString()}` : ''
   return useQuery<HelmValues>({
-    queryKey: ['helm-values', namespace, name, allValues],
-    queryFn: () => fetchJSON(`/helm/releases/${namespace}/${name}/values${params}`),
+    queryKey: ['helm-values', namespace, name, allValues, revision],
+    queryFn: () => fetchJSON(`/helm/releases/${namespace}/${name}/values${query}`),
     enabled: Boolean(namespace && name && enabled),
     staleTime: 60000,
   })
@@ -2381,6 +2391,61 @@ export function useHelmManifestDiff(
   })
 }
 
+export function useHelmValuesDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  allValues = false,
+  enabled = true,
+) {
+  return useQuery<ValuesDiff>({
+    queryKey: ['helm-values-diff', namespace, name, revision1, revision2, allValues],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        revision1: String(revision1),
+        revision2: String(revision2),
+      })
+      if (allValues) params.set('all', 'true')
+      return fetchJSON(`/helm/releases/${namespace}/${name}/values/diff?${params.toString()}`)
+    },
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
+export function useHelmNotesDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  enabled = true,
+) {
+  return useQuery<NotesDiff>({
+    queryKey: ['helm-notes-diff', namespace, name, revision1, revision2],
+    queryFn: () =>
+      fetchJSON(`/helm/releases/${namespace}/${name}/notes/diff?revision1=${revision1}&revision2=${revision2}`),
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
+export function useHelmResourceDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  enabled = true,
+) {
+  return useQuery<ResourceDiff>({
+    queryKey: ['helm-resource-diff', namespace, name, revision1, revision2],
+    queryFn: () =>
+      fetchJSON(`/helm/releases/${namespace}/${name}/resources/diff?revision1=${revision1}&revision2=${revision2}`),
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
 // Check for upgrade availability (lazy - called when drawer opens)
 export function useHelmUpgradeInfo(namespace: string, name: string, enabled = true) {
   return useQuery<UpgradeInfo>({
@@ -2392,11 +2457,24 @@ export function useHelmUpgradeInfo(namespace: string, name: string, enabled = tr
   })
 }
 
+// Available chart versions for a release (newest-first), for the upgrade dialog's
+// version picker. Empty when the source can't be resolved — the dialog then falls
+// back to the latest version from upgrade-info.
+export function useHelmReleaseVersions(namespace: string, name: string, enabled = true) {
+  return useQuery<string[]>({
+    queryKey: ['helm-release-versions', namespace, name],
+    queryFn: () => fetchJSON(`/helm/releases/${namespace}/${name}/versions`),
+    enabled: Boolean(namespace && name && enabled),
+    staleTime: 30000,
+    retry: false,
+  })
+}
+
 // Batch check for upgrade availability (for list view)
-export function useHelmBatchUpgradeInfo(namespace?: string, enabled = true) {
-  const params = namespace ? `?namespace=${namespace}` : ''
+export function useHelmBatchUpgradeInfo(namespaces: string[] = [], enabled = true) {
+  const params = helmNamespaceParams(namespaces)
   return useQuery<BatchUpgradeInfo>({
-    queryKey: ['helm-batch-upgrade-info', namespace],
+    queryKey: ['helm-batch-upgrade-info', namespaces],
     queryFn: () => fetchJSON(`/helm/upgrade-check${params}`),
     enabled,
     staleTime: 30000, // 30 seconds - keep in sync with release list
@@ -2661,6 +2739,54 @@ export function useUpdateRepositorySilent() {
   return useMutation({
     mutationFn: updateRepositoryFn,
     onSuccess: () => invalidateHelmAfterRepoUpdate(queryClient),
+  })
+}
+
+// Registered OCI chart sources (the OCI analog of `helm repo add`). Used to
+// track upgrades for the user's own OCI-published charts.
+export function useHelmOCISources() {
+  return useQuery<string[]>({
+    queryKey: ['helm-oci-sources'],
+    queryFn: () => fetchJSON('/helm/oci-sources'),
+  })
+}
+
+async function mutateOCISource(method: 'POST' | 'DELETE', source: string): Promise<string[]> {
+  const response = await apiFetch(`${getApiBase()}/helm/oci-sources`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source }),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Unknown error' }))
+    throw new Error(error.error || `HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+// Invalidate the upgrade-info queries so a newly-registered source is probed
+// immediately and "source not tracked" re-resolves.
+function invalidateHelmAfterSourceChange(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ['helm-oci-sources'] })
+  queryClient.invalidateQueries({ queryKey: ['helm-upgrade-info'] })
+  queryClient.invalidateQueries({ queryKey: ['helm-batch-upgrade-info'] })
+}
+
+export function useAddOCISource() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (source: string) => mutateOCISource('POST', source),
+    meta: { errorMessage: 'Failed to add chart source', successMessage: 'Chart source added' },
+    onSuccess: () => invalidateHelmAfterSourceChange(queryClient),
+  })
+}
+
+export function useRemoveOCISource() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (source: string) => mutateOCISource('DELETE', source),
+    meta: { errorMessage: 'Failed to remove chart source', successMessage: 'Chart source removed' },
+    onSuccess: () => invalidateHelmAfterSourceChange(queryClient),
   })
 }
 
@@ -3044,7 +3170,7 @@ export function useSwitchContext() {
       } catch (error) {
         clearTimeout(timeoutId)
         if (error instanceof Error && error.name === 'AbortError') {
-          throw new Error('Context switch timed out. The cluster may be unreachable.')
+          throw new Error('Context switch timed out. The cluster may be unreachable.', { cause: error })
         }
         throw error
       }
@@ -3147,7 +3273,7 @@ export function useSetActiveNamespace() {
           error: error instanceof Error ? error.message : String(error),
         })
         if (error instanceof Error && error.name === 'AbortError') {
-          throw new Error('Namespace switch timed out. The cluster may be unreachable.')
+          throw new Error('Namespace switch timed out. The cluster may be unreachable.', { cause: error })
         }
         throw error
       }

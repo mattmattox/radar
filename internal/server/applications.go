@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/packages"
 	"github.com/skyhook-io/radar/pkg/subject"
 	"github.com/skyhook-io/radar/pkg/topology"
@@ -45,7 +46,31 @@ import (
 
 // applicationsResponse is the GET /api/applications body.
 type applicationsResponse struct {
-	Applications []appRow `json:"applications"`
+	Applications []appRow    `json:"applications"`
+	ArgoClaims   []argoClaim `json:"argoClaims,omitempty"`
+}
+
+// argoClaim propagates a declared Argo Application identity to the cluster its
+// workloads actually run in. In hub-spoke Argo the Application CR lives in a
+// control cluster while its workloads run in a member cluster, so this cluster's
+// workload rows never see the Application — only the fleet hub, which knows every
+// cluster, can stamp the identity onto the destination's rows. Emitted only for
+// Applications with a DECLARED-portable identity (Argo source path / validated
+// ApplicationSet fan-out); name/label apps are never propagated cross-cluster.
+type argoClaim struct {
+	Identity      *appIdentity  `json:"identity"`
+	DestServer    string        `json:"destServer,omitempty"`
+	DestName      string        `json:"destName,omitempty"`
+	DestNamespace string        `json:"destNamespace,omitempty"`
+	Workloads     []workloadRef `json:"workloads,omitempty"` // managed workloads (status.resources)
+}
+
+// workloadRef identifies one managed workload for the hub to match against a
+// destination cluster's rows.
+type workloadRef struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }
 
 const applicationsCacheTTL = 60 * time.Second
@@ -58,8 +83,9 @@ var (
 )
 
 type applicationsCacheEntry struct {
-	at   time.Time
-	rows []appRow
+	at     time.Time
+	rows   []appRow
+	claims []argoClaim
 }
 
 // appRow is one logical app in this cluster.
@@ -129,6 +155,13 @@ type appWorkload struct {
 	// envLabel is the explicit environment label, when the workload carries
 	// one (see envLabelOf) — app-identity resolver input, not on the wire.
 	envLabel string
+	// nameLabel is app.kubernetes.io/name — the explicit, cluster-agnostic app
+	// identity the chart/author declared. The strongest identity signal we have:
+	// app-identity resolver input, not on the wire.
+	nameLabel string
+	// appAnnotation is app.skyhook.io/app — the user's explicit cross-cluster app
+	// declaration (authoritative, portable). Resolver input, not on the wire.
+	appAnnotation string
 }
 
 // handleListApplications serves GET /api/applications.
@@ -178,20 +211,23 @@ func ListApplications(ctx context.Context, namespaces []string) (*applicationsRe
 	entry, hit := applicationsCache[cacheKey]
 	applicationsCacheMu.Unlock()
 	if hit && time.Since(entry.at) < applicationsCacheTTL {
-		return &applicationsResponse{Applications: entry.rows}, nil
+		return &applicationsResponse{Applications: entry.rows, ArgoClaims: entry.claims}, nil
 	}
 
 	g := buildAppGraph(cache, namespaces)
 	wls := collectAppWorkloads(cache, namespaces, g)
 	rows := groupApplications(wls)
-	resolveAppIdentities(rows, argoSourcePaths(ctx, cache), namespaceEnvLabels(cache))
+	sourcePaths, appSetChildren, argoItems := argoApplicationFacts(ctx, cache)
+	appSetByKey := appSetFanouts(appSetChildren)
+	resolveAppIdentities(rows, sourcePaths, appSetByKey, namespaceEnvLabels(cache), fluxKustomizationFacts(ctx, cache))
+	claims := collectArgoClaims(argoItems, sourcePaths, appSetByKey, namespaces)
 	applicationsCacheMu.Lock()
 	if len(applicationsCache) >= applicationsCacheMaxEntries {
 		evictOldestApplicationsCacheEntry()
 	}
-	applicationsCache[cacheKey] = applicationsCacheEntry{at: time.Now(), rows: rows}
+	applicationsCache[cacheKey] = applicationsCacheEntry{at: time.Now(), rows: rows, claims: claims}
 	applicationsCacheMu.Unlock()
-	return &applicationsResponse{Applications: rows}, nil
+	return &applicationsResponse{Applications: rows, ArgoClaims: claims}, nil
 }
 
 func evictOldestApplicationsCacheEntry() {
@@ -412,6 +448,8 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGr
 				Restarts:      restarts,
 				Reason:        reason,
 				envLabel:      envLabelOf(lbls),
+				nameLabel:     lbls["app.kubernetes.io/name"],
+				appAnnotation: strings.TrimSpace(anns[appIdentityAnnotation]),
 			},
 			overlay:  subject.ResolveOverlay(&meta, false),
 			events:   eventsForWorkload(eventsByObj[ns], kind, name, pods),
@@ -444,7 +482,7 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGr
 			for _, d := range items {
 				add("Deployment", d.Namespace, d.Name, d.Labels, d.Annotations,
 					primaryImage(d.Spec.Template.Spec.Containers),
-					deploymentHealth(int(d.Status.Replicas), int(d.Status.AvailableReplicas)),
+					levelToPackagesHealth(health.Workload(d, time.Now()).Level),
 					int(d.Status.AvailableReplicas), int(d.Status.Replicas), d.Spec.Selector)
 			}
 		})
@@ -460,7 +498,7 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGr
 			for _, d := range items {
 				add("DaemonSet", d.Namespace, d.Name, d.Labels, d.Annotations,
 					primaryImage(d.Spec.Template.Spec.Containers),
-					daemonsetHealth(int(d.Status.DesiredNumberScheduled), int(d.Status.NumberReady)),
+					levelToPackagesHealth(health.Workload(d, time.Now()).Level),
 					int(d.Status.NumberReady), int(d.Status.DesiredNumberScheduled), d.Spec.Selector)
 			}
 		})
@@ -476,7 +514,7 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGr
 			for _, d := range items {
 				add("StatefulSet", d.Namespace, d.Name, d.Labels, d.Annotations,
 					primaryImage(d.Spec.Template.Spec.Containers),
-					statefulsetHealth(int(d.Status.Replicas), int(d.Status.ReadyReplicas)),
+					levelToPackagesHealth(health.Workload(d, time.Now()).Level),
 					int(d.Status.ReadyReplicas), int(d.Status.Replicas), d.Spec.Selector)
 			}
 		})
@@ -495,7 +533,7 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGr
 				}
 				add("Job", j.Namespace, j.Name, j.Labels, j.Annotations,
 					primaryImage(j.Spec.Template.Spec.Containers),
-					jobHealth(j),
+					levelToPackagesHealth(health.Workload(j, time.Now()).Level),
 					int(j.Status.Succeeded), jobDesired(j), j.Spec.Selector)
 			}
 		})
@@ -511,7 +549,7 @@ func collectAppWorkloads(cache *k8s.ResourceCache, namespaces []string, g *appGr
 			for _, cj := range items {
 				add("CronJob", cj.Namespace, cj.Name, cj.Labels, cj.Annotations,
 					primaryImage(cj.Spec.JobTemplate.Spec.Template.Spec.Containers),
-					cronJobHealth(cj),
+					levelToPackagesHealth(health.Workload(cj, time.Now()).Level),
 					0, 0, nil)
 			}
 		})
@@ -559,7 +597,7 @@ func groupApplications(inputs []appWorkloadInput) []appRow {
 		for _, in := range ins {
 			r.Workloads = append(r.Workloads, in.wl)
 			r.Events = append(r.Events, in.events...)
-			r.Health = string(worstAppHealth(packages.Health(r.Health), packages.Health(in.wl.Health)))
+			r.Health = string(packages.WorseHealth(packages.Health(r.Health), packages.Health(in.wl.Health)))
 			if v := in.wl.Version; v != "" && !slices.Contains(r.Versions, v) {
 				r.Versions = append(r.Versions, v)
 			}
@@ -1064,7 +1102,7 @@ func podsRestarts(pods []*corev1.Pod) (int, string) {
 	var worst int32 = -1
 	reason := ""
 	for _, p := range pods {
-		rc, r := k8s.PodRestartContext(p)
+		rc, r := health.PodRestartContext(p)
 		total += int(rc)
 		if rc > worst {
 			worst = rc
@@ -1169,38 +1207,13 @@ func jobDesired(j *batchv1.Job) int {
 	return 1
 }
 
-func jobHealth(j *batchv1.Job) packages.Health {
-	for _, c := range j.Status.Conditions {
-		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
-			return packages.HealthUnhealthy
-		}
-		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
-			return packages.HealthHealthy
-		}
-	}
-	if int(j.Status.Succeeded) >= jobDesired(j) {
-		return packages.HealthHealthy
-	}
-	if j.Status.Failed > 0 && j.Status.Active == 0 && j.Status.Succeeded == 0 {
-		return packages.HealthUnhealthy
-	}
-	if j.Status.Active > 0 {
-		return packages.HealthHealthy
-	}
-	return packages.HealthUnknown
-}
-
-func cronJobHealth(cj *batchv1.CronJob) packages.Health {
-	if cj == nil {
-		return packages.HealthUnknown
-	}
-	if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
-		return packages.HealthUnknown
-	}
-	if cj.Status.LastScheduleTime == nil {
-		return packages.HealthUnknown
-	}
-	return packages.HealthHealthy
+// levelToPackagesHealth projects a canonical health.Level onto the package wire
+// vocabulary. neutral (intentional/idle — suspended, scaled-to-zero) maps to the
+// dedicated HealthNeutral; it aggregates as most-benign, so an all-idle app rolls
+// up to "Idle" in the Applications UI while a mixed healthy+idle app still reads
+// Healthy (WorseHealth prefers healthy on the tie).
+func levelToPackagesHealth(l health.Level) packages.Health {
+	return packages.Health(l)
 }
 
 func appNameFromKey(key string) string {
@@ -1217,32 +1230,5 @@ func namespaceFromKey(key string) string {
 	return ""
 }
 
-// worstAppHealth merges two health values (local copy of pkg/packages's
-// unexported worseHealth): unhealthy > degraded > unknown > healthy; "" defers
-// to the other side.
-func worstAppHealth(a, b packages.Health) packages.Health {
-	if a == "" {
-		return b
-	}
-	if b == "" {
-		return a
-	}
-	if appHealthRank(a) >= appHealthRank(b) {
-		return a
-	}
-	return b
-}
-
-func appHealthRank(h packages.Health) int {
-	switch h {
-	case packages.HealthUnhealthy:
-		return 4
-	case packages.HealthDegraded:
-		return 3
-	case packages.HealthUnknown:
-		return 2
-	case packages.HealthHealthy:
-		return 1
-	}
-	return 2
-}
+// (worstAppHealth / appHealthRank removed — the app rollup now uses
+// packages.WorseHealth, the single rollup ordering.)
