@@ -20,10 +20,63 @@ const (
 	factProbeTarget         = "probe_target_mismatch"
 	factBlockedInit         = "blocked_init_container"
 	factRestartCause        = "restart_cause"
+	factNodeBlastRadius     = "node_blast_radius"
+	factPVCBlastRadius      = "pvc_blast_radius"
 )
 
 type serviceBackendIssueProvider interface {
 	SelectedPodsForService(namespace, name string) []Ref
+}
+
+type nodeBlastRadiusProvider interface {
+	PodsOnNode(nodeName string) []Ref
+}
+
+type pvcBlastRadiusProvider interface {
+	PodsMountingPVC(namespace, pvcName string) []Ref
+}
+
+// pvcRootCategories are PVC-level problems that block the pods mounting the claim.
+var pvcRootCategories = map[issuesapi.Category]bool{
+	issuesapi.CategoryPVCPending:      true,
+	issuesapi.CategoryPVCLost:         true,
+	issuesapi.CategoryPVCResizeFailed: true,
+}
+
+// pvcAttributableCategories are the pod-side manifestations of a broken PVC: the
+// pod can't schedule (volume binding), can't mount, or is stuck creating. An
+// unrelated crashloop on a pod that merely happens to mount the claim is not
+// PVC-caused and is excluded.
+var pvcAttributableCategories = map[issuesapi.Category]bool{
+	issuesapi.CategoryUnschedulable:     true,
+	issuesapi.CategoryContainerWaiting:  true,
+	issuesapi.CategoryVolumeMountFailed: true,
+}
+
+// nodeReasonAttributable maps a node problem reason to the pod-issue categories
+// that reason can plausibly CAUSE — keyed on the reason because the cases are not
+// equivalent. Resource pressure produces specific, live symptoms (memory → OOM /
+// OOM-restart loops; disk or PID exhaustion → containers that can't be created).
+//
+// A fully NotReady (dead-kubelet) node is DELIBERATELY ABSENT: once the kubelet
+// stops reporting, a pod's status is stale, so its crashloop / OOM rows are
+// pre-existing application problems that merely happen to sit on the node — not
+// node-caused. Linking them would tell the operator "the node may be the cause"
+// when it isn't. The genuine dead-node blast radius (terminating / evicted pods,
+// unschedulable replacements) isn't captured by these runtime categories and is
+// left to a future, reason-aware detector. App-dominant categories (crashloop,
+// probe failures, image pull, missing config) are excluded for the same reason.
+var nodeReasonAttributable = map[string]map[issuesapi.Category]bool{
+	"MemoryPressure": {
+		issuesapi.CategoryOOMKilled:   true,
+		issuesapi.CategoryHighRestart: true,
+	},
+	"DiskPressure": {
+		issuesapi.CategoryContainerWaiting: true,
+	},
+	"PIDPressure": {
+		issuesapi.CategoryContainerWaiting: true,
+	},
 }
 
 type changeContextProvider interface {
@@ -52,6 +105,14 @@ func enrichDiagnosticContext(shaped, flat, grouped []Issue, p Provider) []Issue 
 	var serviceProvider serviceBackendIssueProvider
 	if sp, ok := p.(serviceBackendIssueProvider); ok {
 		serviceProvider = sp
+	}
+	var nodeProvider nodeBlastRadiusProvider
+	if np, ok := p.(nodeBlastRadiusProvider); ok {
+		nodeProvider = np
+	}
+	var pvcProvider pvcBlastRadiusProvider
+	if pp, ok := p.(pvcBlastRadiusProvider); ok {
+		pvcProvider = pp
 	}
 	var changeProvider changeContextProvider
 	if cp, ok := p.(changeContextProvider); ok {
@@ -122,6 +183,14 @@ func enrichDiagnosticContext(shaped, flat, grouped []Issue, p Provider) []Issue 
 			addServiceBackendContext(&b, *i, serviceProvider, flatByResource, groupedByID)
 		}
 
+		if nodeProvider != nil && i.Kind == "Node" && i.Category == issuesapi.CategoryNodeNotReady {
+			addNodeBlastRadiusContext(&b, *i, nodeProvider, flatByResource, groupedByID)
+		}
+
+		if pvcProvider != nil && i.Kind == "PersistentVolumeClaim" && pvcRootCategories[i.Category] {
+			addPVCBlastRadiusContext(&b, *i, pvcProvider, flatByResource, groupedByID)
+		}
+
 		if ctx := b.build(); ctx != nil {
 			i.DiagnosticContext = ctx
 		}
@@ -174,9 +243,144 @@ func addServiceBackendContext(b *diagnosticContextBuilder, issue Issue, serviceP
 	b.add(issuesapi.DiagnosticRoleAffected, issuesapi.DiagnosticFact{
 		Type:          factSelectedBackend,
 		Message:       "Selected backend pod(s) already have active issues.",
+		Confidence:    issuesapi.ConfidenceHigh, // declared selector edge Service→Pod
 		Refs:          limitRefs(dedupeRefs(refs), maxDiagnosticRefs),
 		RelatedIssues: limitIssueRefs(related, maxDiagnosticIssueRefs),
 	})
+}
+
+// linkBlastRadius adds a candidate-role fact linking a root issue to the
+// category-attributable issues of a set of affected pods (each flat pod issue
+// mapped to its grouped form). Non-destructive — it only annotates the root.
+// `accept` is an optional per-symptom guard beyond the category filter.
+func linkBlastRadius(b *diagnosticContextBuilder, pods []Ref, attributable map[issuesapi.Category]bool, flatByResource map[string][]Issue, groupedByID map[string]Issue, factType string, conf issuesapi.Confidence, message string, accept func(Issue) bool) {
+	if len(pods) == 0 {
+		return
+	}
+	// Keep each linked issue paired with the pod it came from, so ranking and
+	// capping act on the pair — otherwise the displayed pods (Refs) and the
+	// displayed issues (RelatedIssues) are sorted/capped independently and the
+	// two lists diverge past the cap.
+	type linked struct {
+		ref Ref
+		rel issuesapi.IssueRef
+	}
+	seenIDs := make(map[string]bool)
+	var links []linked
+	for _, pod := range pods {
+		key := resourceKey(pod.Group, pod.Kind, pod.Namespace, pod.Name)
+		for _, flatIssue := range flatByResource[key] {
+			if !attributable[flatIssue.Category] || seenIDs[flatIssue.ID] {
+				continue
+			}
+			if accept != nil && !accept(flatIssue) {
+				continue
+			}
+			grouped, ok := groupedByID[flatIssue.ID]
+			if !ok {
+				grouped = flatIssue
+			}
+			links = append(links, linked{ref: pod, rel: issueRef(grouped)})
+			seenIDs[flatIssue.ID] = true
+		}
+	}
+	if len(links) == 0 {
+		return
+	}
+	// Rank by the linked issue's severity BEFORE capping, so the cap keeps the
+	// worst issues (and their pods), not whatever came first in iteration order.
+	sort.SliceStable(links, func(i, j int) bool { return lessIssueRef(links[i].rel, links[j].rel) })
+	if len(links) > maxDiagnosticIssueRefs {
+		links = links[:maxDiagnosticIssueRefs]
+	}
+	related := make([]issuesapi.IssueRef, 0, len(links))
+	refs := make([]Ref, 0, len(links))
+	for _, l := range links {
+		related = append(related, l.rel)
+		refs = append(refs, l.ref)
+	}
+	b.add(issuesapi.DiagnosticRoleCandidate, issuesapi.DiagnosticFact{
+		Type:          factType,
+		Message:       message,
+		Confidence:    conf,
+		Refs:          limitRefs(dedupeRefs(refs), maxDiagnosticRefs),
+		RelatedIssues: related,
+	})
+}
+
+// addNodeBlastRadiusContext links a resource-pressured node to the pod issues
+// that pressure plausibly caused (matched by spec.nodeName, gated by the
+// reason→category map). The node is the candidate root; the pod issues are its
+// blast radius. Confidence is medium, not high: spec.nodeName proves a pod is ON
+// the node, and the category is consistent with the pressure, but co-located is
+// not proof of cause — hence the "may be the cause / verify" framing. A node whose
+// reason has no attributable categories (a dead-kubelet NotReady node, or an
+// unrecognized reason) links nothing. No timestamp guard: pod-issue onset isn't
+// reliably recorded (FirstSeen tracks pod age, not failure onset), so a guard
+// would drop legitimate long-running pods while still admitting unrelated ones.
+func addNodeBlastRadiusContext(b *diagnosticContextBuilder, node Issue, np nodeBlastRadiusProvider, flatByResource map[string][]Issue, groupedByID map[string]Issue) {
+	// A node can hit several pressures at once (memory + disk + PID); those
+	// detections share the node_not_ready ID and group into one issue that keeps
+	// only one representative Reason. Union the attributable categories across ALL
+	// of the node's detected reasons so a multi-pressure node links every pressure's
+	// pods (OOM under memory, stuck-creation under disk/PID), not just the
+	// representative's. (The flat node rows for both pressures sit under the node's
+	// resource key whether we were handed the grouped issue or a flat one.)
+	attributable := map[issuesapi.Category]bool{}
+	for _, f := range flatByResource[issueResourceKey(node)] {
+		if f.Kind == "Node" && f.Category == issuesapi.CategoryNodeNotReady {
+			for c := range nodeReasonAttributable[f.Reason] {
+				attributable[c] = true
+			}
+		}
+	}
+	// Fallback to the issue's own reason if no flat node rows are indexed under
+	// this key (defensive — normally the detections are present).
+	if len(attributable) == 0 {
+		for c := range nodeReasonAttributable[node.Reason] {
+			attributable[c] = true
+		}
+	}
+	if len(attributable) == 0 {
+		return
+	}
+	linkBlastRadius(b, np.PodsOnNode(node.Name), attributable, flatByResource, groupedByID,
+		factNodeBlastRadius, issuesapi.ConfidenceMedium,
+		"Pods on this node show problems consistent with its resource pressure — the node may be the cause.", nil)
+}
+
+// addPVCBlastRadiusContext links a broken PVC (pending / lost / resize-failed) to
+// the storage issues of the pods that mount it. The mount edge is the declared
+// claimName, so a volume_mount_failed is unambiguously this PVC's fault (high
+// confidence). An unschedulable / container-waiting pod that mounts the claim is
+// only linked when its own message confirms a volume cause — a pod can mount the
+// PVC yet be unschedulable for CPU or waiting on unrelated config, which must not
+// be attributed to the PVC.
+func addPVCBlastRadiusContext(b *diagnosticContextBuilder, pvc Issue, pp pvcBlastRadiusProvider, flatByResource map[string][]Issue, groupedByID map[string]Issue) {
+	linkBlastRadius(b, pp.PodsMountingPVC(pvc.Namespace, pvc.Name), pvcAttributableCategories, flatByResource, groupedByID,
+		factPVCBlastRadius, issuesapi.ConfidenceHigh,
+		"Pods mounting this PVC are blocked by it.",
+		func(symptom Issue) bool {
+			if symptom.Category == issuesapi.CategoryVolumeMountFailed {
+				return true
+			}
+			return symptomMentionsVolume(symptom, pvc.Name)
+		})
+}
+
+// symptomMentionsVolume reports whether a scheduling / waiting symptom's text
+// confirms a volume cause — it names the PVC, or carries the scheduler's
+// volume-binding language — so an unrelated CPU-unschedulable pod that merely
+// mounts the claim isn't attributed to it.
+func symptomMentionsVolume(symptom Issue, pvcName string) bool {
+	text := strings.ToLower(symptom.Message + " " + symptom.Reason)
+	// Match the PVC name only when QUOTED, the way Kubernetes prints it
+	// (persistentvolumeclaim "name" not found). A bare substring match would fire
+	// on any text that happens to contain a short claim name like "data".
+	if pvcName != "" && strings.Contains(text, `"`+strings.ToLower(pvcName)+`"`) {
+		return true
+	}
+	return strings.Contains(text, "persistentvolumeclaim") || strings.Contains(text, "unbound") || strings.Contains(text, "volume node affinity")
 }
 
 func isServiceBackendContextCandidate(issue Issue) bool {
@@ -331,23 +535,27 @@ func dedupeRefs(refs []Ref) []Ref {
 	return out
 }
 
+// lessIssueRef orders issue refs worst-first: severity desc, then a stable total
+// order over the identity fields.
+func lessIssueRef(a, b issuesapi.IssueRef) bool {
+	if a.Severity != b.Severity {
+		return SeverityRank(a.Severity) > SeverityRank(b.Severity)
+	}
+	if a.Ref.Namespace != b.Ref.Namespace {
+		return a.Ref.Namespace < b.Ref.Namespace
+	}
+	if a.Ref.Name != b.Ref.Name {
+		return a.Ref.Name < b.Ref.Name
+	}
+	if a.Ref.Kind != b.Ref.Kind {
+		return a.Ref.Kind < b.Ref.Kind
+	}
+	if a.Ref.Group != b.Ref.Group {
+		return a.Ref.Group < b.Ref.Group
+	}
+	return a.Reason < b.Reason
+}
+
 func sortIssueRefs(refs []issuesapi.IssueRef) {
-	sort.SliceStable(refs, func(i, j int) bool {
-		if refs[i].Severity != refs[j].Severity {
-			return SeverityRank(refs[i].Severity) > SeverityRank(refs[j].Severity)
-		}
-		if refs[i].Ref.Namespace != refs[j].Ref.Namespace {
-			return refs[i].Ref.Namespace < refs[j].Ref.Namespace
-		}
-		if refs[i].Ref.Name != refs[j].Ref.Name {
-			return refs[i].Ref.Name < refs[j].Ref.Name
-		}
-		if refs[i].Ref.Kind != refs[j].Ref.Kind {
-			return refs[i].Ref.Kind < refs[j].Ref.Kind
-		}
-		if refs[i].Ref.Group != refs[j].Ref.Group {
-			return refs[i].Ref.Group < refs[j].Ref.Group
-		}
-		return refs[i].Reason < refs[j].Reason
-	})
+	sort.SliceStable(refs, func(i, j int) bool { return lessIssueRef(refs[i], refs[j]) })
 }

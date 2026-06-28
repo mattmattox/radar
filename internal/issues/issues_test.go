@@ -21,16 +21,18 @@ import (
 // pre-stages what the corresponding method returns. Test cases assemble
 // one of these and pass it to Compose.
 type fakeProvider struct {
-	problems       []k8s.Detection
-	missingRefs    []k8s.Detection
-	scheduling     []k8s.Detection
-	capiProblems   []k8s.Detection
-	gitopsProblems []k8s.Detection
-	dynamic        map[schema.GroupVersionResource][]*unstructured.Unstructured
-	kinds          map[schema.GroupVersionResource]string
-	namespaced     map[schema.GroupVersionResource]bool
-	selectedPods   map[string][]Ref
-	change         map[string]*issuesapi.ChangeContext
+	problems        []k8s.Detection
+	missingRefs     []k8s.Detection
+	scheduling      []k8s.Detection
+	capiProblems    []k8s.Detection
+	gitopsProblems  []k8s.Detection
+	dynamic         map[schema.GroupVersionResource][]*unstructured.Unstructured
+	kinds           map[schema.GroupVersionResource]string
+	namespaced      map[schema.GroupVersionResource]bool
+	selectedPods    map[string][]Ref
+	podsOnNode      map[string][]Ref
+	podsMountingPVC map[string][]Ref
+	change          map[string]*issuesapi.ChangeContext
 }
 
 func (f *fakeProvider) DetectProblems(_ []string) []k8s.Detection       { return f.problems }
@@ -60,6 +62,12 @@ func (f *fakeProvider) NamespacedForGVR(gvr schema.GroupVersionResource) (bool, 
 }
 func (f *fakeProvider) SelectedPodsForService(namespace, name string) []Ref {
 	return f.selectedPods[namespace+"/"+name]
+}
+func (f *fakeProvider) PodsMountingPVC(namespace, pvcName string) []Ref {
+	return f.podsMountingPVC[namespace+"/"+pvcName]
+}
+func (f *fakeProvider) PodsOnNode(nodeName string) []Ref {
+	return f.podsOnNode[nodeName]
 }
 
 func (f *fakeProvider) ChangeContextForIssue(i Issue) *issuesapi.ChangeContext {
@@ -1530,5 +1538,145 @@ func TestDetectGenericCRDIssues_SkipsListWhenKindFiltered(t *testing.T) {
 		if got := p.listCalls[gvr] > 0; got != want {
 			t.Errorf("no kind filter: GVR %s called=%v, want %v", gvr.Resource, got, want)
 		}
+	}
+}
+
+func TestNodeBlastRadiusContext(t *testing.T) {
+	// A MemoryPressure node: OOM is the attributable symptom; a crashloop on the
+	// same node is app-dominant and must NOT be attributed to memory pressure, and
+	// an image-pull failure is node-independent.
+	node := Issue{Kind: "Node", Name: "node-1", Category: issuesapi.CategoryNodeNotReady, Severity: SeverityCritical, Reason: "MemoryPressure"}
+	oom := Issue{ID: "oom-1", Kind: "Pod", Namespace: "prod", Name: "web-abc", Category: issuesapi.CategoryOOMKilled, Severity: SeverityCritical}
+	crash := Issue{ID: "crash-1", Kind: "Pod", Namespace: "prod", Name: "api-xyz", Category: issuesapi.CategoryCrashLoop, Severity: SeverityCritical}
+	pull := Issue{ID: "pull-1", Kind: "Pod", Namespace: "prod", Name: "cache-9", Category: issuesapi.CategoryImagePullFailed, Severity: SeverityWarning}
+
+	p := &fakeProvider{podsOnNode: map[string][]Ref{"node-1": {
+		{Kind: "Pod", Namespace: "prod", Name: "web-abc"},
+		{Kind: "Pod", Namespace: "prod", Name: "api-xyz"},
+		{Kind: "Pod", Namespace: "prod", Name: "cache-9"},
+	}}}
+
+	out := enrichDiagnosticContext([]Issue{node}, []Issue{node, oom, crash, pull}, nil, p)
+	ctx := out[0].DiagnosticContext
+	if ctx == nil {
+		t.Fatal("node issue got no diagnostic context")
+	}
+	var fact *issuesapi.DiagnosticFact
+	for i := range ctx.Facts {
+		if ctx.Facts[i].Type == factNodeBlastRadius {
+			fact = &ctx.Facts[i]
+		}
+	}
+	if fact == nil {
+		t.Fatalf("no node_blast_radius fact, got %+v", ctx.Facts)
+	}
+	if fact.Confidence != issuesapi.ConfidenceMedium {
+		t.Errorf("confidence = %q, want medium", fact.Confidence)
+	}
+	if ctx.Role != issuesapi.DiagnosticRoleCandidate {
+		t.Errorf("role = %q, want candidate", ctx.Role)
+	}
+	// Only the OOM (attributable to MemoryPressure) links — not the app-dominant
+	// crashloop, not the node-independent image pull.
+	if len(fact.RelatedIssues) != 1 || fact.RelatedIssues[0].Category != issuesapi.CategoryOOMKilled || fact.RelatedIssues[0].Ref.Name != "web-abc" {
+		t.Fatalf("expected only the OOM linked under MemoryPressure, got %+v", fact.RelatedIssues)
+	}
+}
+
+func TestNodeBlastRadiusContext_NotReadyLinksNothing(t *testing.T) {
+	// A dead-kubelet NotReady node: pod statuses are stale, so crashloop/OOM rows
+	// are pre-existing app problems, not node-caused — nothing should link.
+	node := Issue{Kind: "Node", Name: "dead", Category: issuesapi.CategoryNodeNotReady, Severity: SeverityCritical, Reason: "NotReady"}
+	oom := Issue{ID: "oom-9", Kind: "Pod", Namespace: "prod", Name: "p1", Category: issuesapi.CategoryOOMKilled, Severity: SeverityCritical}
+	p := &fakeProvider{podsOnNode: map[string][]Ref{"dead": {{Kind: "Pod", Namespace: "prod", Name: "p1"}}}}
+	out := enrichDiagnosticContext([]Issue{node}, []Issue{node, oom}, nil, p)
+	if out[0].DiagnosticContext != nil {
+		t.Fatalf("a NotReady (dead-kubelet) node must not attribute pod issues, got %+v", out[0].DiagnosticContext)
+	}
+}
+
+func TestNodeBlastRadiusContext_MultiPressure(t *testing.T) {
+	// A node with BOTH MemoryPressure and DiskPressure groups into one issue that
+	// keeps a single representative Reason — the link must still cover BOTH
+	// pressures' pod categories (OOM under memory, container_waiting under disk).
+	grouped := Issue{Kind: "Node", Name: "node-1", Category: issuesapi.CategoryNodeNotReady, Severity: SeverityCritical, Reason: "MemoryPressure"}
+	flatMem := Issue{Kind: "Node", Name: "node-1", Category: issuesapi.CategoryNodeNotReady, Severity: SeverityCritical, Reason: "MemoryPressure"}
+	flatDisk := Issue{Kind: "Node", Name: "node-1", Category: issuesapi.CategoryNodeNotReady, Severity: SeverityCritical, Reason: "DiskPressure"}
+	oom := Issue{ID: "oom-1", Kind: "Pod", Namespace: "prod", Name: "a", Category: issuesapi.CategoryOOMKilled, Severity: SeverityCritical}
+	waiting := Issue{ID: "wait-1", Kind: "Pod", Namespace: "prod", Name: "b", Category: issuesapi.CategoryContainerWaiting, Severity: SeverityWarning, Reason: "ContainerCreating"}
+
+	p := &fakeProvider{podsOnNode: map[string][]Ref{"node-1": {
+		{Kind: "Pod", Namespace: "prod", Name: "a"},
+		{Kind: "Pod", Namespace: "prod", Name: "b"},
+	}}}
+
+	out := enrichDiagnosticContext([]Issue{grouped}, []Issue{flatMem, flatDisk, oom, waiting}, nil, p)
+	var fact *issuesapi.DiagnosticFact
+	for i := range out[0].DiagnosticContext.Facts {
+		if out[0].DiagnosticContext.Facts[i].Type == factNodeBlastRadius {
+			fact = &out[0].DiagnosticContext.Facts[i]
+		}
+	}
+	if fact == nil {
+		t.Fatal("no node_blast_radius fact for the multi-pressure node")
+	}
+	gotCats := map[issuesapi.Category]bool{}
+	for _, r := range fact.RelatedIssues {
+		gotCats[r.Category] = true
+	}
+	if !gotCats[issuesapi.CategoryOOMKilled] || !gotCats[issuesapi.CategoryContainerWaiting] {
+		t.Fatalf("multi-pressure node must link BOTH memory (OOM) and disk (container_waiting) pods, got %+v", fact.RelatedIssues)
+	}
+}
+
+func TestNodeBlastRadiusContext_NoPodsNoFact(t *testing.T) {
+	node := Issue{Kind: "Node", Name: "lonely", Category: issuesapi.CategoryNodeNotReady, Severity: SeverityCritical, Reason: "MemoryPressure"}
+	p := &fakeProvider{}
+	out := enrichDiagnosticContext([]Issue{node}, []Issue{node}, nil, p)
+	if out[0].DiagnosticContext != nil {
+		t.Fatalf("a node with no on-node issues should get no context, got %+v", out[0].DiagnosticContext)
+	}
+}
+
+func TestPVCBlastRadiusContext(t *testing.T) {
+	pvc := Issue{Kind: "PersistentVolumeClaim", Namespace: "prod", Name: "data", Category: issuesapi.CategoryPVCPending, Severity: SeverityCritical, Reason: "Pending"}
+	// Unschedulable WITH volume-binding evidence in the message → linked.
+	blocked := Issue{ID: "unsched-1", Kind: "Pod", Namespace: "prod", Name: "db-0", Category: issuesapi.CategoryUnschedulable, Severity: SeverityCritical,
+		Message: "0/3 nodes are available: pod has unbound immediate PersistentVolumeClaims"}
+	// Unrelated crashloop on the same pod → never PVC-attributable.
+	crashing := Issue{ID: "crash-2", Kind: "Pod", Namespace: "prod", Name: "db-0", Category: issuesapi.CategoryCrashLoop, Severity: SeverityCritical}
+	// A DIFFERENT pod that also mounts the PVC but is unschedulable for CPU →
+	// must NOT be attributed to the PVC. Its message even contains the bare claim
+	// name "data" (unquoted) to guard against a substring false-match — only the
+	// QUOTED name or volume-binding phrasing counts as evidence.
+	cpuBlocked := Issue{ID: "unsched-2", Kind: "Pod", Namespace: "prod", Name: "db-1", Category: issuesapi.CategoryUnschedulable, Severity: SeverityCritical,
+		Message: "0/3 nodes are available: 3 Insufficient cpu for the data tier"}
+
+	p := &fakeProvider{podsMountingPVC: map[string][]Ref{"prod/data": {
+		{Kind: "Pod", Namespace: "prod", Name: "db-0"},
+		{Kind: "Pod", Namespace: "prod", Name: "db-1"},
+	}}}
+
+	out := enrichDiagnosticContext([]Issue{pvc}, []Issue{pvc, blocked, crashing, cpuBlocked}, nil, p)
+	ctx := out[0].DiagnosticContext
+	if ctx == nil {
+		t.Fatal("PVC issue got no diagnostic context")
+	}
+	var fact *issuesapi.DiagnosticFact
+	for i := range ctx.Facts {
+		if ctx.Facts[i].Type == factPVCBlastRadius {
+			fact = &ctx.Facts[i]
+		}
+	}
+	if fact == nil {
+		t.Fatalf("no pvc_blast_radius fact, got %+v", ctx.Facts)
+	}
+	if fact.Confidence != issuesapi.ConfidenceHigh {
+		t.Errorf("confidence = %q, want high (declared claimName edge)", fact.Confidence)
+	}
+	// Only the volume-evidenced unschedulable links; the unrelated crashloop and
+	// the CPU-unschedulable pod (no volume evidence) must not be attributed.
+	if len(fact.RelatedIssues) != 1 || fact.RelatedIssues[0].Ref.Name != "db-0" || fact.RelatedIssues[0].Category != issuesapi.CategoryUnschedulable {
+		t.Fatalf("expected only the volume-evidenced unschedulable (db-0) linked, got %+v", fact.RelatedIssues)
 	}
 }

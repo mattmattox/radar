@@ -1,8 +1,9 @@
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, ExternalLink } from 'lucide-react'
 import { Section } from '../ui/drawer-components'
 import { Badge } from '../ui/Badge'
-import type { Issue } from './types'
+import type { Issue, IssueResourceRef } from './types'
 import { categoryLabel } from './severity'
+import { diagnosticRoleLabel, diagnosticFactLabel, confidenceTitle } from './diagnostic'
 
 /**
  * ResourceIssuesSection — the compact "Operational Issues" block for the resource
@@ -20,7 +21,14 @@ import { categoryLabel } from './severity'
  * so it's omitted to keep the card scannable. (`message` is the body fallback
  * only for categories that don't yet emit a `cause`.)
  */
-export function ResourceIssuesSection({ issues }: { issues: Issue[] | undefined }) {
+export function ResourceIssuesSection({
+  issues,
+  onResourceClick,
+}: {
+  issues: Issue[] | undefined
+  /** When provided, related resources in a causal link become clickable. */
+  onResourceClick?: (ref: IssueResourceRef) => void
+}) {
   if (!issues || issues.length === 0) return null
   return (
     <Section title={`Operational Issues (${issues.length})`} icon={AlertTriangle} defaultExpanded>
@@ -57,10 +65,78 @@ export function ResourceIssuesSection({ issues }: { issues: Issue[] | undefined 
                   <code className="rounded bg-theme-elevated px-1 font-mono">{issue.remediation_target}</code> — apply it from the GitOps detail page.
                 </p>
               ) : null}
+              <CausalContext issue={issue} onResourceClick={onResourceClick} />
             </div>
           )
         })}
       </div>
     </Section>
+  )
+}
+
+/**
+ * CausalContext — the compact, drawer-density rendering of an issue's
+ * cross-subject causal links (DiagnosticContext). Shows only the linking facts
+ * (those carrying a confidence tier or related issues) — the queue's IssuesView
+ * renders the fuller context with clickable resource navigation; here the related
+ * resources are shown as plain identifiers to keep the resource panel scannable.
+ */
+function CausalContext({ issue, onResourceClick }: { issue: Issue; onResourceClick?: (ref: IssueResourceRef) => void }) {
+  const ctx = issue.diagnostic_context
+  const links = ctx?.facts?.filter((f) => f.confidence || (f.related_issues && f.related_issues.length > 0)) ?? []
+  if (!ctx || links.length === 0) return null
+  return (
+    <div className="mt-2 border-t border-theme-border/60 pt-2">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-theme-text-tertiary">Context</span>
+        {ctx.role ? <span className="badge-sm text-[10px] text-theme-text-secondary">{diagnosticRoleLabel(ctx.role)}</span> : null}
+      </div>
+      <ul className="space-y-1.5">
+        {links.map((fact, idx) => (
+          <li key={`${fact.type}-${idx}`} className="text-xs">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className="font-medium text-theme-text-secondary">{diagnosticFactLabel(fact.type)}</span>
+              {fact.confidence ? (
+                <span className="badge-sm text-[10px] text-theme-text-tertiary" title={confidenceTitle(fact.confidence)}>
+                  {fact.confidence} confidence
+                </span>
+              ) : null}
+              {fact.message ? <span className="text-theme-text-tertiary">{fact.message}</span> : null}
+            </div>
+            {fact.related_issues && fact.related_issues.length > 0 ? (
+              <ul className="mt-0.5 space-y-0.5 pl-3">
+                {fact.related_issues.map((rel, ri) => {
+                  const label = (
+                    <>
+                      <span className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">{rel.ref.kind}</span>{' '}
+                      <span className="font-mono">
+                        {rel.ref.namespace ? `${rel.ref.namespace} / ` : ''}
+                        {rel.ref.name}
+                      </span>
+                    </>
+                  )
+                  return (
+                    <li key={ri} className="text-theme-text-tertiary">
+                      {onResourceClick ? (
+                        <button
+                          type="button"
+                          onClick={() => onResourceClick(rel.ref)}
+                          className="group inline-flex items-center gap-1 text-left hover:text-theme-text-secondary"
+                        >
+                          {label}
+                          <ExternalLink className="h-3 w-3 opacity-0 group-hover:opacity-100" />
+                        </button>
+                      ) : (
+                        label
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
