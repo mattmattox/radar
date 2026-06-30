@@ -412,7 +412,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	resp.TopologySummary = s.getDashboardTopologySummary(namespaces)
 	k8s.LogTiming("  [dashboard] topology: %v", time.Since(t))
 
-	resp.CertificateHealth = s.getDashboardCertificateHealth(namespaces)
+	// Cert health is derived from TLS Secrets — gate by per-user secrets RBAC.
+	resp.CertificateHealth = s.getDashboardCertificateHealth(s.secretReadableNamespaces(r, namespaces))
 	resp.NetworkPolicyCoverage = s.getDashboardNetworkPolicyCoverage(cache, namespaces)
 	resp.Audit = getDashboardAudit(cache, namespaces)
 	resp.GitOpsControllers = s.getDashboardGitOpsControllers(cache, namespaces)
@@ -1314,8 +1315,21 @@ func (s *Server) getDashboardTrafficSummary(ctx context.Context, namespaces []st
 		}
 	}
 
+	// The source only filters by a single namespace; restrict multi-namespace
+	// users here so the summary doesn't count flows outside their allowed set.
+	flows := response.Flows
+	if allowed := namespaceLookup(namespaces); allowed != nil {
+		kept := make([]traffic.Flow, 0, len(flows))
+		for _, f := range flows {
+			if flowVisibleForNamespaces(f, allowed) {
+				kept = append(kept, f)
+			}
+		}
+		flows = kept
+	}
+
 	// Aggregate flows
-	aggregated := traffic.AggregateFlows(response.Flows)
+	aggregated := traffic.AggregateFlows(flows)
 
 	// Sort by connection count
 	sort.Slice(aggregated, func(i, j int) bool {

@@ -17,6 +17,19 @@ User → [Auth Layer] → Radar Backend → K8s API (as user, via impersonation)
 
 Radar doesn't have its own role/permission system. It delegates everything to K8s RBAC, which means permissions are managed with standard K8s tooling (`kubectl`, Terraform, GitOps, etc.).
 
+### Read granularity: namespace-level
+
+For **namespaced** resources, reads are authorized at **namespace granularity**: if your RBAC lets you access a namespace, Radar shows the namespaced resources in it. Radar does **not** additionally check per-resource-kind RBAC for most namespaced kinds — so a user who can read Pods in a namespace also sees ConfigMaps, Services, etc. in that namespace through Radar, even if their RBAC wouldn't allow `kubectl get configmaps` directly.
+
+This is a deliberate tradeoff that follows from how Radar reads the cluster. Rather than calling the Kubernetes API on every request, Radar watches each resource kind once under its own ServiceAccount and serves reads from an in-memory cache shared by all users — that's what makes it fast on large clusters and able to render topology and real-time views. Because the cache is populated by Radar's identity, not yours, per-user access has to be re-derived by asking Kubernetes "is this user allowed?" via `SubjectAccessReview`. Doing that at namespace granularity is one such check per namespace; doing it per-resource-kind would be a check for *every kind in every namespace* on *every* read — many times the API-server load, and worst exactly on the large, multi-namespace clusters where the shared cache matters most. So namespace membership is the per-user filter, and per-kind checks are reserved for the cases below where the exposure is highest.
+
+Two kinds are gated more tightly, per-resource-kind, because the shared cache can hold data the user's own RBAC wouldn't grant:
+
+- **Secrets** (and Secret-derived data such as TLS certificate metadata) — shown only if the user can list Secrets in that namespace.
+- **Cluster-scoped resources** (Nodes, PersistentVolumes, ClusterRoles, cluster-scoped CRDs, etc.) — shown only if the user's RBAC permits listing that kind.
+
+**If namespace-level isn't tight enough for you**, scope the boundary at the cache instead of at read time: run a Radar instance per trust boundary and give each one a **namespace-scoped ServiceAccount** (a `Role`/`RoleBinding`, no `ClusterRole`) limited to that boundary's namespaces. Radar detects the restricted permissions at startup and only watches and caches what its ServiceAccount can list — so the instance simply never holds another team's data, and there's nothing to over-expose. Point each team at their own instance (an ingress or auth proxy can route them). See [In-Cluster Deployment → namespace-scoped RBAC](in-cluster.md) for the `rbac.create: false` + custom `Role` setup.
+
 ## Auth Modes
 
 | Mode | Flag | When to Use |
