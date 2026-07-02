@@ -8,6 +8,7 @@ import {
   GitOpsDetailLayout,
   GitOpsGraphFilterRail,
   GitOpsTableView as SharedGitOpsTableView,
+  FreshnessControl,
   GitOpsTreeGraph,
   RollbackDialog,
   SyncOptionsDialog,
@@ -61,6 +62,7 @@ import {
   useResource,
 } from '../../api/client'
 import { useAPIResources } from '../../api/apiResources'
+import { useConnection } from '../../context/ConnectionContext'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
 import { useRegisterShortcut } from '../../hooks/useKeyboardShortcuts'
 import { CodeViewer } from '../ui/CodeViewer'
@@ -80,9 +82,15 @@ const GITOPS_KINDS: APIResource[] = [
 
 const KIND_BY_NAME = new Map(GITOPS_KINDS.map((k) => [k.name, k]))
 
+// Rows are the table's primary content; their poll cadence is what the toolbar
+// freshness signal advertises ("Auto-refreshes every 2m"). Single source of
+// truth so the signal can't drift from the actual refetchInterval below.
+const GITOPS_ROWS_REFRESH_INTERVAL_MS = 120_000
+
 interface ResourceCountsResponse {
   counts: Record<string, number>
   forbidden?: string[]
+  unavailable?: string[]
 }
 
 interface GitOpsViewProps {
@@ -101,6 +109,7 @@ export function GitOpsView({ namespaces, onOpenResource, onClearNamespaces }: Gi
 
 function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string[]; onClearNamespaces?: () => void }) {
   const navigate = useNavigate()
+  const { connection } = useConnection()
   const namespacesParam = namespaces.join(',')
   const { data: apiResources, isLoading: apiResourcesLoading } = useAPIResources()
 
@@ -136,9 +145,15 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
     initNavigationMap([...(apiResources ?? []), ...GITOPS_KINDS])
   }, [apiResources])
 
-  // Counts come from radar's /api/resource-counts, kind-filtered to the
-  // GitOps set. The extracted GitOpsTableView reads them for the
-  // Scope-section mode tabs + the empty-state check.
+  const hasGitOpsRowResource = useMemo(() => (
+    hasAPIResource(apiResources, 'applications', 'argoproj.io') ||
+    hasAPIResource(apiResources, 'kustomizations', 'kustomize.toolkit.fluxcd.io') ||
+    hasAPIResource(apiResources, 'helmreleases', 'helm.toolkit.fluxcd.io')
+  ), [apiResources])
+
+  // Counts come from radar's /api/resource-counts. The extracted
+  // GitOpsTableView reads only the GitOps keys for mode tabs + empty-state
+  // checks.
   const countsQuery = useQuery({
     queryKey: ['gitops-resource-counts', namespacesParam],
     queryFn: async () => {
@@ -184,7 +199,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
     },
     enabled: !apiResourcesLoading,
     staleTime: 30_000,
-    refetchInterval: 120_000,
+    refetchInterval: GITOPS_ROWS_REFRESH_INTERVAL_MS,
   })
 
   // Row mutations invalidate granular keys (['resource', …], ['gitops-tree', …])
@@ -194,11 +209,11 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
   // inviting a duplicate request. Radar serves reads from an informer cache that
   // lags the write by the watch-propagation delay, so refetch once now (covers
   // an already-current cache) and once shortly after to catch the propagated
-  // update; refetch() forces a fetch regardless of staleTime.
-  const refetchTable = () => {
-    rowsQuery.refetch()
-    countsQuery.refetch()
-  }
+  // update; refetch() forces a fetch regardless of staleTime. The toolbar's
+  // manual refresh reuses refetchTable so rows + counts stay in sync.
+  // Return the combined promise so the toolbar's refresh animation waits for the
+  // real fetches to settle before showing its success checkmark.
+  const refetchTable = () => Promise.all([rowsQuery.refetch(), countsQuery.refetch()])
   const refetchTableAfterMutation = () => {
     refetchTable()
     window.setTimeout(refetchTable, 1200)
@@ -217,6 +232,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
   const [coldRetrying, setColdRetrying] = useState(false)
   useEffect(() => { coldRetriesRef.current = 0; setColdRetrying(false) }, [apiResources, namespacesParam])
   useEffect(() => {
+    if (!hasGitOpsRowResource || rowsQuery.error) { setColdRetrying(false); return }
     if (apiResourcesLoading || rowsQuery.isFetching) return
     if ((rowsQuery.data?.length ?? 0) > 0) { setColdRetrying(false); return }
     if (coldRetriesRef.current >= 4) { setColdRetrying(false); return }
@@ -224,7 +240,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
     const t = window.setTimeout(() => { coldRetriesRef.current += 1; refetchTable() }, 2000)
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowsQuery.data, rowsQuery.isFetching, apiResourcesLoading])
+  }, [rowsQuery.data, rowsQuery.isFetching, rowsQuery.error, apiResourcesLoading, hasGitOpsRowResource])
 
   const handleRowAction = (row: GitOpsRow, action: GitOpsRowAction) => {
     const { kindName: kind, namespace, name, id } = row
@@ -271,7 +287,15 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
         loading={apiResourcesLoading || countsQuery.isLoading || rowsQuery.isLoading || coldRetrying}
         error={(rowsQuery.error as Error | null) ?? null}
         counts={countsQuery.data?.counts ?? {}}
-        onRefresh={() => rowsQuery.refetch()}
+        countsUnavailable={countsQuery.data?.unavailable}
+        freshnessSlot={
+          <FreshnessControl
+            mode="auto"
+            dataUpdatedAt={rowsQuery.dataUpdatedAt}
+            onRefresh={refetchTable}
+            connectionState={connection.state}
+          />
+        }
         onRowClick={(row) => {
           const ns = row.namespace || '_'
           const params = new URLSearchParams()
@@ -436,15 +460,6 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
   const isFluxWorkload = kind === 'kustomizations' || kind === 'helmreleases'
   const isFlux = tool === 'flux'
   const isArgoApp = kind === 'applications'
-
-  // Set the browser tab title so users with multiple resource tabs open can
-  // tell which is which without focusing each tab. Restore on unmount so a
-  // stray "Radar — argocd/foo" doesn't outlive its page.
-  useEffect(() => {
-    const previous = document.title
-    document.title = `${name} — Radar`
-    return () => { document.title = previous }
-  }, [name])
 
   // Detail-page shortcuts. Skip when a modal is already open so a stray "s"
   // in an input field doesn't pop another sync dialog.
@@ -636,7 +651,7 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
           search: params.toString(),
         })
       } : undefined}
-      manageDocumentTitle={false /* OSS handles it via the in-effect-above */}
+      manageDocumentTitle={false /* title handled centrally in App's radarPageTitle */}
       renderTabBarCounts={({ tab }) => (
         tab === 'topology' && tree ? <TopologyCounts tree={tree} /> : null
       )}
@@ -958,5 +973,3 @@ function TopologyCounts({ tree }: { tree: GitOpsResourceTree }) {
     </div>
   )
 }
-
-

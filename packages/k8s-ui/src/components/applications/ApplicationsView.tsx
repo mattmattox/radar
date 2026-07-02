@@ -56,6 +56,7 @@ const HEALTH_TONE: Record<AppHealth, FacetTone> = {
   unhealthy: 'error',
   degraded: 'warning',
   healthy: 'success',
+  neutral: 'info', // Idle — sky, calm
   unknown: 'neutral',
 }
 
@@ -96,9 +97,11 @@ export interface ApplicationsViewProps {
   /** Rendered instead of the built-in EmptyState when there are zero entries
    *  pre-filter (the fleet host injects a coverage/offline-aware empty). */
   emptySlot?: ReactNode
+  /** Leading element in the header actions cluster (e.g. a freshness control). */
+  headerActions?: ReactNode
 }
 
-export function ApplicationsView({ entries: allEntries, variant, onSelect, title = 'Applications', description, emptySlot }: ApplicationsViewProps) {
+export function ApplicationsView({ entries: allEntries, variant, onSelect, title = 'Applications', description, emptySlot, headerActions }: ApplicationsViewProps) {
   const [textFilter, setTextFilter] = useState('')
   const [fHealth, setFHealth] = useState<Set<AppHealth>>(new Set())
   const [fEnv, setFEnv] = useState<Set<string>>(new Set())
@@ -293,10 +296,12 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
           description={description}
           actions={
             <>
+              {headerActions}
               <SummaryTile label={total === 1 ? 'application' : 'applications'} value={total} />
               {healthTile('unhealthy', 'error')}
               {healthTile('degraded', 'warning')}
               {healthTile('healthy', 'success')}
+              {healthTile('neutral', 'info')}
               {healthTile('unknown', 'neutral')}
             </>
           }
@@ -418,7 +423,7 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
                           <ChevronRight className={clsx('h-3.5 w-3.5 shrink-0 text-theme-text-tertiary transition-transform', r.expanded && 'rotate-90')} aria-hidden />
                           <span className="truncate font-semibold text-theme-text-primary">{r.label}</span>
                           <Tooltip
-                            content={<AppIdentityTooltip identityKey={r.label} members={r.members.map((m) => ({ name: m.row.name, env: m.row.identity!.env, confidence: m.row.identity!.confidence, evidence: m.row.identity!.evidence }))} />}
+                            content={<AppIdentityTooltip identityKey={r.label} source={r.members[0]?.row.identity?.source} portable={r.members[0]?.row.identity?.portable} fleet={variant === 'fleet'} members={r.members.map((m) => ({ name: m.row.name, env: m.row.identity!.env, confidence: m.row.identity!.confidence, evidence: m.row.identity!.evidence }))} />}
                             delay={150}
                           >
                             <span className={`${CHIP} ${r.confidence === 'high' ? CHIP_TONE.emerald : CHIP_TONE.neutral}`}>

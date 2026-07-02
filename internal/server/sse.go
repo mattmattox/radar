@@ -6,6 +6,7 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +47,11 @@ type SSEBroadcaster struct {
 	cachedTopology      *topology.Topology
 	cachedTopologyMu    sync.RWMutex
 	cachedTopologyDirty bool // true when changes occurred but topology not yet rebuilt
+	// cachedTopologyIndex is the inverted edge index over cachedTopology, built
+	// lazily on first relationship lookup and reused across drawer opens until
+	// the topology is replaced. Nil whenever cachedTopology changes (set under
+	// cachedTopologyMu alongside it). Guarded by cachedTopologyMu.
+	cachedTopologyIndex *topology.RelationshipsIndex
 
 	// warmupDone is closed when deferred informers finish syncing. During warmup,
 	// topology broadcasts use longer debounce and skip the expensive full-topology
@@ -58,6 +64,11 @@ type ClientInfo struct {
 	Namespaces       []string // Filter to specific namespaces (empty = all)
 	ViewMode         string   // "full" or "traffic"
 	ShowPolicyEffect bool     // Evaluate NetworkPolicies on edges
+	// DeniedKinds are cluster-scoped topology kinds (Nodes, PV, StorageClass,
+	// NodePool, …) this user can't list, stripped from every topology frame.
+	// Resolved once at subscribe time (the request is available there) so the
+	// broadcast loop never runs a SAR. nil/empty for users with full access.
+	DeniedKinds map[topology.NodeKind]bool
 }
 
 type clientRegistration struct {
@@ -65,6 +76,7 @@ type clientRegistration struct {
 	namespaces       []string
 	viewMode         string
 	showPolicyEffect bool
+	deniedKinds      map[topology.NodeKind]bool
 }
 
 // SSEEvent represents an event to send to clients
@@ -283,13 +295,11 @@ func (b *SSEBroadcaster) registerContextSwitchCallback() {
 		})
 	})
 
-	// Register for context switch completion
-	k8s.OnContextSwitch(func(newContext string) {
-		log.Printf("SSE broadcaster: context switched to %q, clearing cached topology", newContext)
-
+	resetCacheView := func() {
 		// Clear cached topology and dirty flag for the old context
 		b.cachedTopologyMu.Lock()
 		b.cachedTopology = nil
+		b.cachedTopologyIndex = nil
 		b.cachedTopologyDirty = false
 		b.cachedTopologyMu.Unlock()
 
@@ -301,6 +311,12 @@ func (b *SSEBroadcaster) registerContextSwitchCallback() {
 
 		// Restart the resource change watcher for the new cache
 		b.restartResourceWatcher()
+	}
+
+	// Register for context switch completion
+	k8s.OnContextSwitch(func(newContext string) {
+		log.Printf("SSE broadcaster: context switched to %q, clearing cached topology", newContext)
+		resetCacheView()
 
 		// Broadcast context_changed event to all clients
 		b.mu.RLock()
@@ -317,6 +333,13 @@ func (b *SSEBroadcaster) registerContextSwitchCallback() {
 
 		// Broadcast the new topology so clients can complete the switch
 		// Run in goroutine to not block the context switch
+		log.Printf("SSE broadcaster: scheduling topology broadcast")
+		go b.broadcastTopologyUpdate()
+	})
+
+	k8s.OnNamespaceRescope(func(namespace string) {
+		log.Printf("SSE broadcaster: namespace cache rescoped to %q, clearing cached topology", k8s.SanitizeForLog(namespace))
+		resetCacheView()
 		log.Printf("SSE broadcaster: scheduling topology broadcast")
 		go b.broadcastTopologyUpdate()
 	})
@@ -365,7 +388,7 @@ func (b *SSEBroadcaster) run() {
 				close(reg.ch) // Signal rejection by closing the channel
 				continue
 			}
-			b.clients[reg.ch] = ClientInfo{Namespaces: reg.namespaces, ViewMode: reg.viewMode, ShowPolicyEffect: reg.showPolicyEffect}
+			b.clients[reg.ch] = ClientInfo{Namespaces: reg.namespaces, ViewMode: reg.viewMode, ShowPolicyEffect: reg.showPolicyEffect, DeniedKinds: reg.deniedKinds}
 			b.mu.Unlock()
 			log.Printf("SSE client connected (namespaces=%v, view=%s), total clients: %d", reg.namespaces, reg.viewMode, len(b.clients))
 
@@ -514,10 +537,10 @@ func (b *SSEBroadcaster) watchResourceChanges() {
 						"summary": change.Diff.Summary,
 					}
 				}
-				b.Broadcast(SSEEvent{
+				b.broadcastResourceChange(SSEEvent{
 					Event: "k8s_event",
 					Data:  eventData,
-				})
+				}, change.Namespace, change.Kind)
 			}
 
 			// Schedule debounced topology update. Re-evaluate debounce on
@@ -600,20 +623,25 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 	// Note: namespaces are pre-sorted at subscription time for consistent grouping
 	type clientKey struct {
 		namespacesKey    string // comma-separated sorted namespaces
+		deniedKindsKey   string // comma-separated sorted denied cluster-scoped kinds
 		viewMode         string
 		showPolicyEffect bool
 	}
 	type clientGroup struct {
 		namespaces       []string
 		showPolicyEffect bool
+		deniedKinds      map[topology.NodeKind]bool
 		channels         []chan SSEEvent
 	}
 	clientGroups := make(map[clientKey]*clientGroup)
 	for ch, info := range clients {
 		nsKey := strings.Join(info.Namespaces, ",") // namespaces already sorted at subscribe time
-		key := clientKey{namespacesKey: nsKey, viewMode: info.ViewMode, showPolicyEffect: info.ShowPolicyEffect}
+		// Users with identical namespace + cluster-scoped RBAC share one frame;
+		// a user denied cluster-scoped kinds gets a distinct, stripped frame
+		// rather than the unfiltered bytes of a more-privileged peer.
+		key := clientKey{namespacesKey: nsKey, deniedKindsKey: deniedKindsKey(info.DeniedKinds), viewMode: info.ViewMode, showPolicyEffect: info.ShowPolicyEffect}
 		if clientGroups[key] == nil {
-			clientGroups[key] = &clientGroup{namespaces: info.Namespaces, showPolicyEffect: info.ShowPolicyEffect}
+			clientGroups[key] = &clientGroup{namespaces: info.Namespaces, showPolicyEffect: info.ShowPolicyEffect, deniedKinds: info.DeniedKinds}
 		}
 		clientGroups[key].channels = append(clientGroups[key].channels, ch)
 	}
@@ -638,6 +666,7 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 			log.Printf("Error building topology for broadcast: %v", err)
 			continue
 		}
+		topo.StripNodeKinds(group.deniedKinds)
 
 		if int64(topo.EstimatedNodes) > maxEstimated {
 			maxEstimated = int64(topo.EstimatedNodes)
@@ -666,6 +695,21 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 	b.lastBroadcastMaxEstimated.Store(maxEstimated)
 }
 
+// deniedKindsKey builds a stable grouping key from a denied-kinds set so that
+// clients with the same effective cluster-scoped RBAC share a pre-marshaled
+// frame. Empty (full access) collapses to "" — the common case.
+func deniedKindsKey(deny map[topology.NodeKind]bool) string {
+	if len(deny) == 0 {
+		return ""
+	}
+	kinds := make([]string, 0, len(deny))
+	for k := range deny {
+		kinds = append(kinds, string(k))
+	}
+	sort.Strings(kinds)
+	return strings.Join(kinds, ",")
+}
+
 // heartbeat sends periodic heartbeats to keep connections alive
 func (b *SSEBroadcaster) heartbeat() {
 	ticker := time.NewTicker(30 * time.Second)
@@ -686,8 +730,27 @@ func (b *SSEBroadcaster) heartbeat() {
 	}
 }
 
+// premarshalEventData serializes event.Data to json.RawMessage once, before
+// fan-out, so the per-client SSE writer emits the same bytes to every connected
+// client instead of reflection-marshaling the identical payload N times (once
+// per tab). Frames whose Data is already json.RawMessage (the topology path)
+// pass through untouched. A marshal error leaves Data as-is — the per-client
+// writer then surfaces it via its existing error path.
+func premarshalEventData(event SSEEvent) SSEEvent {
+	if _, ok := event.Data.(json.RawMessage); ok {
+		return event
+	}
+	data, err := json.Marshal(event.Data)
+	if err != nil {
+		return event
+	}
+	event.Data = json.RawMessage(data)
+	return event
+}
+
 // Broadcast sends an event to all connected clients
 func (b *SSEBroadcaster) Broadcast(event SSEEvent) {
+	event = premarshalEventData(event)
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -696,8 +759,52 @@ func (b *SSEBroadcaster) Broadcast(event SSEEvent) {
 	}
 }
 
+// broadcastResourceChange sends a per-resource change frame (k8s_event, which
+// can carry a spec/data diff) only to clients whose RBAC plausibly permits the
+// resource. Namespaced changes go only to clients whose RBAC-filtered namespace
+// set includes the namespace; cluster-scoped changes go only to clients not
+// denied that kind (the topology denied set resolved at subscribe time).
+//
+// This is a PARTIAL gate, not a complete authorization boundary, and is a big
+// reduction over the previous broadcast-to-all (which leaked every diff to every
+// client). Two gaps remain, both needing per-(group,resource) state this path
+// doesn't carry yet (ResourceChange has only Kind):
+//   - namespaced kinds the user can't read WITHIN an allowed namespace (e.g.
+//     Secrets/Roles for a list-pods-only viewer) still pass the namespace check;
+//   - cluster-scoped kinds outside the topology set (ClusterRole, webhooks,
+//     cluster-scoped CRDs) aren't in DeniedKinds, and kind-string matching misses
+//     CRD variants (EC2NodeClass vs synthesized NodeClass).
+// The complete fix carries the exact GVR on ResourceChange and authorizes each
+// client via the cached per-user canRead — tracked separately.
+func (b *SSEBroadcaster) broadcastResourceChange(event SSEEvent, namespace, kind string) {
+	event = premarshalEventData(event)
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for ch, info := range b.clients {
+		if clientCanSeeChange(info, namespace, kind) {
+			safeSend(ch, event)
+		}
+	}
+}
+
+// clientCanSeeChange reports whether a client's RBAC allows a change frame.
+func clientCanSeeChange(info ClientInfo, namespace, kind string) bool {
+	if namespace != "" {
+		// Namespaced change: deliver only if the client can see that namespace.
+		// nil Namespaces means all-namespace access (no RBAC restriction).
+		if info.Namespaces == nil {
+			return true
+		}
+		return slices.Contains(info.Namespaces, namespace)
+	}
+	// Cluster-scoped change (no namespace): deliver unless the kind is one this
+	// client was denied — the per-kind SAR result resolved at subscribe time.
+	return !info.DeniedKinds[topology.NodeKind(kind)]
+}
+
 // Subscribe adds a new SSE client. Returns nil if max clients reached.
-func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, showPolicyEffect ...bool) chan SSEEvent {
+func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, deniedKinds map[topology.NodeKind]bool, showPolicyEffect ...bool) chan SSEEvent {
 	// Check client count before creating the channel to fail fast
 	b.mu.RLock()
 	clientCount := len(b.clients)
@@ -719,7 +826,7 @@ func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, showPol
 
 	policyEffect := len(showPolicyEffect) > 0 && showPolicyEffect[0]
 	ch := make(chan SSEEvent, 10)
-	b.register <- clientRegistration{ch: ch, namespaces: sortedNs, viewMode: viewMode, showPolicyEffect: policyEffect}
+	b.register <- clientRegistration{ch: ch, namespaces: sortedNs, viewMode: viewMode, showPolicyEffect: policyEffect, deniedKinds: deniedKinds}
 	return ch
 }
 
@@ -769,6 +876,39 @@ func (b *SSEBroadcaster) GetCachedTopology() *topology.Topology {
 	return topo
 }
 
+// GetCachedTopologyWithIndex returns the cached topology together with its
+// inverted edge index, building (and memoizing) the index on first use after a
+// topology refresh. Relationship lookups that pass the index skip the O(edges)
+// scan that edgesForNode/walkTopmostOwner otherwise do per call, so reusing one
+// index across drawer opens turns repeated O(E) work into O(in-degree) per lookup.
+//
+// The returned (topo, index) pair is always consistent: the index is built from
+// the exact topo returned. When the topology is replaced between the two reads,
+// a fresh index is built for the returned topo without polluting the cache.
+func (b *SSEBroadcaster) GetCachedTopologyWithIndex() (*topology.Topology, *topology.RelationshipsIndex) {
+	topo := b.GetCachedTopology() // handles lazy rebuild when dirty
+	if topo == nil {
+		return nil, nil
+	}
+
+	b.cachedTopologyMu.RLock()
+	idx := b.cachedTopologyIndex
+	current := b.cachedTopology
+	b.cachedTopologyMu.RUnlock()
+	if idx != nil && current == topo {
+		return topo, idx
+	}
+
+	// Build outside the lock — IndexByResource is O(edges).
+	built := topology.IndexByResource(topo)
+	b.cachedTopologyMu.Lock()
+	if b.cachedTopology == topo {
+		b.cachedTopologyIndex = built
+	}
+	b.cachedTopologyMu.Unlock()
+	return topo, built
+}
+
 // rebuildCachedTopology rebuilds the full topology for relationship lookups.
 // Returns true if the rebuild succeeded, false otherwise.
 func (b *SSEBroadcaster) rebuildCachedTopology() bool {
@@ -790,6 +930,7 @@ func (b *SSEBroadcaster) updateCachedTopology(topo *topology.Topology) {
 	b.cachedTopologyMu.Lock()
 	defer b.cachedTopologyMu.Unlock()
 	b.cachedTopology = topo
+	b.cachedTopologyIndex = nil // rebuilt lazily on next relationship lookup
 	b.cachedTopologyDirty = false
 }
 
@@ -805,7 +946,7 @@ func buildFullTopology() (*topology.Topology, error) {
 }
 
 // HandleSSE is the HTTP handler for the SSE endpoint
-func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request) {
+func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request, deniedKinds map[topology.NodeKind]bool) {
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -828,7 +969,7 @@ func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Subscribe to events
-	eventCh := b.Subscribe(namespaces, viewMode, policyEffect)
+	eventCh := b.Subscribe(namespaces, viewMode, deniedKinds, policyEffect)
 	if eventCh == nil {
 		http.Error(w, "Too many SSE connections", http.StatusServiceUnavailable)
 		return
@@ -860,6 +1001,7 @@ func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 		opts.ShowPolicyEffect = policyEffect
 		if topo, err := builder.Build(opts); err == nil {
+			topo.StripNodeKinds(deniedKinds)
 			data, marshalErr := json.Marshal(topo)
 			if marshalErr != nil {
 				log.Printf("SSE: failed to marshal initial topology: %v", marshalErr)
@@ -879,7 +1021,18 @@ func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			data, err := json.Marshal(event.Data)
+			// Frames are pre-marshaled to json.RawMessage once before fan-out
+			// (premarshalEventData), so for the common case write the shared
+			// bytes directly — re-marshaling here would re-serialize the same
+			// payload for every connected client. Fall back to marshaling for
+			// any frame that wasn't pre-marshaled.
+			var data []byte
+			var err error
+			if raw, ok := event.Data.(json.RawMessage); ok {
+				data = raw
+			} else {
+				data, err = json.Marshal(event.Data)
+			}
 			if err != nil {
 				// Log the error and notify client instead of silently dropping
 				log.Printf("SSE: failed to marshal event %q: %v", event.Event, err)

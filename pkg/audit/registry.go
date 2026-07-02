@@ -39,6 +39,7 @@ var (
 	refDeprecatedAPI   = Reference{Label: "K8s: Deprecated API Migration Guide", URL: "https://kubernetes.io/docs/reference/using-api/deprecation-guide/"}
 	refService         = Reference{Label: "K8s: Service", URL: "https://kubernetes.io/docs/concepts/services-networking/service/"}
 	refIngress         = Reference{Label: "K8s: Ingress", URL: "https://kubernetes.io/docs/concepts/services-networking/ingress/"}
+	refTraefikCRD      = Reference{Label: "Traefik: Kubernetes IngressRoute", URL: "https://doc.traefik.io/traefik/routing/providers/kubernetes-crd/"}
 	refFinalizers      = Reference{Label: "K8s: Finalizers", URL: "https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/"}
 	refCrossplane      = Reference{Label: "Crossplane: Managed Resources", URL: "https://docs.crossplane.io/latest/concepts/managed-resources/"}
 )
@@ -293,6 +294,7 @@ var CheckRegistry = map[string]CheckMeta{
 	// ── Cross-resource / lifecycle (emit under Reliability) ────────────
 	"deprecatedAPIVersion": {
 		ID:          "deprecatedAPIVersion",
+		BadgeWorthy: true,
 		Title:       "Deprecated API version",
 		Category:    CategoryReliability,
 		Description: "This cluster still serves a deprecated API version. Resources using this API will break after a Kubernetes upgrade that removes it.",
@@ -301,6 +303,7 @@ var CheckRegistry = map[string]CheckMeta{
 	},
 	"serviceNoMatchingPods": {
 		ID:          "serviceNoMatchingPods",
+		BadgeWorthy: true,
 		Title:       "Service has no matching pods",
 		Category:    CategoryReliability,
 		Description: "The service selector does not match any running pods — traffic sent to this service will fail.",
@@ -309,15 +312,56 @@ var CheckRegistry = map[string]CheckMeta{
 	},
 	"ingressNoMatchingService": {
 		ID:          "ingressNoMatchingService",
+		BadgeWorthy: true,
 		Title:       "Ingress references missing service",
 		Category:    CategoryReliability,
 		Description: "The ingress backend references a service that does not exist, so incoming traffic will get 503 errors.",
 		Remediation: "Check the ingress spec and correct the service name, or create the missing service.",
 		References:  []Reference{refIngress},
 	},
+	"traefikRouteMissingService": {
+		ID:          "traefikRouteMissingService",
+		BadgeWorthy: true,
+		Title:       "Traefik router references missing service",
+		Category:    CategoryReliability,
+		Description: "A Traefik IngressRoute references a Service or TraefikService that does not exist. Traefik ships no admission webhook, so the bad reference is accepted silently and requests to that route fail until someone reads the controller logs.",
+		Remediation: "Correct the service name/namespace in the router's spec.routes[].services, or create the missing Service/TraefikService. Cross-namespace references also require allowCrossNamespace on the Traefik CRD provider.",
+		References:  []Reference{refTraefikCRD},
+	},
+	"traefikRouteMissingMiddleware": {
+		ID:          "traefikRouteMissingMiddleware",
+		BadgeWorthy: true,
+		Title:       "Traefik router references missing middleware",
+		Category:    CategoryReliability,
+		Description: "A Traefik IngressRoute references a Middleware that does not exist in the resolved namespace. Traefik accepts the route but skips the missing middleware, so auth, rate-limit, or header rules you expect to apply silently do not.",
+		Remediation: "Correct the middleware name/namespace in the router's spec.routes[].middlewares, or create the missing Middleware. A same-name Middleware in a different API group (traefik.io vs traefik.containo.us) does not satisfy the reference.",
+		References:  []Reference{refTraefikCRD},
+	},
+	"traefikChainMissingMiddleware": {
+		ID:          "traefikChainMissingMiddleware",
+		BadgeWorthy: true,
+		Title:       "Traefik chain references missing middleware",
+		Category:    CategoryReliability,
+		Description: "A Traefik chain Middleware lists a Middleware in spec.chain.middlewares that does not exist in the resolved namespace. Traefik accepts the chain but skips the missing link, so part of the intended middleware pipeline silently does not run.",
+		Remediation: "Correct the middleware name/namespace in spec.chain.middlewares, or create the missing Middleware. A same-name Middleware in a different API group (traefik.io vs traefik.containo.us) does not satisfy the reference.",
+		References:  []Reference{refTraefikCRD},
+	},
+	"traefikErrorsMissingService": {
+		ID:          "traefikErrorsMissingService",
+		BadgeWorthy: true,
+		Title:       "Traefik errors middleware references missing service",
+		Category:    CategoryReliability,
+		Description: "A Traefik errors Middleware references a Service in spec.errors.service that does not exist. Traefik accepts the middleware, but when an error page is needed the backend isn't there, so users get the default error instead of the custom one.",
+		Remediation: "Correct the service name/namespace in spec.errors.service, or create the missing Service. Cross-namespace references also require allowCrossNamespace on the Traefik CRD provider.",
+		References:  []Reference{refTraefikCRD},
+	},
 	"stuckTerminating": {
-		ID:          "stuckTerminating",
-		Title:       "Stuck terminating resource",
+		ID: "stuckTerminating",
+		// Not BadgeWorthy: stuck-terminating is already surfaced by the live health
+		// pipeline (pkg/health renders the node degraded) and the "Terminating" chip
+		// in the resource-list name cell — a badge here would be a third redundant
+		// signal. It stays in the Checks/Audit views with its deletion-age ramp.
+		Title: "Stuck terminating resource",
 		Category:    CategoryReliability,
 		Description: "This resource has metadata.deletionTimestamp set but is still alive past the cleanup window. Most controllers finish cleanup within seconds; minutes-long delays usually mean a finalizer's owning controller is unhealthy or unable to reach a dependent service. Common causes: the controller pod is CrashLoopBackOff, DNS resolution is broken, the finalizer logic depends on a webhook or external API that's unavailable.",
 		Remediation: "Check the controller responsible for each finalizer key (kubectl describe will show finalizers under metadata). For Argo CD, look at argocd-application-controller in the argocd namespace. For Flux, look at the matching controller (kustomize-controller, helm-controller, source-controller) in flux-system. Once the controller is healthy, deletion will resume automatically. If you must remove a stuck resource and accept the orphaned cleanup, manually clear the finalizers field — but only as a last resort.",
@@ -325,6 +369,7 @@ var CheckRegistry = map[string]CheckMeta{
 	},
 	"crossplaneStuck": {
 		ID:          "crossplaneStuck",
+		BadgeWorthy: true,
 		Title:       "Stuck Crossplane resource",
 		Category:    CategoryReliability,
 		Description: "A Crossplane Managed Resource, Composite Resource, or Claim has been reporting Ready=False or Synced=False past the reconciliation window. Synced=False usually means a configuration error (bad ProviderConfig, malformed forProvider spec, missing IAM permissions, quota exceeded, schema mismatch). Ready=False usually means the provider accepted the spec but can't reach a desired state (target cloud API rejected, dependency missing, eventual-consistency lag past the threshold).",

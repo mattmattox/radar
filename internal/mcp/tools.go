@@ -27,6 +27,7 @@ import (
 	"github.com/skyhook-io/radar/internal/summarycontext"
 	"github.com/skyhook-io/radar/internal/timeline"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
+	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/issuesapi"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
@@ -97,7 +98,8 @@ func registerTools(server *mcp.Server) {
 		Name: "get_resource",
 		Description: "Use AFTER narrowing to one resource. Returns the resource's " +
 			"Kubernetes-shaped spec/status/metadata plus resourceContext when available " +
-			"(relationships, refs, issue/audit/policy rollups). This is the drill-down " +
+			"(relationships, refs, issue/audit/policy rollups — issues carry " +
+			"diagnostic_context with cross-subject causal links + a confidence tier). This is the drill-down " +
 			"tool, not the best first call for broad incidents. Start with issues, " +
 			"get_dashboard, search, or list_resources to rank candidates; then call " +
 			"get_resource for the exact object. If you are looking for a string across " +
@@ -169,13 +171,14 @@ func registerTools(server *mcp.Server) {
 			"is broken — find the root cause / localize the failure'. For a single " +
 			"Pod/Deployment/StatefulSet/DaemonSet, bundles: the resource (Kubernetes-shaped detail) + diagnostic " +
 			"resourceContext (managedBy, exposes, selectedBy, uses, runsOn, " +
-			"issue/audit/policy rollups) + current AND previous container logs across the " +
+			"issue/audit/policy rollups — issues carry diagnostic_context with cross-subject " +
+			"causal links + a confidence tier to walk symptom→root) + current AND previous container logs across the " +
 			"workload's pods + recent Warning events filtered to this resource + a " +
 			"recentChanges section for the workload and directly referenced " +
 			"ConfigMaps (no Secret content) + a " +
 			"startupBlockers section when the workload can't reach Running (unschedulable " +
 			"with the offending node constraint named, admission/quota rejection, or a " +
-			"post-bind CNI/volume stall). For Application/Kustomization/HelmRelease, returns " +
+			"post-bind CNI/volume stall). For Application/Kustomization/Flux HelmRelease, returns " +
 			"the reconciler resource + GitOps status summary + related parsed issues " +
 			"(cause/action/remediation), without pod-log fan-out. Use for " +
 			"CrashLoopBackOff, OOMKills, failed deploys, image-pull errors, readiness " +
@@ -204,7 +207,12 @@ func registerTools(server *mcp.Server) {
 			"ReplicaSet histories or individual audit/log streams, especially when issues " +
 			"are empty or dominated by baseline failures. Pair with since to bound the window; " +
 			"filter by namespace, kind, or name when you know the scope. Omit namespace when " +
-			"the relevant change may be outside the app namespace.",
+			"the relevant change may be outside the app namespace. Also includes native Helm " +
+			"release deployment/operation history as `source: helm` changes, so failed upgrades, " +
+			"rollbacks, and successful current revisions appear in the same recent-change feed. " +
+			"If `sourcesErrored` includes helm, treat the result as partial rather than proof " +
+			"that no Helm deployment happened. Use get_helm_release include=history,operations " +
+			"for the full Helm revision trail.",
 		Annotations: readOnly,
 	}, logToolCall("get_changes", handleGetChanges))
 
@@ -234,19 +242,30 @@ func registerTools(server *mcp.Server) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "list_helm_releases",
-		Description: "List all Helm releases in the cluster with their status and health. " +
-			"Returns release name, namespace, chart, version, status (deployed/failed/pending), " +
-			"and resource health (healthy/degraded/unhealthy). " +
-			"Use to get an overview of what's deployed via Helm before inspecting individual releases.",
+		Description: "List all Helm releases in the cluster with their status, resource health, " +
+			"storage namespace, Flux ownership when detected, lastOperation when Helm history " +
+			"indicates a current failed upgrade, rollback-after-failure, rollback, or stuck pending " +
+			"operation, and a capped operations trail for failed upgrades, rollbacks, and stuck operations. " +
+			"Use this first for Helm deployment debugging; if storageNamespace is present, pass that " +
+			"value as namespace to get_helm_release. Follow with get_helm_release include=history,operations " +
+			"for the full revision trail.",
 		Annotations: readOnly,
 	}, logToolCall("list_helm_releases", handleListHelmReleases))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "get_helm_release",
 		Description: "Get detailed information about a specific Helm release including owned resources " +
-			"and their status. Optionally include values, revision history, or manifest diff between revisions " +
-			"using the 'include' parameter (comma-separated: values, history, diff). " +
-			"diff_revision_1 and diff_revision_2 are only used when include contains diff.",
+			"and their status. The namespace parameter is the Helm storage namespace: use storageNamespace " +
+			"from list_helm_releases when present, otherwise use namespace. The default response includes " +
+			"storageNamespace, managedByFluxHelmRelease, resource health, operationInsight, and lastOperation when Helm history " +
+			"indicates a current failed upgrade, rollback-after-failure, rollback, or stuck pending operation, " +
+			"where operationInsight gives active-vs-recovered state, the likely resource to inspect, and suggested revision comparison when available, " +
+			"plus hooks and failed/running hookDiagnostics with live Job/Pod/Event/redacted-log evidence when available. " +
+			"Optionally include values, revision history, operation history, manifest diff, values diff, " +
+			"notes diff, or rendered-resource set diff between revisions using the 'include' parameter. " +
+			"Values returned through MCP are key-aware redacted. " +
+			"(comma-separated: values, history, operations, diff, values_diff, notes_diff, resource_diff). " +
+			"diff_revision_1 and diff_revision_2 are used when include contains any *_diff or diff token.",
 		Annotations: readOnly,
 	}, logToolCall("get_helm_release", handleGetHelmRelease))
 
@@ -292,7 +311,8 @@ func registerTools(server *mcp.Server) {
 		Description: "Use when the agent's decision is 'what's broken right now?' — LIVE " +
 			"OPERATIONAL STATE, not config posture. Returns a ranked list of currently " +
 			"failing resources: failing Deployments/StatefulSets/CronJobs/HPAs/Nodes/Jobs/" +
-			"PVCs, dangling-reference errors like Pod→missing PVC/CM/Secret/SA, HPA→missing " +
+			"PVCs, active native Helm release failures or stuck pending operations, " +
+			"dangling-reference errors like Pod→missing PVC/CM/Secret/SA, HPA→missing " +
 			"scaleTargetRef, Ingress→missing backend Service, RoleBinding→missing Role, " +
 			"webhook→missing Service, pod startup blockers — why a Pod can't reach Running: " +
 			"unschedulable (arch/taint/resources/affinity), admission-rejected " +
@@ -301,9 +321,22 @@ func registerTools(server *mcp.Server) {
 			"Severity normalized to critical/warning. This is one curated stream — there is " +
 			"no source filter; each row carries a `source` label (problem|missing_ref|" +
 			"scheduling|condition) you can slice on via the CEL filter= if needed. Some " +
-			"rows include `diagnostic_context`: deterministic facts such as explicit " +
-			"missing refs, selected backend issues, or workload rollups; treat these as " +
-			"triage context, not proof of root cause. " +
+			"rows include `diagnostic_context`: deterministic facts AND cross-subject " +
+			"causal links — a failing root (Node under resource pressure, broken PVC, " +
+			"Service with no endpoints, unavailable metrics APIService) annotated with the " +
+			"downstream issues it may explain, in `facts[].related_issues` (each `count` " +
+			"is how many affected resources fold into that linked issue). Each causal link " +
+			"carries a `confidence`: `high` = a declared structural edge (selector, owner, " +
+			"claimName) — treat as fact; `medium` = inferred/co-located (e.g. pods ON a " +
+			"pressured node) — a lead to verify, NOT proof; `low` = heuristic. The fact's " +
+			"`role` (candidate = possible cause, affected, rollup, context) places the row " +
+			"in the causal picture. The REVERSE is also provided: a symptom row may carry " +
+			"`incident_parent` (the root issue that explains it — id + ref + confidence + " +
+			"fact_type), so you can walk symptom→root directly without scanning every root's " +
+			"facts. It is set only when a single root is unambiguous (high beats medium; " +
+			"distinct same-confidence roots leave it unset). Use these links to walk from a " +
+			"symptom to its likely " +
+			"root, but confirm a medium link before acting on it. " +
 			"When `recent_changes` is present, consider it if the issue list does not " +
 			"explain the reported symptom; `recent_changes_reason` says why Radar " +
 			"attached it. It lists recent spec/config changes that may explain failures " +
@@ -323,10 +356,15 @@ func registerTools(server *mcp.Server) {
 			"healthy pod can have many audit findings; a crashing pod can have zero). Kyverno " +
 			"PolicyReport violations are not in either — they surface per-resource via " +
 			"get_resource's resourceContext policy rollup. " +
+			"Recovered Helm rollbacks are deploy history, not live issues; use get_changes for " +
+			"Kubernetes timeline changes plus Helm deployment history, and get_helm_release for " +
+			"full Helm revision/history/hook diagnostics. " +
 			"After identifying a suspect issue, call diagnose when the affected resource " +
 			"is a workload (Pod/Deployment/StatefulSet/DaemonSet) or GitOps reconciler " +
-			"(Application/Kustomization/HelmRelease). For other non-workload kinds, call " +
-			"get_resource. Use get_neighborhood when the failure likely crosses " +
+			"(Application/Kustomization/HelmRelease with group=helm.toolkit.fluxcd.io). " +
+			"For native Helm issues (kind=HelmRelease, group=helm.sh), call get_helm_release " +
+			"with include=history,operations. For other non-workload kinds, call get_resource. " +
+			"Use get_neighborhood when the failure likely crosses " +
 			"Services/workloads/Pods/dependencies. Use namespace for app-local triage; " +
 			"omit it when the root may be cluster-scoped or outside the app namespace.",
 		Annotations: readOnly,
@@ -1254,7 +1292,7 @@ func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getCh
 
 	query := meaningfulchanges.Query{
 		Since:      since,
-		Limit:      limit,
+		Limit:      50,
 		FieldLimit: meaningfulchanges.DefaultFieldLimit,
 		Name:       input.Name,
 	}
@@ -1272,22 +1310,35 @@ func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getCh
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to query timeline: %w", err)
 	}
+	var sourcesErrored []string
+	helmChanges, err := helmRecentChangesForContext(ctx, input, since)
+	if err != nil {
+		sourcesErrored = append(sourcesErrored, "helm: "+err.Error())
+	} else {
+		changes = append(changes, helmChanges...)
+	}
 	changes = filterChangesByClusterScopedRBAC(ctx, changes)
+	totalMatched := len(changes)
+	meaningfulchanges.RankAndCap(&changes, limit)
 
 	// Always wrap so capped + uncapped agree on wire shape
 	// ({changes: [...], narrowHint?: "..."}).
-	resp := getChangesResponseMCP{Changes: changes}
-	if capped {
+	resp := getChangesResponseMCP{
+		Changes:        changes,
+		SourcesErrored: sourcesErrored,
+	}
+	if capped || totalMatched > len(changes) {
 		resp.NarrowHint = fmt.Sprintf(
-			"meaningful change candidates were capped before ranking — narrow with namespace=, kind=, name=, shorten since= (e.g. 15m), or raise limit (cap 50)",
+			"meaningful change results were capped or candidate queries saturated — narrow with namespace=, kind=, name=, shorten since= (e.g. 15m), or raise limit (cap 50)",
 		)
 	}
 	return toJSONResult(resp)
 }
 
 type getChangesResponseMCP struct {
-	Changes    []mcpChange `json:"changes"`
-	NarrowHint string      `json:"narrowHint,omitempty"`
+	Changes        []mcpChange `json:"changes"`
+	NarrowHint     string      `json:"narrowHint,omitempty"`
+	SourcesErrored []string    `json:"sourcesErrored,omitempty"`
 }
 
 func handleGetTopology(ctx context.Context, req *mcp.CallToolRequest, input topologyInput) (*mcp.CallToolResult, any, error) {
@@ -2001,12 +2052,23 @@ type mcpHelmSummary struct {
 }
 
 type mcpHelmRelease struct {
-	Name           string `json:"name"`
-	Namespace      string `json:"namespace"`
-	Chart          string `json:"chart"`
-	ChartVersion   string `json:"chartVersion"`
-	Status         string `json:"status"`
-	ResourceHealth string `json:"resourceHealth,omitempty"`
+	Name                     string              `json:"name"`
+	Namespace                string              `json:"namespace"`
+	StorageNamespace         string              `json:"storageNamespace,omitempty"`
+	Chart                    string              `json:"chart"`
+	ChartVersion             string              `json:"chartVersion"`
+	Status                   string              `json:"status"`
+	Revision                 int                 `json:"revision"`
+	Updated                  time.Time           `json:"updated"`
+	ResourceHealth           string              `json:"resourceHealth,omitempty"`
+	HealthIssue              string              `json:"healthIssue,omitempty"`
+	HealthSummary            string              `json:"healthSummary,omitempty"`
+	LastOperation            *helm.HelmOperation `json:"lastOperation,omitempty"`
+	ManagedByFluxHelmRelease string              `json:"managedByFluxHelmRelease,omitempty"`
+}
+
+func mcpHelmDashboardPriority(r helm.HelmRelease) int {
+	return helm.ReleasePriority(r)
 }
 
 func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace string, includeNodes bool, includeNamespaces bool) mcpDashboard {
@@ -2043,30 +2105,32 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 		}
 		d.ResourceCounts["pods"] = len(pods)
 		for _, pod := range pods {
-			switch k8s.ClassifyPodHealth(pod, now) {
-			case "healthy":
-				d.Health.HealthyPods++
-			case "warning":
+			switch health.Pod(pod, now).Level {
+			case health.LevelDegraded, health.LevelUnknown:
+				// unknown = node-lost / unobservable; surface as warning rather than
+				// letting the legacy collapse hide it in the healthy count.
 				d.Health.WarningPods++
-			case "error":
+			case health.LevelUnhealthy:
 				d.Health.ErrorPods++
 				severity := "critical"
 				// PodProblemReason returns the kubelet's waiting/terminated
 				// reason; ClassifyPodHealth==error implies the pod is in a
 				// failing state, so critical is the right default.
-				restarts, lastTermReason := k8s.PodRestartContext(pod)
+				restarts, lastTermReason := health.PodRestartContext(pod)
 				ageDur := now.Sub(pod.CreationTimestamp.Time)
 				allProblems = append(allProblems, mcpProblem{
 					Kind:                 "Pod",
 					Namespace:            pod.Namespace,
 					Name:                 pod.Name,
 					Severity:             severity,
-					Reason:               k8s.PodProblemReason(pod),
+					Reason:               health.PodProblemReason(pod, now),
 					Age:                  k8s.FormatAge(ageDur),
 					RestartCount:         restarts,
 					LastTerminatedReason: lastTermReason,
 					ageSeconds:           int64(ageDur.Seconds()),
 				})
+			default: // healthy, neutral
+				d.Health.HealthyPods++
 			}
 		}
 	}
@@ -2202,7 +2266,7 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 			d.Nodes.Total = len(nodes)
 
 			for _, node := range nodes {
-				h := k8s.ClassifyNodeHealth(node)
+				h := health.Node(node)
 				if h.Ready {
 					if h.Unschedulable {
 						d.Nodes.Cordoned++
@@ -2267,37 +2331,50 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 		d.HelmReleases.UnavailableReason = "Helm client not initialized."
 	} else {
 		username, groups := userFromContext(ctx)
-		releases, err := helmClient.ListReleasesAsUser(namespace, username, groups)
-		if err != nil {
-			// Not fatal for the dashboard — a viewer with no helm access
-			// still sees everything else. Surface to LLM consumers via
-			// Unavailable so they don't confidently report "Total=0
-			// releases" when in fact the read failed.
-			log.Printf("[mcp] Dashboard helm list failed: %v", err)
-			d.HelmReleases.Unavailable = true
-			if helm.IsForbiddenError(err) {
-				d.HelmReleases.UnavailableReason = "RBAC denied: caller cannot list Helm release secrets in this scope."
-			} else {
-				d.HelmReleases.UnavailableReason = "Helm read failed: " + err.Error()
-			}
+		namespaces := resolveHelmListNamespaces(ctx, namespace)
+		if namespaces != nil && len(namespaces) == 0 {
+			// No namespace access: leave the zero-value Helm summary.
 		} else {
-			d.HelmReleases.Total = len(releases)
+			releases, err := helmClient.ListReleasesAcrossNamespaces(namespaces, username, groups)
+			if err != nil {
+				// Not fatal for the dashboard — a viewer with no helm access
+				// still sees everything else. Surface to LLM consumers via
+				// Unavailable so they don't confidently report "Total=0
+				// releases" when in fact the read failed.
+				log.Printf("[mcp] Dashboard helm list failed: %v", err)
+				d.HelmReleases.Unavailable = true
+				if helm.IsForbiddenError(err) {
+					d.HelmReleases.UnavailableReason = "RBAC denied: caller cannot list Helm release secrets in this scope."
+				} else {
+					d.HelmReleases.UnavailableReason = "Helm read failed: " + err.Error()
+				}
+			} else {
+				d.HelmReleases.Total = len(releases)
 
-			// Sort: failed/pending-install first, then unhealthy/degraded
-			sort.SliceStable(releases, func(i, j int) bool {
-				return helm.StatusPriority(releases[i].Status, releases[i].ResourceHealth) < helm.StatusPriority(releases[j].Status, releases[j].ResourceHealth)
-			})
-
-			limit := min(len(releases), 5)
-			for _, r := range releases[:limit] {
-				d.HelmReleases.Releases = append(d.HelmReleases.Releases, mcpHelmRelease{
-					Name:           r.Name,
-					Namespace:      r.Namespace,
-					Chart:          r.Chart,
-					ChartVersion:   r.ChartVersion,
-					Status:         r.Status,
-					ResourceHealth: r.ResourceHealth,
+				// Sort: failed/pending first, then operation-signaled Helm rollbacks,
+				// then unhealthy/degraded owned resources.
+				sort.SliceStable(releases, func(i, j int) bool {
+					return mcpHelmDashboardPriority(releases[i]) < mcpHelmDashboardPriority(releases[j])
 				})
+
+				limit := min(len(releases), 5)
+				for _, r := range releases[:limit] {
+					d.HelmReleases.Releases = append(d.HelmReleases.Releases, mcpHelmRelease{
+						Name:                     r.Name,
+						Namespace:                r.Namespace,
+						StorageNamespace:         r.StorageNamespace,
+						Chart:                    r.Chart,
+						ChartVersion:             r.ChartVersion,
+						Status:                   r.Status,
+						Revision:                 r.Revision,
+						Updated:                  r.Updated,
+						ResourceHealth:           r.ResourceHealth,
+						HealthIssue:              r.HealthIssue,
+						HealthSummary:            r.HealthSummary,
+						LastOperation:            r.LastOperation,
+						ManagedByFluxHelmRelease: r.ManagedByFluxHelmRelease,
+					})
+				}
 			}
 		}
 	}
@@ -2545,7 +2622,10 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 		}
 		filters.Filter = f
 	}
-	out, stats := issues.ComposeWithStats(provider, filters)
+	composeFilters := filters
+	composeFilters.Limit = issues.NoLimit
+	out, stats := issues.ComposeWithStats(provider, composeFilters)
+	out, stats = issues.MergeExternalIssues(out, stats, filters, nativeHelmIssuesForContext(ctx, allowedNamespaces, filters))
 	// Shared base response shape (issues.ListResponse), then MCP-specific
 	// enrichments below.
 	resp := issues.NewListResponse(out, stats)
@@ -2591,6 +2671,29 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 		}
 	}
 	return toJSONResult(resp)
+}
+
+func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filters issues.Filters) []issues.Issue {
+	if !issues.KindFilterIncludes(filters.Kinds, "HelmRelease", "helmreleases") {
+		return nil
+	}
+	helmClient := helm.GetClient()
+	if helmClient == nil {
+		return nil
+	}
+	username, groups := userFromContext(ctx)
+	helmNamespaces := namespaces
+	if helmNamespaces == nil {
+		helmNamespaces = resolveHelmListNamespaces(ctx, "")
+	}
+	releases, err := helmClient.ListReleasesAcrossNamespaces(helmNamespaces, username, groups)
+	if err != nil {
+		if !helm.IsForbiddenError(err) {
+			log.Printf("[mcp] Failed to list Helm releases for issue stream: %v", err)
+		}
+		return nil
+	}
+	return issues.NativeHelmReleaseIssues(releases, time.Now())
 }
 
 func parseSeverityList(v string) ([]issues.Severity, error) {

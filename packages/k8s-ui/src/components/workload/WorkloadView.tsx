@@ -52,7 +52,7 @@ import { ResourceRendererDispatch, getResourceStatus, type RendererOverrides } f
 import type { ScalerDiagnosis } from '../resources/renderers/WorkloadRenderer'
 import { DetailShell, type DetailShellTab } from '../shared/DetailShell'
 import { HelmManagedByChip, ManagedByChip, type HelmOwnerRef } from '../shared/ManagedByChip'
-import { getKindColorOutline, displayKindName } from '../ui/drawer-components'
+import { getKindColorOutline, displayKindName, OperationalIssuesShownContext } from '../ui/drawer-components'
 import { midTruncate } from '../../utils/format'
 
 export type WorkloadTabType = 'overview' | 'topology' | 'timeline' | 'logs' | 'metrics' | 'yaml'
@@ -71,10 +71,17 @@ interface WorkloadViewProps {
   onCollapseToDrawer?: () => void
   /** false = collapsed drawer mode, true (default) = full expanded mode */
   expanded?: boolean
+  /** false on the outgoing layer during an expand/collapse crossfade — suspend
+   *  keyboard shortcuts so the invisible layer doesn't capture them (default true) */
+  active?: boolean
   /** Close the drawer (collapsed mode) */
   onClose?: () => void
-  /** Expand from drawer to full view */
-  onExpand?: () => void
+  /** Expand from drawer to full view. `opts.yaml` true when expanding from the
+   *  drawer's YAML view so the full view opens on the YAML tab (edits carry over). */
+  onExpand?: (opts?: { yaml?: boolean }) => void
+  /** Hover/press the expand control = likely expand → pre-mount the full view. */
+  onExpandIntent?: () => void
+  onCancelExpandIntent?: () => void
   /** Initial view tab — 'yaml' opens YAML directly */
   initialTab?: 'detail' | 'yaml'
   /** API group for CRD resources */
@@ -211,6 +218,17 @@ interface WorkloadViewProps {
   isMetricsAvailable?: (kind: string, resource: any) => boolean
   /** Render extra content at the bottom of the overview tab (e.g. audit findings) */
   renderOverviewExtra?: (props: { kind: string; namespace: string; name: string }) => ReactNode
+  /** Render content at the TOP of the overview tab, above the renderer (e.g. live
+   *  Operational Issues). Optional + additive — consumers that don't pass it are
+   *  unaffected. Only rendered when `hasOperationalIssues` is true: the lead
+   *  component returns null when empty, but its padded wrapper can't tell, so
+   *  gating on the flag avoids an empty top gap on healthy resources. */
+  renderOverviewLead?: (props: { kind: string; namespace: string; name: string }) => ReactNode
+  /** When true, renderers suppress their own status-derived problem displays
+   *  because a dedicated Operational Issues section is shown (the host fetched
+   *  live issues for this resource). Avoids showing the same failure twice.
+   *  Also gates the `renderOverviewLead` wrapper (see above). */
+  hasOperationalIssues?: boolean
 
   // ── Duplicate ────────────────────────────────────────────────────────────
   /** Duplicate handler — opens create dialog with this resource's YAML */
@@ -237,8 +255,11 @@ export function WorkloadView({
   onNavigateToResource,
   onCollapseToDrawer,
   expanded = true,
+  active = true,
   onClose,
   onExpand,
+  onExpandIntent,
+  onCancelExpandIntent,
   initialTab,
   group,
   breadcrumb,
@@ -282,6 +303,8 @@ export function WorkloadView({
   onDuplicate,
   onDownload,
   renderOverviewExtra,
+  renderOverviewLead,
+  hasOperationalIssues,
   // Actions bar
   actionsBarProps,
   // Renderer overrides
@@ -511,9 +534,12 @@ export function WorkloadView({
       keys: 'Escape',
       description: expanded ? 'Go back' : 'Close drawer',
       category: expanded ? 'Navigation' as const : 'Drawer' as const,
-      scope: expanded ? 'global' as const : 'drawer' as const,
+      // 'drawer' (top priority) in both modes so when this is the fullscreen
+      // overlay its Escape unambiguously wins over any background view's Escape
+      // (incl. another 'global'-scope WorkloadView mounted underneath).
+      scope: 'drawer' as const,
       handler: expanded ? onBack : () => onClose?.(),
-      enabled: true,
+      enabled: active,
     },
     {
       id: 'drawer-yaml',
@@ -522,7 +548,7 @@ export function WorkloadView({
       category: 'Drawer' as const,
       scope: 'drawer' as const,
       handler: () => switchView(true),
-      enabled: !expanded,
+      enabled: active && !expanded,
     },
     {
       id: 'drawer-detail',
@@ -531,9 +557,9 @@ export function WorkloadView({
       category: 'Drawer' as const,
       scope: 'drawer' as const,
       handler: () => switchView(false),
-      enabled: !expanded,
+      enabled: active && !expanded,
     },
-  ], [expanded, onBack, onClose, switchView]))
+  ], [active, expanded, onBack, onClose, switchView]))
 
   const status = getResourceStatus(apiKind, resource)
 
@@ -573,7 +599,12 @@ export function WorkloadView({
             <div className="flex items-center gap-1">
               {onExpand && (
                 <button
-                  onClick={onExpand}
+                  onClick={() => onExpand({ yaml: showYaml })}
+                  // Pre-mount the fullscreen view on hover/press so the click starts
+                  // the morph instantly (its heavy mount is already paid for).
+                  onPointerEnter={onExpandIntent}
+                  onPointerDown={onExpandIntent}
+                  onPointerLeave={onCancelExpandIntent}
                   className="p-1.5 text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded"
                   title="Open full view"
                 >
@@ -636,7 +667,9 @@ export function WorkloadView({
         {/* Content — viewTransitionName scopes View Transitions API cross-fade to this element */}
         <div className="flex-1 overflow-y-auto" style={{ viewTransitionName: 'drawer-content' }}>
           {!resource ? (
-            <FetchResult loading={resourceLoading} error={resourceError} className="h-32" />
+            // Fill the drawer body so the loading logo centers in it, not in a
+            // 128px box pinned to the top (matches the splash/PaneLoader centering).
+            <FetchResult loading={resourceLoading} error={resourceError} className="h-full" />
           ) : showYaml ? (
             <EditableYamlView
               resource={selectedResource}
@@ -652,7 +685,12 @@ export function WorkloadView({
               onDownload={onDownload}
             />
           ) : (
-            <>
+            <OperationalIssuesShownContext.Provider value={!!hasOperationalIssues}>
+              {renderOverviewLead && hasOperationalIssues && (
+                <div className="px-4 pt-4">
+                  {renderOverviewLead({ kind, namespace, name })}
+                </div>
+              )}
               <ResourceRendererDispatch
                 resource={selectedResource}
                 data={resource}
@@ -679,7 +717,7 @@ export function WorkloadView({
                   {renderOverviewExtra({ kind, namespace, name })}
                 </div>
               )}
-            </>
+            </OperationalIssuesShownContext.Provider>
           )}
         </div>
       </div>
@@ -688,6 +726,7 @@ export function WorkloadView({
 
   // ── Expanded (full) mode ─────────────────────────────────────────────────
   return (
+    <OperationalIssuesShownContext.Provider value={!!hasOperationalIssues}>
     <DetailShell
       breadcrumb={breadcrumb}
       nav={
@@ -802,6 +841,7 @@ export function WorkloadView({
               eventsError={overviewEventsError}
               updatesError={resourceFocusedUpdatesError}
               extraContent={renderOverviewExtra && renderOverviewExtra({ kind, namespace, name })}
+              leadContent={hasOperationalIssues && renderOverviewLead ? renderOverviewLead({ kind, namespace, name }) : undefined}
             />
         )}
         {effectiveTab === 'topology' && (
@@ -881,7 +921,7 @@ export function WorkloadView({
               {yamlObject && !yamlObject.primary && renderRelatedYaml ? (
                 renderRelatedYaml(yamlObject)
               ) : !resource ? (
-                <FetchResult loading={resourceLoading} error={resourceError} className="h-32" />
+                <FetchResult loading={resourceLoading} error={resourceError} className="h-full" />
               ) : (
                 <EditableYamlView
                   resource={selectedResource}
@@ -901,6 +941,7 @@ export function WorkloadView({
           </div>
         )}
     </DetailShell>
+    </OperationalIssuesShownContext.Provider>
   )
 }
 
@@ -1126,7 +1167,7 @@ function EventsTab({
     return (
       <div className="flex items-center justify-center h-full text-theme-text-tertiary">
         <RefreshCw className="w-5 h-5 animate-spin mr-2" />
-        Loading events...
+        Loading events…
       </div>
     )
   }
@@ -1335,6 +1376,7 @@ function InfoTab({
   eventsError,
   updatesError,
   extraContent,
+  leadContent,
 }: {
   resource: any
   selectedResource: SelectedResource
@@ -1358,6 +1400,7 @@ function InfoTab({
   eventsError?: Error | null
   updatesError?: Error | null
   extraContent?: ReactNode
+  leadContent?: ReactNode
 }) {
   if (!resource) {
     return <FetchResult loading={isLoading} error={error} className="h-full" />
@@ -1365,6 +1408,11 @@ function InfoTab({
 
   return (
     <div className="h-full overflow-auto">
+      {leadContent && (
+        <div className="px-4 pt-4">
+          {leadContent}
+        </div>
+      )}
       <ResourceRendererDispatch
         resource={selectedResource}
         data={resource}

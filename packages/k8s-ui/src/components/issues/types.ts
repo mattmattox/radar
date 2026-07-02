@@ -71,11 +71,31 @@ export interface IssueDiagnosticIssueRef {
   reason?: string;
   category?: string;
   severity?: IssueSeverity;
+  /** How many affected resources fold into this linked issue from the root's
+   *  perspective (e.g. 5 of a PVC's mounting pods under one Deployment issue).
+   *  Absent when the link covers a single resource. */
+  count?: number;
+}
+
+export type IssueDiagnosticConfidence = 'high' | 'medium' | 'low';
+
+/** Reverse pointer from a symptom issue to the root issue that explains it
+ *  (the inverse of diagnostic_context's root→symptom facts). Set only when a
+ *  single root is unambiguous. `ref` is the parent subject for display + deep
+ *  navigation (thread the issue's cluster_id onto it via memberRef). */
+export interface IssueIncidentParent {
+  id: string;
+  ref: IssueResourceRef;
+  category?: string;
+  confidence?: IssueDiagnosticConfidence;
+  fact_type?: string;
 }
 
 export interface IssueDiagnosticFact {
   type: string;
   message?: string;
+  /** How certain a cross-subject causal link is. Absent for non-causal facts. */
+  confidence?: IssueDiagnosticConfidence;
   refs?: IssueResourceRef[];
   related_issues?: IssueDiagnosticIssueRef[];
 }
@@ -99,6 +119,7 @@ export interface IssueRecentChangeField {
 }
 
 export interface IssueRecentChange {
+  source?: string;
   kind: string;
   namespace?: string;
   name: string;
@@ -177,6 +198,7 @@ export interface Issue {
   members?: IssueResourceRef[];
   members_truncated?: boolean;
   diagnostic_context?: IssueDiagnosticContext;
+  incident_parent?: IssueIncidentParent;
   change_context?: IssueChangeContext;
 
   // Pod crash context carried from the representative member.

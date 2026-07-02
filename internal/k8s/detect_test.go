@@ -910,6 +910,48 @@ func TestDetectProblems_OperationalSignals(t *testing.T) {
 	assertProblem(t, problems, "Job", "migrate", "BackoffLimitExceeded", "critical")
 }
 
+func TestPodsMatchingServiceExcludesSucceededPods(t *testing.T) {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker", Namespace: "prod"},
+		Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "worker"}},
+	}
+	mkPod := func(name string, phase corev1.PodPhase) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "prod", Labels: map[string]string{"app": "worker"}},
+			Status:     corev1.PodStatus{Phase: phase},
+		}
+	}
+
+	// Succeeded (completed Job) pods are excluded; Failed pods are kept so a
+	// Service backed only by failed pods still reads as a real outage.
+	matched := podsMatchingService(svc, []*corev1.Pod{
+		mkPod("done", corev1.PodSucceeded),
+		mkPod("crashed", corev1.PodFailed),
+		mkPod("serving", corev1.PodRunning),
+	})
+	gotNames := map[string]bool{}
+	for _, p := range matched {
+		gotNames[p.Name] = true
+	}
+	if len(matched) != 2 || !gotNames["serving"] || !gotNames["crashed"] {
+		t.Fatalf("expected serving+crashed to match (Succeeded excluded), got %d: %+v", len(matched), matched)
+	}
+
+	// A Service backed solely by a completed Job pod must select no endpoints.
+	if got := podsMatchingService(svc, []*corev1.Pod{mkPod("done", corev1.PodSucceeded)}); len(got) != 0 {
+		t.Fatalf("Service matching only a completed Job pod should select no endpoints, got %d", len(got))
+	}
+
+	// ...but the selector DID match a completed pod, so the zero-endpoint message
+	// can say so instead of the false "matches no pods".
+	if !selectorMatchesSucceededPod(svc, []*corev1.Pod{mkPod("done", corev1.PodSucceeded)}) {
+		t.Fatal("selectorMatchesSucceededPod should detect a matching completed pod")
+	}
+	if selectorMatchesSucceededPod(svc, []*corev1.Pod{mkPod("serving", corev1.PodRunning)}) {
+		t.Fatal("selectorMatchesSucceededPod should be false when matches are not Succeeded")
+	}
+}
+
 func TestImagePullDiagnosis(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -2115,5 +2157,56 @@ func TestDetectProblems_PodIssueTimingCreationProximity(t *testing.T) {
 	latebreak, ok := lookupProblem(problems, "Pod", "latebreak-1-abc", "CrashLoopBackOff")
 	if !ok || latebreak.IssueTiming != "started_after_resource_was_healthy" || latebreak.IssueTimingBasis != "owner_condition" {
 		t.Errorf("stable-pod late failure = (%q, %q), want (started_after_resource_was_healthy, owner_condition); ok=%v", latebreak.IssueTiming, latebreak.IssueTimingBasis, ok)
+	}
+}
+
+// TestJobDetectionStampsControllerOwner verifies a CronJob-owned failed Job
+// carries its CronJob as the resolved owner, so job_failed rolls up to the same
+// subject its pods do (their top owner is the CronJob) and the coalescing pass
+// can match them.
+// TestJobDetectionStaysOwnSubject pins that a failed Job is NOT rolled up to its
+// CronJob owner — it stays its own subject so a failing Job's detail page keeps
+// showing the issue (the pods skip the Job in the owner chain, so rolling
+// job_failed up to the CronJob would fold it away from the Job).
+func TestJobDetectionStaysOwnSubject(t *testing.T) {
+	now := time.Now()
+	controller := true
+	client := fake.NewClientset(
+		&batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "nightly-run",
+				Namespace:         "prod",
+				CreationTimestamp: metav1.NewTime(now.Add(-10 * time.Minute)),
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "batch/v1", Kind: "CronJob", Name: "nightly", Controller: &controller,
+				}},
+			},
+			Status: batchv1.JobStatus{
+				Conditions: []batchv1.JobCondition{{
+					Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded",
+				}},
+			},
+		},
+	)
+	if err := InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	cache := GetResourceCache()
+
+	var owned Detection
+	var okOwned bool
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		owned, okOwned = lookupProblem(DetectProblems(cache, "prod"), "Job", "nightly-run", "BackoffLimitExceeded")
+		if okOwned {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !okOwned {
+		t.Fatal("CronJob-owned failed Job not detected")
+	}
+	if owned.OwnerKind != "" {
+		t.Errorf("a CronJob-owned failed Job must stay its own subject (no owner stamp), got owner kind %q", owned.OwnerKind)
 	}
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from
 import { ChevronRight, CircleCheck, Clock, ExternalLink } from 'lucide-react';
 import { ClusterName, EmptyState } from '../ui';
 import { formatCompactAge, formatRelativeAgeTime } from '../../utils/format';
+import { diagnosticRoleLabel, diagnosticFactLabel, confidenceTitle, incidentParentLabel } from './diagnostic';
 import {
   ISSUE_SEVERITY_BADGE_CLASS,
   ISSUE_SEVERITY_LABEL,
@@ -208,6 +209,17 @@ export function IssueRow({
                 <span className="shrink-0 tabular-nums">{affected}</span>
               </>
             ) : null}
+            {issue.incident_parent ? (
+              <>
+                <span aria-hidden>·</span>
+                {/* Non-interactive signal (the header is the toggle — a nested
+                    button would be invalid); the clickable link lives in the body. */}
+                <span className="min-w-0 truncate text-theme-text-tertiary" title={confidenceTitle(issue.incident_parent.confidence ?? '')}>
+                  ↳ {incidentParentLabel(issue.incident_parent.fact_type, issue.incident_parent.confidence)}{' '}
+                  <span className="font-medium text-theme-text-secondary">{issue.incident_parent.ref.kind} / {issue.incident_parent.ref.name}</span>
+                </span>
+              </>
+            ) : null}
             {renderMeta?.(slotCtx)}
           </div>
         </div>
@@ -248,6 +260,21 @@ export function IssueRow({
             <div className="border-t border-theme-border bg-theme-base/40 px-4 py-4 pl-11">
               <div className="flex flex-col gap-4">
                 <Diagnosis issue={issue} />
+                {issue.incident_parent ? (
+                  <section className="flex flex-col gap-1">
+                    <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">
+                      {incidentParentLabel(issue.incident_parent.fact_type, issue.incident_parent.confidence)}
+                      {issue.incident_parent.confidence ? (
+                        <span className="ml-2 badge-sm text-[10px] font-normal text-theme-text-tertiary" title={confidenceTitle(issue.incident_parent.confidence)}>
+                          {issue.incident_parent.confidence} confidence
+                        </span>
+                      ) : null}
+                    </h4>
+                    <ul className="flex flex-col gap-px">
+                      <ResourceLine refForLink={memberRef(issue, issue.incident_parent.ref)} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
+                    </ul>
+                  </section>
+                ) : null}
                 <DiagnosticContext issue={issue} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
                 <div className="border-t border-theme-border/70 pt-3">
                   <AffectedResources issue={issue} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
@@ -366,6 +393,14 @@ function DiagnosticContext({
           <li key={`${fact.type}-${idx}`} className="flex flex-col gap-1.5 rounded-md border border-theme-border/70 px-2.5 py-2">
             <div className="flex min-w-0 items-baseline gap-2">
               <span className="shrink-0 text-xs font-medium text-theme-text-secondary">{diagnosticFactLabel(fact.type)}</span>
+              {fact.confidence ? (
+                <span
+                  className="shrink-0 badge-sm text-[10px] text-theme-text-tertiary"
+                  title={confidenceTitle(fact.confidence)}
+                >
+                  {fact.confidence} confidence
+                </span>
+              ) : null}
               {fact.message ? <span className="min-w-0 break-words text-xs leading-relaxed text-theme-text-tertiary">{fact.message}</span> : null}
             </div>
             {fact.related_issues?.length ? (
@@ -375,6 +410,7 @@ function DiagnosticContext({
                     key={`${related.ref.group ?? ''}/${related.ref.kind}/${related.ref.namespace ?? ''}/${related.ref.name}#${relIdx}`}
                     label="Related"
                     refForLink={memberRef(issue, related.ref)}
+                    count={related.count}
                     resourceHref={resourceHref}
                     onResourceClick={onResourceClick}
                     ResourceLinkIcon={ResourceLinkIcon}
@@ -400,42 +436,6 @@ function DiagnosticContext({
       </ul>
     </section>
   );
-}
-
-function diagnosticRoleLabel(role: string): string {
-  switch (role) {
-    case 'candidate':
-      return 'Candidate signal';
-    case 'affected':
-      return 'Affected signal';
-    case 'rollup':
-      return 'Rollup';
-    default:
-      return 'Context';
-  }
-}
-
-function diagnosticFactLabel(type: string): string {
-  switch (type) {
-    case 'explicit_reference':
-      return 'Explicit reference';
-    case 'owner_rollup':
-      return 'Owner rollup';
-    case 'selected_backend_issue':
-      return 'Selected backend';
-    case 'service_config_mismatch':
-      return 'Service config';
-    case 'service_env_reference':
-      return 'Service env';
-    case 'probe_target_mismatch':
-      return 'Probe target';
-    case 'blocked_init_container':
-      return 'Init container';
-    case 'restart_cause':
-      return 'Restart cause';
-    default:
-      return type.replace(/_/g, ' ');
-  }
 }
 
 // Native-tooltip detail for the collapsed-row age chip: absolute first-seen + last-seen
@@ -505,12 +505,14 @@ function AffectedResources({
 function ResourceLine({
   label,
   refForLink,
+  count,
   resourceHref,
   onResourceClick,
   ResourceLinkIcon,
 }: {
   label?: string;
   refForLink: IssueResourceRef;
+  count?: number;
   resourceHref?: (ref: IssueResourceRef) => string;
   onResourceClick?: (ref: IssueResourceRef) => void;
   ResourceLinkIcon: ComponentType<{ className?: string }>;
@@ -525,6 +527,9 @@ function ResourceLine({
         {r.namespace ? `${r.namespace} / ` : ''}
         {r.name}
       </span>
+      {count && count > 1 ? (
+        <span className="shrink-0 text-[10px] text-theme-text-tertiary tabular-nums" title={`${count} affected resources grouped under this issue`}>{count} affected</span>
+      ) : null}
       {linkable && <ResourceLinkIcon className="h-3 w-3 shrink-0 text-theme-text-tertiary opacity-0 transition-opacity group-hover/r:opacity-100" />}
     </>
   );

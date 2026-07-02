@@ -5,9 +5,12 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 // newTestServer constructs a Server with just the state needed by the
@@ -248,6 +251,84 @@ func TestIntersectPicksWithAllowed(t *testing.T) {
 			got := intersectPicksWithAllowed(tt.picks, tt.allowed)
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("intersectPicksWithAllowed(%v, %v) = %v, want %v", tt.picks, tt.allowed, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveHelmNamespaces_NoAuthUsesBackendFallback(t *testing.T) {
+	s := newTestServer(t)
+	restoreHelmNamespaceFallbackState(t)
+
+	got, ok := s.resolveHelmNamespaces(reqAs(""))
+	if !ok {
+		t.Fatal("resolveHelmNamespaces returned ok=false")
+	}
+	if !slices.Equal(got, []string{"backend-fallback"}) {
+		t.Fatalf("namespaces = %v, want backend fallback namespace", got)
+	}
+}
+
+func TestResolveHelmNamespaces_AuthenticatedClusterWideUserDoesNotUseBackendFallback(t *testing.T) {
+	s := newTestServer(t)
+	restoreHelmNamespaceFallbackState(t)
+
+	s.permCache = pkgauth.NewPermissionCache()
+	s.permCache.Set("alice", &pkgauth.UserPermissions{AllowedNamespaces: nil})
+
+	got, ok := s.resolveHelmNamespaces(reqAs("alice"))
+	if !ok {
+		t.Fatal("resolveHelmNamespaces returned ok=false")
+	}
+	if got != nil {
+		t.Fatalf("namespaces = %v, want nil so Helm lists as the impersonated user cluster-wide", got)
+	}
+}
+
+func restoreHelmNamespaceFallbackState(t *testing.T) {
+	t.Helper()
+
+	prevTimeout := k8s.NamespaceListTimeout
+	k8s.NamespaceListTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { k8s.NamespaceListTimeout = prevTimeout })
+
+	prevClient := k8s.SetTestClient(nil)
+	t.Cleanup(func() { k8s.SetTestClient(prevClient) })
+
+	dummyClient, err := kubernetes.NewForConfig(&rest.Config{Host: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatalf("creating dummy client: %v", err)
+	}
+	k8s.SetTestClient(dummyClient)
+
+	k8s.SetFallbackNamespace("backend-fallback")
+	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
+}
+
+func TestParseNamespacesForUser_ForcedCacheScope(t *testing.T) {
+	s := newTestServer(t)
+	k8s.ForceNamespaceScope = true
+	k8s.SetFallbackNamespace("prod")
+	t.Cleanup(func() {
+		k8s.ForceNamespaceScope = false
+		k8s.SetFallbackNamespace("")
+	})
+
+	cases := []struct {
+		name string
+		url  string
+		want []string
+	}{
+		{name: "no query uses cache scope", url: "/api/resources/pods", want: []string{"prod"}},
+		{name: "query including cache scope narrows to cache scope", url: "/api/resources/pods?namespaces=prod,staging", want: []string{"prod"}},
+		{name: "query outside cache scope returns no access", url: "/api/resources/pods?namespace=staging", want: []string{}},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.url, nil)
+			if got := s.parseNamespacesForUser(req); !slices.Equal(got, tt.want) {
+				t.Fatalf("parseNamespacesForUser(%q) = %v, want %v", tt.url, got, tt.want)
 			}
 		})
 	}

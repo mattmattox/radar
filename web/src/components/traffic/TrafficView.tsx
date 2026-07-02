@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
 import { useTrafficSources, useTrafficFlows, useTrafficConnect, useSetTrafficSource } from '../../api/traffic'
 import { useClusterInfo } from '../../api/client'
 import type { TrafficWizardState, AggregatedFlow } from '../../types'
@@ -7,11 +6,13 @@ import { TrafficWizard } from './TrafficWizard'
 import { TrafficGraph, type TrafficGraphSelection } from './TrafficGraph'
 import { TrafficFilterSidebar } from './TrafficFilterSidebar'
 import { TrafficFlowListProvider } from './TrafficFlowListContext'
-import { Loader2, RefreshCw, Filter, Plug, ChevronDown, List, Activity, AlertTriangle } from 'lucide-react'
+import { Loader2, Filter, Plug, ChevronDown, List, Activity, AlertTriangle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useQueryClient } from '@tanstack/react-query'
 import { useDock } from '../dock'
-import { EmptyState, PaneLoader } from '@skyhook-io/k8s-ui'
+import { EmptyState, PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
+import { useConnection } from '../../context/ConnectionContext'
+import { Tooltip } from '../ui/Tooltip'
 
 // Addon types for filtering
 export type AddonMode = 'show' | 'group' | 'hide'
@@ -338,6 +339,7 @@ interface TrafficViewProps {
 }
 
 export function TrafficView({ namespaces }: TrafficViewProps) {
+  const { connection } = useConnection()
   const [wizardState, setWizardState] = useState<TrafficWizardState>('detecting')
   const [timeRange, setTimeRange] = useState<string>('5m')
   const [hideSystem, setHideSystem] = useState(true)
@@ -420,8 +422,8 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
 
   const {
     data: flowsData,
-    isLoading: flowsLoading,
     isFetching: flowsFetching,
+    dataUpdatedAt: flowsUpdatedAt,
     refetch: refetchFlowsRaw,
   } = useTrafficFlows({
     namespaces,
@@ -429,7 +431,6 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
     // Only fetch flows when connected (not connecting and no connection error)
     enabled: wizardState === 'ready' && !isConnecting && !connectionError,
   })
-  const [refetchFlows, isRefreshAnimating] = useRefreshAnimation(refetchFlowsRaw)
 
   // Auto-retry when flows return with warning but no data (e.g., port-forward not ready yet)
   useEffect(() => {
@@ -619,13 +620,13 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
 
   // Toggle L7 filter helpers
   const toggleL7Method = useCallback((method: string) => {
-    setL7Methods(prev => { const next = new Set(prev); next.has(method) ? next.delete(method) : next.add(method); return next })
+    setL7Methods(prev => { const next = new Set(prev); if (next.has(method)) next.delete(method); else next.add(method); return next })
   }, [])
   const toggleL7StatusRange = useCallback((range: string) => {
-    setL7StatusRanges(prev => { const next = new Set(prev); next.has(range) ? next.delete(range) : next.add(range); return next })
+    setL7StatusRanges(prev => { const next = new Set(prev); if (next.has(range)) next.delete(range); else next.add(range); return next })
   }, [])
   const toggleL7Verdict = useCallback((verdict: string) => {
-    setL7Verdicts(prev => { const next = new Set(prev); next.has(verdict) ? next.delete(verdict) : next.add(verdict); return next })
+    setL7Verdicts(prev => { const next = new Set(prev); if (next.has(verdict)) next.delete(verdict); else next.add(verdict); return next })
   }, [])
 
   // Toggle namespace visibility
@@ -1117,18 +1118,26 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
                 {/* Top-right: stats + actions */}
                 <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
                   {flowsData?.flows && flowsData.flows.length > 0 && (
+                    <Tooltip content="Open flow list in dock">
                     <button onClick={openFlowListDock}
-                      className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border text-theme-text-secondary hover:text-theme-text-primary transition-colors"
-                      title="Open flow list in dock">
+                      className="flex items-center gap-1 px-2 py-1 text-[10px] rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border text-theme-text-secondary hover:text-theme-text-primary transition-colors">
                       <List className="w-3 h-3" /> Flows
                     </button>
+                    </Tooltip>
                   )}
-                  <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border text-[10px] text-theme-text-tertiary">
+                  <div className="flex items-center px-2 py-1 rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border text-[10px] text-theme-text-tertiary tabular-nums">
                     {flowStats.shown}/{flowStats.total}
-                    <button onClick={refetchFlows} disabled={flowsLoading || isRefreshAnimating}
-                      className={clsx('p-0.5 rounded hover:text-theme-text-primary transition-colors', (flowsLoading || isRefreshAnimating) && 'opacity-50')}>
-                      {flowsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className={clsx('h-3 w-3', isRefreshAnimating && 'animate-spin')} />}
-                    </button>
+                  </div>
+                  {/* Flows are a REST snapshot (no poll, no stream), so this is
+                      an honest "Updated N ago" + manual refresh — not "live". */}
+                  <div className="flex items-center rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border px-1.5 py-0.5">
+                    <FreshnessControl
+                      mode="snapshot"
+                      dataUpdatedAt={flowsUpdatedAt}
+                      isFetching={flowsFetching}
+                      onRefresh={() => refetchFlowsRaw()}
+                      connectionState={connection.state}
+                    />
                   </div>
                 </div>
               </>

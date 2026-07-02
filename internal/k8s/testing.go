@@ -134,6 +134,16 @@ func SetTestContextName(name string) string {
 	return prev
 }
 
+// SetTestClient overrides the package-level client and returns the previous
+// value so tests in other packages can restore it.
+func SetTestClient(c *kubernetes.Clientset) *kubernetes.Clientset {
+	clientMu.Lock()
+	prev := k8sClient
+	k8sClient = c
+	clientMu.Unlock()
+	return prev
+}
+
 // ResetTestState tears down the resource cache and resets all package-level
 // state so the next test starts clean.
 //
@@ -145,6 +155,7 @@ func ResetTestState() {
 	// Reset connection state
 	connectionStatusMu.Lock()
 	connectionStatus = ConnectionStatus{}
+	clusterLivenessProbe = defaultClusterLivenessProbe
 	connectionStatusMu.Unlock()
 
 	// Reset connection callbacks
@@ -161,6 +172,10 @@ func ResetTestState() {
 	resourcePermsMu.Lock()
 	cachedPermResult = nil
 	resourcePermsMu.Unlock()
+	ForceNamespaceScope = false
+	SetFallbackNamespace("")
+	ClearNamespaceScopeOverride()
+	SetNamespaceScopePreferenceResolver(nil)
 
 	// Reset operation context so stale cancellations don't leak between tests
 	CancelOngoingOperations()

@@ -87,6 +87,7 @@ const (
 	CategoryGitOpsOperationFailed Category = "gitops_operation_failed" // sync apply failed (operationState / Flux install/upgrade)
 	CategoryGitOpsOutOfSync       Category = "gitops_out_of_sync"      // live state drifted from desired
 	CategoryGitOpsHealthDegraded  Category = "gitops_health_degraded"  // managed resources unhealthy/missing
+	CategoryHelmReleaseFailed     Category = "helm_release_failed"
 	CategoryWebhookBackendDown    Category = "webhook_backend_down"
 	CategoryControlPlaneNotReady  Category = "control_plane_not_ready"
 	CategoryMachineNotReady       Category = "machine_not_ready"
@@ -155,6 +156,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryGitOpsOperationFailed:    GroupControlPlane,
 	CategoryGitOpsOutOfSync:          GroupControlPlane,
 	CategoryGitOpsHealthDegraded:     GroupControlPlane,
+	CategoryHelmReleaseFailed:        GroupControlPlane,
 	CategoryWebhookBackendDown:       GroupControlPlane,
 	CategoryControlPlaneNotReady:     GroupControlPlane,
 	CategoryMachineNotReady:          GroupControlPlane,
@@ -208,10 +210,46 @@ type DiagnosticContext struct {
 }
 
 type DiagnosticFact struct {
-	Type          string     `json:"type"`
-	Message       string     `json:"message,omitempty"`
+	Type    string `json:"type"`
+	Message string `json:"message,omitempty"`
+	// Confidence rates how certain a cross-subject causal link is, so the UI can
+	// present a high-certainty structural edge differently from a heuristic one.
+	// Empty for non-causal facts (rollup, restart evidence).
+	Confidence    Confidence `json:"confidence,omitempty"`
 	Refs          []Ref      `json:"refs,omitempty"`
 	RelatedIssues []IssueRef `json:"related_issues,omitempty"`
+}
+
+// Confidence tiers a causal link by how deterministic the edge is:
+//   - high: a declared structural edge (selector, ownerRef, claimName) — the link
+//     is a fact, not an inference.
+//   - medium: a direct field match whose causation needs a guard (pod.spec.nodeName
+//     locates a pod on a failing node, but co-located ≠ caused-by).
+//   - low: a heuristic/message-pattern match.
+type Confidence string
+
+const (
+	ConfidenceHigh   Confidence = "high"
+	ConfidenceMedium Confidence = "medium"
+	ConfidenceLow    Confidence = "low"
+)
+
+// IncidentParent links a SYMPTOM issue to the ROOT issue that explains it — the
+// reverse of DiagnosticContext's root→symptom facts. Set only for causal links
+// whose related issues are genuinely DOWNSTREAM of the root (a broken PVC, a
+// pressured node, an unavailable metrics API, a not-ready Secret producer);
+// never for selected_backend (where the related pods
+// are the cause, not the symptom). Carries the link's Confidence so the UI can
+// hedge a medium pointer ("related / verify") vs. a high one ("caused by"); it
+// deliberately carries NO "hide this row" flag — demotion is presentation policy,
+// not part of this contract. Assigned only when unambiguous: a single best root
+// by confidence tier; distinct roots at the same tier leave it unset.
+type IncidentParent struct {
+	ID         string     `json:"id"`                  // parent grouped-issue ID (within-cluster)
+	Ref        Ref        `json:"ref"`                 // parent subject, for display + deep-link
+	Category   Category   `json:"category,omitempty"`
+	Confidence Confidence `json:"confidence,omitempty"`
+	FactType   string     `json:"fact_type,omitempty"` // node_blast_radius | pvc_blast_radius | apiservice_hpa | secret_not_ready
 }
 
 type IssueRef struct {
@@ -219,6 +257,12 @@ type IssueRef struct {
 	Reason   string   `json:"reason,omitempty"`
 	Category Category `json:"category,omitempty"`
 	Severity Severity `json:"severity,omitempty"`
+	// Count is how many affected resources fold into this referenced issue from
+	// the linking root's perspective — e.g. a PVC link points at one grouped
+	// Deployment issue that 5 of the PVC's mounting pods fall under, so Count=5.
+	// Omitted (0) when the link covers a single resource. It is the root-specific
+	// subset, NOT the grouped issue's total membership, which can be larger.
+	Count int `json:"count,omitempty"`
 }
 
 type ChangeContext struct {
@@ -246,6 +290,7 @@ const (
 )
 
 type RecentChange struct {
+	Source         string         `json:"source,omitempty"`
 	Kind           string         `json:"kind"`
 	Namespace      string         `json:"namespace,omitempty"`
 	Name           string         `json:"name"`
@@ -321,6 +366,7 @@ type Issue struct {
 	Members              []Ref              `json:"members,omitempty"`
 	MembersTruncated     bool               `json:"members_truncated,omitempty"`
 	DiagnosticContext    *DiagnosticContext `json:"diagnostic_context,omitempty"`
+	IncidentParent       *IncidentParent    `json:"incident_parent,omitempty"`
 	ChangeContext        *ChangeContext     `json:"change_context,omitempty"`
 	// IssueTiming is best-effort timing evidence for when this issue entered
 	// the failing state, derived from K8s-native signals (condition

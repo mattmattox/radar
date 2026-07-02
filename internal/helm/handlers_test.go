@@ -98,7 +98,7 @@ func TestRequireCloudRole(t *testing.T) {
 // We don't need a real Helm client because the gate runs first; the
 // handler short-circuits before touching `helm.GetClient()`.
 func TestSensitiveHelmHandlers_GateOnViewer(t *testing.T) {
-	h := NewHandlers()
+	h := NewHandlers(nil)
 
 	// (name, method, handler) for every endpoint we believe is gated.
 	// Sensitive reads → member; writes → member.
@@ -110,6 +110,9 @@ func TestSensitiveHelmHandlers_GateOnViewer(t *testing.T) {
 		{"GetManifest", http.MethodGet, h.handleGetManifest},
 		{"GetValues", http.MethodGet, h.handleGetValues},
 		{"GetDiff", http.MethodGet, h.handleGetDiff},
+		{"GetNotesDiff", http.MethodGet, h.handleGetNotesDiff},
+		{"GetHooksDiff", http.MethodGet, h.handleGetHooksDiff},
+		{"GetResourceDiff", http.MethodGet, h.handleGetResourceDiff},
 		{"PreviewValues", http.MethodPost, h.handlePreviewValues},
 		{"ApplyValues", http.MethodPut, h.handleApplyValues},
 		{"Rollback", http.MethodPost, h.handleRollback},

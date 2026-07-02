@@ -1,5 +1,6 @@
 import { useEffect, type ComponentType, type ReactNode } from 'react'
 import { ArrowDownUp, ChevronDown, ChevronRight, Clock3, GitBranch, GitCommit, Loader2, Pause, Play, RefreshCw, Settings, Trash2, XCircle, Zap } from 'lucide-react'
+import { PaneLoader } from '../ui/PaneLoader'
 
 import { HealthStatusBadge, SyncStatusBadge } from './GitOpsStatusBadge'
 import { GitOpsIssuesBand, GitOpsStatusStrip } from './insights'
@@ -183,11 +184,11 @@ export interface GitOpsDetailLayoutProps {
   isFleetContext?: boolean
   destinationCluster?: { id: string; name: string }
 
-  // Tab-title side effect — sets document.title to "<name> — Radar" while
+  // Tab-title side effect — sets document.title to "<name> · Radar" while
   // mounted, restores on unmount. Opt-in so hub-web fleet detail can pick
   // its own title format ("<name> — Fleet GitOps").
   manageDocumentTitle?: boolean
-  documentTitleSuffix?: string                // defaults to " — Radar"
+  documentTitleSuffix?: string                // defaults to " · Radar"
 
   // Children slot — for dialogs (SyncOptionsDialog, RollbackDialog, …)
   // that should portal to body. Caller owns dialog state. Children render
@@ -245,7 +246,7 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
   useEffect(() => {
     if (!manageDocumentTitle) return
     const previous = document.title
-    const suffix = documentTitleSuffix ?? ' — Radar'
+    const suffix = documentTitleSuffix ?? ' · Radar'
     document.title = `${identity.name}${suffix}`
     return () => { document.title = previous }
   }, [identity.name, manageDocumentTitle, documentTitleSuffix])
@@ -487,9 +488,7 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
       )}
 
       {resourceLoading ? (
-        <div className="flex flex-1 items-center justify-center text-theme-text-secondary">
-          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading GitOps resource…
-        </div>
+        <PaneLoader label="Loading GitOps resource…" className="flex-1" />
       ) : resourceError ? (
         <div className="p-4 text-sm text-red-500">Failed to load resource: {resourceError.message}</div>
       ) : (

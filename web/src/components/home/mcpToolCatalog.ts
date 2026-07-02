@@ -109,9 +109,9 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'diagnose',
-    desc: 'One-call root-cause bundle. Workloads get spec + resourceContext + current AND previous logs across pods + warning events + startup blockers; GitOps reconcilers get status summary + parsed related issues.',
+    desc: 'One-call root-cause bundle. Workloads get spec + resourceContext + current AND previous logs across pods + warning events + startup blockers; GitOps reconcilers, including Flux HelmRelease, get status summary + parsed related issues.',
     params: [
-      { arg: 'kind', required: true, desc: 'pod, deployment, statefulset, daemonset, application, kustomization, or helmrelease' },
+      { arg: 'kind', required: true, desc: 'pod, deployment, statefulset, daemonset, application, kustomization, or Flux HelmRelease' },
       { arg: 'namespace', required: true, desc: 'resource namespace' },
       { arg: 'name', required: true, desc: 'resource name' },
       { arg: 'container', desc: 'specific container (defaults to all)' },
@@ -126,7 +126,7 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'get_changes',
-    desc: 'Recent resource creates, updates, and deletes from the cluster timeline. Use to investigate what changed before an incident.',
+    desc: 'Recent meaningful changes from the Kubernetes timeline plus native Helm deployment history (source=helm). Includes failed upgrades, rollbacks, and current Helm revisions; sourcesErrored marks partial source failures.',
     params: [
       { arg: 'namespace', desc: 'filter to a specific namespace' },
       { arg: 'kind', desc: 'filter to a resource kind (e.g. Deployment)' },
@@ -147,18 +147,18 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'list_helm_releases',
-    desc: 'All Helm releases in the cluster with status and resource health — name, namespace, chart, version.',
+    desc: 'All Helm releases with status, resource health, storage namespace, Flux ownership, current lastOperation, and capped operation trails for failed upgrades, rollbacks, or stuck pending operations.',
     params: [{ arg: 'namespace', desc: 'filter to a specific namespace' }],
   },
   {
     name: 'get_helm_release',
-    desc: 'Detailed Helm release info with owned resources and their status. Optionally include values, revision history, or a manifest diff between revisions.',
+    desc: 'Detailed Helm release info with owned resources, health, Flux ownership, current lastOperation, operationInsight, hooks, and failed/running hook diagnostics with live Job/Pod/Event/redacted-log evidence when available.',
     params: [
-      { arg: 'namespace', required: true, desc: 'release namespace' },
+      { arg: 'namespace', required: true, desc: 'Helm storage namespace; use storageNamespace from list_helm_releases when present' },
       { arg: 'name', required: true, desc: 'release name' },
-      { arg: 'include', desc: 'values, history, diff' },
-      { arg: 'diff_revision_1', desc: 'first revision for diff' },
-      { arg: 'diff_revision_2', desc: 'second revision for diff (defaults to current)' },
+      { arg: 'include', desc: 'values, history, operations, diff, values_diff, notes_diff, resource_diff' },
+      { arg: 'diff_revision_1', desc: 'first revision for any diff include' },
+      { arg: 'diff_revision_2', desc: 'second revision for any diff include (defaults to current)' },
     ],
   },
   {
@@ -172,7 +172,7 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'issues',
-    desc: 'Ranked list of what is broken right now — failing workloads, dangling references, scheduling blockers, and false CRD conditions. Live operational state (distinct from get_cluster_audit posture).',
+    desc: 'Ranked list of what is broken right now — failing workloads, active native Helm release failures or stuck pending operations, dangling references, scheduling blockers, and false CRD conditions. Native Helm rows use group=helm.sh.',
     params: [
       { arg: 'namespace', desc: 'filter to one namespace' },
       { arg: 'severity', desc: 'comma-separated: critical, warning' },

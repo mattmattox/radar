@@ -193,7 +193,7 @@ export function displayKind(kind: string): string {
   return shortNames[kind] || kind
 }
 
-export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'neutral' | 'unknown'
 
 export type EdgeType = 'routes-to' | 'exposes' | 'manages' | 'uses' | 'configures' | 'protects'
 
@@ -554,8 +554,10 @@ export interface HelmRelease {
   status: string
   revision: number
   updated: string // ISO date string
+  lastOperation?: HelmOperation
+  operations?: HelmOperation[]
   // Health summary from owned resources
-  resourceHealth?: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+  resourceHealth?: 'healthy' | 'degraded' | 'unhealthy' | 'neutral' | 'unknown'
   healthIssue?: string    // Primary issue if unhealthy (e.g., "OOMKilled")
   healthSummary?: string  // Brief summary like "2/3 pods ready"
   // When set, this release was installed by Flux's helm-controller — the
@@ -574,6 +576,43 @@ export interface HelmRevision {
   updated: string // ISO date string
 }
 
+export type HelmOperationKind = 'release_failed' | 'upgrade_failed' | 'upgrade_rolled_back' | 'rollback' | 'pending'
+export type HelmOperationStatus = 'failed' | 'rolled_back' | 'completed' | 'stuck_pending'
+export type HelmOperationConfidence = 'high' | 'medium' | 'low'
+export type HelmOperationSource = 'helm_status' | 'helm_history'
+
+export interface HelmOperation {
+  kind: HelmOperationKind
+  status: HelmOperationStatus
+  source: HelmOperationSource
+  confidence: HelmOperationConfidence
+  message: string
+  evidence?: string
+  failureDescription?: string
+  revision?: number
+  failedRevision?: number
+  rollbackRevision?: number
+  targetRevision?: number
+  pendingStatus?: string
+  updated?: string
+}
+
+export type HelmOperationInsightState = 'active' | 'recovered'
+
+export interface HelmSuggestedCompare {
+  revision1: number
+  revision2: number
+  reason?: string
+}
+
+export interface HelmOperationInsight {
+  state: HelmOperationInsightState
+  primaryResource?: HelmOwnedResource
+  relatedResources?: HelmOwnedResource[]
+  signalCount?: number
+  suggestedCompare?: HelmSuggestedCompare
+}
+
 export interface HelmReleaseDetail {
   name: string
   namespace: string
@@ -589,9 +628,16 @@ export interface HelmReleaseDetail {
   notes: string
   history: HelmRevision[]
   resources: HelmOwnedResource[]
+  resourceHealth?: 'healthy' | 'degraded' | 'unhealthy' | 'neutral' | 'unknown'
+  healthIssue?: string
+  healthSummary?: string
   hooks?: HelmHook[]
+  hookDiagnostics?: HookDiagnostic[]
   readme?: string
   dependencies?: ChartDependency[]
+  lastOperation?: HelmOperation
+  operations?: HelmOperation[]
+  operationInsight?: HelmOperationInsight
   // When set, this release was installed by Flux's helm-controller — see
   // HelmRelease.managedByFluxHelmRelease for context. Format: "namespace/name".
   managedByFluxHelmRelease?: string
@@ -599,10 +645,79 @@ export interface HelmReleaseDetail {
 
 export interface HelmHook {
   name: string
+  namespace?: string
   kind: string
+  path?: string
+  manifestChanged?: boolean
   events: string[]
   weight: number
   status?: string
+  startedAt?: string
+  completedAt?: string
+  deletePolicies?: string[]
+  outputLogPolicies?: string[]
+}
+
+export interface HookDiagnostic {
+  name: string
+  namespace?: string
+  kind: string
+  events?: string[]
+  phase: string
+  message: string
+  evidence?: HookEvidence
+  evidenceUnavailable?: boolean
+  evidenceUnavailableReason?: string
+}
+
+export interface HookEvidence {
+  summary?: string
+  jobs?: HookJobEvidence[]
+  pods?: HookPodEvidence[]
+  events?: HookEventEvidence[]
+  logs?: HookLogEvidence[]
+  errors?: string[]
+}
+
+export interface HookJobEvidence {
+  name: string
+  namespace?: string
+  status?: string
+  active?: number
+  succeeded?: number
+  failed?: number
+  conditions?: string[]
+}
+
+export interface HookPodEvidence {
+  name: string
+  namespace?: string
+  phase?: string
+  ready?: string
+  restartCount?: number
+  reason?: string
+  message?: string
+}
+
+export interface HookEventEvidence {
+  involvedKind: string
+  involvedName: string
+  type?: string
+  reason?: string
+  message?: string
+  count?: number
+  lastSeen?: string
+}
+
+export interface HookLogEvidence {
+  pod: string
+  container: string
+  previous?: boolean
+  lines?: string[]
+  totalLines?: number
+  matchedLines?: number
+  fallback?: boolean
+  error?: string
 }
 
 export interface ChartDependency {
@@ -630,10 +745,61 @@ export interface HelmValues {
   computed?: Record<string, unknown>
 }
 
+export interface ValuesDiff {
+  revision1: number
+  revision2: number
+  allValues: boolean
+  diff: string
+}
+
 export interface ManifestDiff {
   revision1: number
   revision2: number
   diff: string
+}
+
+export interface NotesDiff {
+  revision1: number
+  revision2: number
+  diff: string
+}
+
+export interface HooksDiff {
+  revision1: number
+  revision2: number
+  added: HelmHook[]
+  removed: HelmHook[]
+  modified: HelmHook[]
+  unchanged: HelmHook[]
+}
+
+export interface HelmResourceRef {
+  kind: string
+  apiVersion?: string
+  name: string
+  namespace: string
+}
+
+export interface HelmResourceFieldChange {
+  path: string
+  oldValue: unknown
+  newValue: unknown
+}
+
+export interface HelmResourceChange extends HelmResourceRef {
+  summary?: string
+  fieldCount: number
+  fields: HelmResourceFieldChange[]
+}
+
+export interface ResourceDiff {
+  revision1: number
+  revision2: number
+  added: HelmResourceRef[]
+  removed: HelmResourceRef[]
+  modified: HelmResourceChange[]
+  unchanged: HelmResourceRef[]
+  parseErrorCount?: number
 }
 
 // Selected Helm release (for drawer state)
@@ -649,7 +815,16 @@ export interface UpgradeInfo {
   latestVersion?: string
   updateAvailable: boolean
   repositoryName?: string
+  // 'repository' for classic HTTP-repo matches, 'oci' when discovered via a
+  // registered OCI chart source. Absent when the source couldn't be determined.
+  sourceType?: 'repository' | 'oci'
+  // oci:// chart reference an OCI-sourced upgrade lives at (display only).
+  chartRef?: string
   error?: string
+  // True only when the error is a genuinely untracked source (registering a
+  // chart source could fix it) — NOT for repo-side errors like a stale index or
+  // classic ambiguity. Gates the "track source" affordance.
+  untracked?: boolean
 }
 
 // Batch upgrade info keyed by "storageNamespace/name".

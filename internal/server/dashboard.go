@@ -23,6 +23,7 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/timeline"
 	"github.com/skyhook-io/radar/internal/traffic"
+	"github.com/skyhook-io/radar/pkg/health"
 	topology "github.com/skyhook-io/radar/pkg/topology"
 )
 
@@ -287,21 +288,6 @@ type DashboardHelmRelease struct {
 	ResourceHealth string `json:"resourceHealth,omitempty"`
 }
 
-// mergeHelmSummary appends src into dst. The first non-empty Error / ErrorCode
-// wins so the UI surfaces a real failure rather than swallowing it under a
-// later success. Restricted is OR-merged: restricted in any namespace ⇒ flag.
-func mergeHelmSummary(dst *DashboardHelmSummary, src DashboardHelmSummary) {
-	dst.Total += src.Total
-	dst.Releases = append(dst.Releases, src.Releases...)
-	if src.Restricted {
-		dst.Restricted = true
-	}
-	if dst.Error == "" {
-		dst.Error = src.Error
-		dst.ErrorCode = src.ErrorCode
-	}
-}
-
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireConnected(w) {
 		return
@@ -426,7 +412,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	resp.TopologySummary = s.getDashboardTopologySummary(namespaces)
 	k8s.LogTiming("  [dashboard] topology: %v", time.Since(t))
 
-	resp.CertificateHealth = s.getDashboardCertificateHealth(namespaces)
+	// Cert health is derived from TLS Secrets — gate by per-user secrets RBAC.
+	resp.CertificateHealth = s.getDashboardCertificateHealth(s.secretReadableNamespaces(r, namespaces))
 	resp.NetworkPolicyCoverage = s.getDashboardNetworkPolicyCoverage(cache, namespaces)
 	resp.Audit = getDashboardAudit(cache, namespaces)
 	resp.GitOpsControllers = s.getDashboardGitOpsControllers(cache, namespaces)
@@ -436,7 +423,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			nodeList, _ := nodeLister.List(labels.Everything())
 			resp.ResourceCounts.Nodes.Total = len(nodeList)
 			for _, n := range nodeList {
-				h := k8s.ClassifyNodeHealth(n)
+				h := health.Node(n)
 				if h.Ready {
 					if h.Unschedulable {
 						resp.ResourceCounts.Nodes.Cordoned++
@@ -484,22 +471,13 @@ func (s *Server) handleDashboardHelm(w http.ResponseWriter, r *http.Request) {
 	if !s.requireConnected(w) {
 		return
 	}
-	namespaces := s.parseNamespacesForUser(r)
-	if noNamespaceAccess(namespaces) {
+	namespaces, ok := s.resolveHelmNamespaces(r)
+	if !ok {
 		s.writeJSON(w, DashboardHelmSummary{})
 		return
 	}
 
-	// Iterate per allowed namespace and aggregate. Cluster-admin / no-auth
-	// (namespaces == nil) collapses to a single "" call (cluster-wide).
-	var summary DashboardHelmSummary
-	if namespaces == nil {
-		summary = s.getDashboardHelmSummary(r, "")
-	} else {
-		for _, ns := range namespaces {
-			mergeHelmSummary(&summary, s.getDashboardHelmSummary(r, ns))
-		}
-	}
+	summary := s.getDashboardHelmSummary(r, namespaces)
 	s.writeJSON(w, summary)
 }
 
@@ -539,7 +517,7 @@ func (s *Server) getDashboardCluster(ctx context.Context) DashboardCluster {
 }
 
 func (s *Server) getDashboardHealth(cache *k8s.ResourceCache, namespace string) (DashboardHealth, []DashboardProblem) {
-	health := DashboardHealth{}
+	dh := DashboardHealth{}
 	problems := make([]DashboardProblem, 0)
 
 	now := time.Now()
@@ -571,22 +549,28 @@ func (s *Server) getDashboardHealth(cache *k8s.ResourceCache, namespace string) 
 
 	if err == nil {
 		for _, pod := range pods {
-			status := classifyPodHealth(pod, now)
-			switch status {
-			case "healthy":
-				health.Healthy++
-			case "warning":
-				health.Warning++
+			switch health.Pod(pod, now).Level {
+			case health.LevelUnhealthy:
+				dh.Error++
+				collectPodForRollup(pod, "critical", now, ownerGroups, &orphanProblems)
+			case health.LevelDegraded:
+				dh.Warning++
 				// Unschedulable pods (bind-time) and stuck-creating pods
 				// (post-bind) are owned by the scheduling rows appended below,
 				// which name the actual constraint; don't also roll them up
 				// here as a bare "Pending".
-				if !k8s.IsPodUnschedulable(pod) && !postBindPods[pod.Namespace+"/"+pod.Name] {
+				if !health.IsPodUnschedulable(pod) && !postBindPods[pod.Namespace+"/"+pod.Name] {
 					collectPodForRollup(pod, "medium", now, ownerGroups, &orphanProblems)
 				}
-			case "error":
-				health.Error++
-				collectPodForRollup(pod, "critical", now, ownerGroups, &orphanProblems)
+			case health.LevelUnknown:
+				// node-lost / unobservable: count as warning so it isn't hidden in
+				// the healthy bucket, but don't add a per-pod rollup row — the Node
+				// NotReady row is the actionable signal (and the problem detector
+				// likewise defers to it), so a per-pod row would just be noise with
+				// no real reason to show.
+				dh.Warning++
+			default: // healthy, neutral
+				dh.Healthy++
 			}
 		}
 	}
@@ -735,12 +719,7 @@ func (s *Server) getDashboardHealth(cache *k8s.ResourceCache, namespace string) 
 		return problems[i].AgeSeconds < problems[j].AgeSeconds
 	})
 
-	return health, problems
-}
-
-// classifyPodHealth delegates to the shared implementation in k8s.ClassifyPodHealth.
-func classifyPodHealth(pod *corev1.Pod, now time.Time) string {
-	return k8s.ClassifyPodHealth(pod, now)
+	return dh, problems
 }
 
 func podToProblem(pod *corev1.Pod, severity string, now time.Time) DashboardProblem {
@@ -879,7 +858,7 @@ func collectPodForRollup(pod *corev1.Pod, severity string, now time.Time, groups
 		g.severity = severity
 	}
 
-	reason := k8s.PodProblemReason(pod)
+	reason := health.PodProblemReason(pod, now)
 	if reason != "" {
 		g.reasons[reason]++
 	}
@@ -1336,8 +1315,21 @@ func (s *Server) getDashboardTrafficSummary(ctx context.Context, namespaces []st
 		}
 	}
 
+	// The source only filters by a single namespace; restrict multi-namespace
+	// users here so the summary doesn't count flows outside their allowed set.
+	flows := response.Flows
+	if allowed := namespaceLookup(namespaces); allowed != nil {
+		kept := make([]traffic.Flow, 0, len(flows))
+		for _, f := range flows {
+			if flowVisibleForNamespaces(f, allowed) {
+				kept = append(kept, f)
+			}
+		}
+		flows = kept
+	}
+
 	// Aggregate flows
-	aggregated := traffic.AggregateFlows(response.Flows)
+	aggregated := traffic.AggregateFlows(flows)
 
 	// Sort by connection count
 	sort.Slice(aggregated, func(i, j int) bool {
@@ -1369,7 +1361,7 @@ func (s *Server) getDashboardTrafficSummary(ctx context.Context, namespaces []st
 	}
 }
 
-func (s *Server) getDashboardHelmSummary(r *http.Request, namespace string) DashboardHelmSummary {
+func (s *Server) getDashboardHelmSummary(r *http.Request, namespaces []string) DashboardHelmSummary {
 	helmClient := helm.GetClient()
 	if helmClient == nil {
 		return DashboardHelmSummary{
@@ -1385,7 +1377,7 @@ func (s *Server) getDashboardHelmSummary(r *http.Request, namespace string) Dash
 		username = user.Username
 		groups = user.Groups
 	}
-	releases, err := helmClient.ListReleasesAsUser(namespace, username, groups)
+	releases, err := helmClient.ListReleasesAcrossNamespaces(namespaces, username, groups)
 	if err != nil {
 		if helm.IsForbiddenError(err) {
 			return DashboardHelmSummary{Releases: []DashboardHelmRelease{}, Restricted: true}
@@ -1398,29 +1390,32 @@ func (s *Server) getDashboardHelmSummary(r *http.Request, namespace string) Dash
 		}
 	}
 
+	return dashboardHelmSummaryFromReleases(releases)
+}
+
+func dashboardHelmSummaryFromReleases(releases []helm.HelmRelease) DashboardHelmSummary {
 	result := DashboardHelmSummary{
 		Total: len(releases),
 	}
 
-	// Sort: failed/unhealthy releases first to surface problems
+	// Sort: failed/pending first, then operation-signaled Helm rollbacks,
+	// then unhealthy/degraded owned resources.
 	sort.SliceStable(releases, func(i, j int) bool {
-		pi := helm.StatusPriority(releases[i].Status, releases[i].ResourceHealth)
-		pj := helm.StatusPriority(releases[j].Status, releases[j].ResourceHealth)
-		return pi < pj
+		return helm.ReleasePriority(releases[i]) < helm.ReleasePriority(releases[j])
 	})
 
 	// Take top 6 releases
 	limit := min(len(releases), 6)
 
 	result.Releases = make([]DashboardHelmRelease, 0, limit)
-	for _, r := range releases[:limit] {
+	for _, rel := range releases[:limit] {
 		result.Releases = append(result.Releases, DashboardHelmRelease{
-			Name:           r.Name,
-			Namespace:      r.Namespace,
-			Chart:          r.Chart,
-			ChartVersion:   r.ChartVersion,
-			Status:         r.Status,
-			ResourceHealth: r.ResourceHealth,
+			Name:           rel.Name,
+			Namespace:      rel.Namespace,
+			Chart:          rel.Chart,
+			ChartVersion:   rel.ChartVersion,
+			Status:         rel.Status,
+			ResourceHealth: rel.ResourceHealth,
 		})
 	}
 

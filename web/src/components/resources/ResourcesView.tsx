@@ -1,9 +1,12 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ApiError, debugNamespaceLog, fetchJSON, isForbiddenError, useCapabilities, useNamespaceCapabilities, useSecretCertExpiry, useTopPodMetrics, useTopNodeMetrics, useBulkDeleteResources, useBulkRestartWorkloads, useBulkScaleWorkloads } from '../../api/client'
+import { ApiError, debugNamespaceLog, fetchJSON, isForbiddenError, useCapabilities, useNamespaceCapabilities, useSecretCertExpiry, useTopPodMetrics, useTopNodeMetrics, useBulkDeleteResources, useBulkRestartWorkloads, useBulkScaleWorkloads, useAudit } from '../../api/client'
+import { isBadgeWorthy } from '../../utils/auditBadges'
+import type { AuditBadgeMessage } from '@skyhook-io/k8s-ui'
 import { apiUrl, getAuthHeaders, getCredentialsMode, getBasename } from '../../api/config'
 import { useAPIResources } from '../../api/apiResources'
+import { useConnection } from '../../context/ConnectionContext'
 import { initNavigationMap } from '@skyhook-io/k8s-ui'
 import { usePinnedKinds } from '../../hooks/useFavorites'
 import { useOpenLogs, useOpenWorkloadLogs } from '../dock'
@@ -23,6 +26,8 @@ import { getSkeletonYaml } from '../../utils/skeleton-yaml'
 interface ResourceCountsResponse {
   counts: Record<string, number>
   forbidden?: string[]
+  reasons?: Record<string, string>
+  unavailable?: string[]
 }
 
 interface ResourcesViewProps {
@@ -58,6 +63,7 @@ function resourceCountKey(kind: NonNullable<SelectedKindInfo>): string {
 export function ResourcesView({ namespaces, selectedResource, onResourceClick, onResourceClickYaml, onKindChange, onClearNamespaces }: ResourcesViewProps) {
   const location = useLocation()
   const navigate = useNavigate()
+  const { connection } = useConnection()
 
   const { data: capabilities } = useCapabilities()
   const namespaceForCapabilities = namespaces.length === 1 ? namespaces[0] : undefined
@@ -135,21 +141,62 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
     return match?.isCrd ?? (!!selectedKind.group) // default: has group = likely CRD
   }, [selectedKind, apiResources])
 
+  // The canonical Kind for the selected resource. selectedKind.kind is the plural
+  // URL segment for CRDs/grouped kinds (e.g. "ingressroutes", "ingresses") — only
+  // core no-group kinds resolve to the real Kind there — so resolve it via
+  // discovery to match audit findings, which key by the real Kind ("IngressRoute").
+  const selectedKindCanonical = useMemo(() => {
+    if (!selectedKind) return undefined
+    const match = apiResources?.find(r => r.name === selectedKind.name && r.group === selectedKind.group)
+      ?? CORE_RESOURCES.find(r => r.name === selectedKind.name && r.group === selectedKind.group)
+    return match?.kind ?? selectedKind.kind
+  }, [selectedKind, apiResources])
+
+  // Cluster Audit findings for the selected kind, keyed by "namespace/name" for
+  // the resource list. The list shows ONE kind at a time, so ns/name is enough;
+  // we still match the finding's group (built-ins → real group, CRDs → "") so a
+  // kind shared across groups doesn't bleed findings across the two lists. Only
+  // "badge-worthy" findings count (reference-integrity / lifecycle) — posture
+  // and best-practice nags fire near-universally and would just be noise.
+  const audit = useAudit(namespaces)
+  const auditBadges = useMemo(() => {
+    if (!selectedKind || !audit.data?.findings) return undefined
+    const wantGroup = isSelectedCrd ? '' : selectedKind.group
+    const map: Record<string, { danger: number; warning: number; messages: AuditBadgeMessage[] }> = {}
+    for (const f of audit.data.findings) {
+      if (f.kind !== selectedKindCanonical || (f.group ?? '') !== wantGroup) continue
+      if (!isBadgeWorthy(f, audit.data.checks)) continue
+      const k = `${f.namespace || ''}/${f.name}`
+      const cur = map[k] ?? { danger: 0, warning: 0, messages: [] }
+      if (f.severity === 'danger') cur.danger++
+      else if (f.severity === 'warning') cur.warning++
+      cur.messages.push({ severity: f.severity, message: f.message })
+      map[k] = cur
+    }
+    for (const cur of Object.values(map)) {
+      cur.messages.sort((a, b) => (a.severity === 'danger' ? 0 : 1) - (b.severity === 'danger' ? 0 : 1))
+    }
+    return map
+  }, [audit.data?.findings, audit.data?.checks, selectedKind, selectedKindCanonical, isSelectedCrd])
+
   const selectedCountKey = selectedKind ? resourceCountKey(selectedKind) : ''
   const selectedCount = selectedCountKey ? countsData?.counts[selectedCountKey] : undefined
+  const selectedCountUnavailable = selectedCountKey ? countsData?.unavailable?.includes(selectedCountKey) ?? false : false
   const isSelectedKindGuarded = selectedCountKey !== '' && LARGE_RESOURCE_LIST_GUARD_KEYS.has(selectedCountKey)
   const waitingForGuardCount = isSelectedKindGuarded && !countsData && !countsIsError
-  const largeListBlocked = isSelectedKindGuarded && countsData != null && (selectedCount ?? 0) > LARGE_RESOURCE_LIST_LIMIT
+  const largeListBlocked = isSelectedKindGuarded && countsData != null && (selectedCountUnavailable || (selectedCount ?? 0) > LARGE_RESOURCE_LIST_LIMIT)
   const selectedKindQueryBlocked = waitingForGuardCount || largeListBlocked
   const podCount = countsData?.counts.Pod
-  const podCountAllowsBulkMetrics = countsData != null && (podCount ?? 0) <= LARGE_RESOURCE_LIST_LIMIT
+  const podCountUnavailable = countsData?.unavailable?.includes('Pod') ?? false
+  const podCountAllowsBulkMetrics = countsData != null && !podCountUnavailable && (podCount ?? 0) <= LARGE_RESOURCE_LIST_LIMIT
   const selectedKindName = selectedKind?.name.toLowerCase() ?? ''
   const topPodMetricsEnabled = selectedKindName === 'pods' && podCountAllowsBulkMetrics
   const topNodeMetricsEnabled = selectedKindName === 'nodes' && namespaces.length === 0 && podCountAllowsBulkMetrics
   const largeListGuard = selectedKind && largeListBlocked
     ? {
         kind: selectedKind.name,
-        count: selectedCount,
+        count: selectedCountUnavailable ? undefined : selectedCount,
+        reason: selectedCountUnavailable ? 'count-unavailable' as const : 'too-many' as const,
         limit: LARGE_RESOURCE_LIST_LIMIT,
         namespaces,
       }
@@ -280,13 +327,17 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       // Lightweight counts for sidebar (replaces 233 parallel queries)
       resourceCounts={countsData?.counts}
       resourceForbidden={countsData?.forbidden}
+      resourceReasons={countsData?.reasons}
+      resourceUnavailable={countsData?.unavailable}
       selectedKindQuery={selectedKindQueryResult}
+      connectionState={connection.state}
       largeListGuard={largeListGuard}
       onSelectedKindChange={setSelectedKind}
       topPodMetrics={topPodMetrics}
       topNodeMetrics={topNodeMetrics}
       certExpiry={certExpiry}
       certExpiryError={certExpiryError}
+      auditBadges={auditBadges}
       // Pinned kinds
       pinned={pinned}
       togglePin={togglePin}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, createContext, useContext } from 'react'
 import { ChevronRight, Copy, Check, Tag, AlertTriangle, CheckCircle, ExternalLink, Layers, X, Minus } from 'lucide-react'
 import { clsx } from 'clsx'
 import { formatAge, formatDuration, formatResources } from '../resources/resource-utils'
@@ -446,6 +446,18 @@ export interface Problem {
 }
 
 /** Displays a list of problem alerts (warnings and errors) */
+// True when the resource detail is already rendering a dedicated, authoritative
+// "Operational Issues" section (the Issues pipeline — richer cause/action). Only
+// renderers whose problems the pipeline COMPREHENSIVELY covers read this and drop
+// their own problem array so the same failure isn't shown twice — today that's
+// PodRenderer and WorkloadRenderer (workload + pod runtime). It is deliberately
+// NOT wired into ProblemAlerts: that component is used only by GitOps renderers
+// (Argo/Flux), whose Degraded/OutOfSync/revision-mismatch banners the pipeline
+// does not fully emit (e.g. OutOfSync only for automated Argo apps) — suppressing
+// them would hide real problems, which is worse than an occasional duplicate.
+export const OperationalIssuesShownContext = createContext(false)
+export const useOperationalIssuesShown = () => useContext(OperationalIssuesShownContext)
+
 export function ProblemAlerts({ problems }: { problems: Problem[] }) {
   if (problems.length === 0) return null
 
@@ -990,7 +1002,7 @@ export function EventsSection({ events, updates = [], isLoading, eventsError, up
   if (isLoading) {
     return (
       <Section title="Recent Events" defaultExpanded>
-        <div className="text-sm text-theme-text-tertiary">Loading events...</div>
+        <div className="text-sm text-theme-text-tertiary">Loading events…</div>
       </Section>
     )
   }

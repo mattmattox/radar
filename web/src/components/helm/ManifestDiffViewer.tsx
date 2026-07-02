@@ -8,19 +8,21 @@ interface ManifestDiffViewerProps {
   revision1: number
   revision2: number
   onClose: () => void
+  title?: string
+  emptyLabel?: string
 }
 
-export function ManifestDiffViewer({ diff, isLoading, revision1, revision2, onClose }: ManifestDiffViewerProps) {
+export function ManifestDiffViewer({ diff, isLoading, revision1, revision2, onClose, title, emptyLabel }: ManifestDiffViewerProps) {
   if (isLoading) {
     return <PaneLoader label="Computing diff…" className="h-32" />
   }
 
-  if (!diff) {
+  if (!hasDiffBodyChange(diff)) {
     return (
       <div className="p-4">
         <div className="flex flex-col items-center justify-center h-32 text-theme-text-tertiary gap-2">
           <GitCompare className="w-8 h-8 text-theme-text-disabled" />
-          <span>No differences found</span>
+          <span>{emptyLabel || 'No differences found'}</span>
         </div>
       </div>
     )
@@ -32,7 +34,7 @@ export function ManifestDiffViewer({ diff, isLoading, revision1, revision2, onCl
         <div className="flex items-center gap-2">
           <GitCompare className="w-4 h-4 text-theme-text-secondary" />
           <span className="text-sm font-medium text-theme-text-secondary">
-            Comparing Revision {revision1} → {revision2}
+            {title || `Comparing Revision ${revision1} → ${revision2}`}
           </span>
         </div>
         <button
@@ -67,7 +69,16 @@ export function ManifestDiffViewer({ diff, isLoading, revision1, revision2, onCl
   )
 }
 
-function DiffLine({ line }: { line: string }) {
+export function hasDiffBodyChange(diff: string): boolean {
+  return diff.split('\n').some((line) => {
+    if (!line || line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@')) {
+      return false
+    }
+    return line.startsWith('+') || line.startsWith('-')
+  })
+}
+
+export function DiffLine({ line }: { line: string }) {
   const isAddition = line.startsWith('+') && !line.startsWith('+++')
   const isRemoval = line.startsWith('-') && !line.startsWith('---')
   const isHeader = line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@')
@@ -76,8 +87,8 @@ function DiffLine({ line }: { line: string }) {
     <div
       className={clsx(
         'whitespace-pre',
-        isAddition && 'bg-green-500/10 text-green-400',
-        isRemoval && 'bg-red-500/10 text-red-400',
+        isAddition && 'bg-green-500/10 text-green-700 dark:text-green-400',
+        isRemoval && 'bg-red-500/10 text-red-700 dark:text-red-400',
         isHeader && 'text-theme-text-tertiary font-bold',
         !isAddition && !isRemoval && !isHeader && 'text-theme-text-secondary'
       )}

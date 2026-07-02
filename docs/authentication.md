@@ -11,11 +11,24 @@ User → [Auth Layer] → Radar Backend → K8s API (as user, via impersonation)
 ```
 
 1. **Authentication** identifies the user (proxy headers or OIDC login)
-2. **Reads** are filtered by namespace — Radar discovers which namespaces the user can access via `SubjectAccessReview` and only returns resources from those namespaces. Cluster-scoped resources (Nodes, ClusterRoles when `rbac.viewRBAC` is on, StorageClasses, etc.) are served from the ServiceAccount-populated informer cache without per-user RBAC re-checks, so anyone reaching Radar's API sees them regardless of their own K8s permissions on those kinds.
+2. **Reads** are filtered by namespace — Radar discovers which namespaces the user can access via `SubjectAccessReview` and only returns resources from those namespaces. Cluster-scoped resources (Nodes, PersistentVolumes, StorageClasses, ClusterRoles when `rbac.viewRBAC` is on, cluster-scoped CRDs, etc.) have no namespace to filter on, so they are gated per-kind via `SubjectAccessReview`: a user sees them only if their own RBAC permits listing that kind. Cluster-wide pod visibility does **not** imply Node/PV visibility — each cluster-scoped read goes through its own check.
 3. **Writes** use K8s impersonation — Radar makes the K8s API call as the authenticated user, so K8s RBAC decides whether it's allowed
 4. **UI adapts** — capability checks run per-user, so buttons (exec, restart, scale, Helm) only appear if the user has permission
 
 Radar doesn't have its own role/permission system. It delegates everything to K8s RBAC, which means permissions are managed with standard K8s tooling (`kubectl`, Terraform, GitOps, etc.).
+
+### Read granularity: namespace-level
+
+For **namespaced** resources, reads are authorized at **namespace granularity**: if your RBAC lets you access a namespace, Radar shows the namespaced resources in it. Radar does **not** additionally check per-resource-kind RBAC for most namespaced kinds — so a user who can read Pods in a namespace also sees ConfigMaps, Services, etc. in that namespace through Radar, even if their RBAC wouldn't allow `kubectl get configmaps` directly.
+
+This is a deliberate tradeoff that follows from how Radar reads the cluster. Rather than calling the Kubernetes API on every request, Radar watches each resource kind once under its own ServiceAccount and serves reads from an in-memory cache shared by all users — that's what makes it fast on large clusters and able to render topology and real-time views. Because the cache is populated by Radar's identity, not yours, per-user access has to be re-derived by asking Kubernetes "is this user allowed?" via `SubjectAccessReview`. Doing that at namespace granularity is one such check per namespace; doing it per-resource-kind would be a check for *every kind in every namespace* on *every* read — many times the API-server load, and worst exactly on the large, multi-namespace clusters where the shared cache matters most. So namespace membership is the per-user filter, and per-kind checks are reserved for the cases below where the exposure is highest.
+
+Two kinds are gated more tightly, per-resource-kind, because the shared cache can hold data the user's own RBAC wouldn't grant:
+
+- **Secrets** (and Secret-derived data such as TLS certificate metadata) — shown only if the user can list Secrets in that namespace.
+- **Cluster-scoped resources** (Nodes, PersistentVolumes, ClusterRoles, cluster-scoped CRDs, etc.) — shown only if the user's RBAC permits listing that kind.
+
+**If namespace-level isn't tight enough for you**, scope the boundary at the cache instead of at read time: run a Radar instance per trust boundary and give each one a **namespace-scoped ServiceAccount** (a `Role`/`RoleBinding`, no `ClusterRole`) limited to that boundary's namespaces. Radar detects the restricted permissions at startup and only watches and caches what its ServiceAccount can list — so the instance simply never holds another team's data, and there's nothing to over-expose. Point each team at their own instance (an ingress or auth proxy can route them). See [In-Cluster Deployment → namespace-scoped RBAC](in-cluster.md) for the `rbac.create: false` + custom `Role` setup.
 
 ## Auth Modes
 
@@ -349,7 +362,7 @@ When auth is enabled:
 - A **username** appears in the Radar header with a logout option
 - The **namespace selector** only shows namespaces the user can access
 - **Topology, resources, events, dashboard** are filtered to accessible namespaces
-- **Cluster-scoped resources** (Nodes, PersistentVolumes, StorageClasses) are currently visible to all authenticated users regardless of namespace permissions — per-resource SAR checks for these are planned for a future release
+- **Cluster-scoped resources** (Nodes, PersistentVolumes, StorageClasses) are gated per-kind via `SubjectAccessReview` — a user sees them only if their own RBAC permits listing that kind, independent of namespace access
 - **Helm releases** are visible to all authenticated users (reads use the ServiceAccount, not impersonation, because the K8s `view` role doesn't include `list secrets` which Helm requires). Write operations (install, upgrade, rollback, uninstall) are impersonated and require the user to have appropriate RBAC.
 - **Write buttons** (restart, scale, exec, Helm install, etc.) only appear if the user has permission
 - Write operations return **403** from K8s if RBAC denies them (shown as an error toast)

@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/perfstats"
 )
 
@@ -230,6 +231,29 @@ func (b *Builder) detectLargeClusterAndOptimize(opts *BuildOptions) (bool, []str
 	return true, hiddenKinds, estimatedNodes
 }
 
+// workloadRefKey identifies a referenced ConfigMap/Secret/PVC by namespace and
+// name — the key for inverting the workload→names ref maps into a consumer index.
+type workloadRefKey struct {
+	namespace string
+	name      string
+}
+
+// buildConsumerIndex inverts a workload→referenced-names map into a
+// (namespace,name)→workloadIDs index. Building it once lets each
+// ConfigMap/Secret/PVC node look up its referencing workloads directly instead
+// of scanning every workload per node (O(workloads+refs) total vs O(nodes×workloads)).
+func buildConsumerIndex(refs map[string]map[string]bool, workloadNamespaces map[string]string) map[workloadRefKey][]string {
+	idx := make(map[workloadRefKey][]string)
+	for workloadID, names := range refs {
+		ns := workloadNamespaces[workloadID]
+		for name := range names {
+			key := workloadRefKey{namespace: ns, name: name}
+			idx[key] = append(idx[key], workloadID)
+		}
+	}
+	return idx
+}
+
 // buildResourcesTopology creates a comprehensive resource view
 func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	nodes := make([]Node, 0)
@@ -292,7 +316,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			ID:     deployID,
 			Kind:   KindDeployment,
 			Name:   deploy.Name,
-			Status: getDeploymentStatus(ready, total),
+			Status: healthLevelToStatus(health.Workload(deploy, time.Now()).Level),
 			Data: map[string]any{
 				"namespace":     deploy.Namespace,
 				"readyReplicas": ready,
@@ -2385,7 +2409,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			ID:     dsID,
 			Kind:   KindDaemonSet,
 			Name:   ds.Name,
-			Status: getDeploymentStatus(ready, total),
+			Status: healthLevelToStatus(health.Workload(ds, time.Now()).Level),
 			Data: map[string]any{
 				"namespace":     ds.Namespace,
 				"readyReplicas": ready,
@@ -2447,7 +2471,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			ID:     stsID,
 			Kind:   KindStatefulSet,
 			Name:   sts.Name,
-			Status: getDeploymentStatus(ready, total),
+			Status: healthLevelToStatus(health.Workload(sts, time.Now()).Level),
 			Data: map[string]any{
 				"namespace":     sts.Namespace,
 				"readyReplicas": ready,
@@ -2491,17 +2515,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		cjID := fmt.Sprintf("cronjob/%s/%s", cj.Namespace, cj.Name)
 		cronJobIDs[cj.Namespace+"/"+cj.Name] = cjID
 
-		// Determine status based on last schedule time and active jobs
-		status := StatusHealthy
-		if len(cj.Status.Active) > 0 {
-			status = StatusDegraded // Running
-		}
-
 		nodes = append(nodes, Node{
 			ID:     cjID,
 			Kind:   KindCronJob,
 			Name:   cj.Name,
-			Status: status,
+			Status: healthLevelToStatus(health.Workload(cj, time.Now()).Level),
 			Data: map[string]any{
 				"namespace":        cj.Namespace,
 				"schedule":         cj.Spec.Schedule,
@@ -2650,7 +2668,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				ID:     rsID,
 				Kind:   KindReplicaSet,
 				Name:   rs.Name,
-				Status: getDeploymentStatus(ready, total),
+				Status: healthLevelToStatus(health.Workload(rs, time.Now()).Level),
 				Data: map[string]any{
 					"namespace":     rs.Namespace,
 					"readyReplicas": ready,
@@ -3114,6 +3132,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			log.Printf("WARNING [topology] Failed to list ConfigMaps: %v", cmErr)
 			warnings = append(warnings, fmt.Sprintf("Failed to list ConfigMaps: %v", cmErr))
 		}
+		cmConsumers := buildConsumerIndex(workloadConfigMapRefs, workloadNamespaces)
 		for _, cm := range configmaps {
 			if !opts.MatchesNamespaceFilter(cm.Namespace) {
 				continue
@@ -3121,25 +3140,18 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// Only include ConfigMaps that are referenced by workloads in the same namespace
 			cmID := fmt.Sprintf("configmap/%s/%s", cm.Namespace, cm.Name)
-			isReferenced := false
+			consumers := cmConsumers[workloadRefKey{namespace: cm.Namespace, name: cm.Name}]
 
-			for workloadID, refs := range workloadConfigMapRefs {
-				// Only match if workload is in the same namespace as the ConfigMap
-				if workloadNamespaces[workloadID] != cm.Namespace {
-					continue
-				}
-				if refs[cm.Name] {
-					isReferenced = true
-					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", cmID, workloadID),
-						Source: cmID,
-						Target: workloadID,
-						Type:   EdgeConfigures,
-					})
-				}
+			for _, workloadID := range consumers {
+				edges = append(edges, Edge{
+					ID:     fmt.Sprintf("%s-to-%s", cmID, workloadID),
+					Source: cmID,
+					Target: workloadID,
+					Type:   EdgeConfigures,
+				})
 			}
 
-			if isReferenced {
+			if len(consumers) > 0 {
 				nodes = append(nodes, Node{
 					ID:     cmID,
 					Kind:   KindConfigMap,
@@ -3162,6 +3174,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			log.Printf("WARNING [topology] Failed to list Secrets: %v", secretsErr)
 			warnings = append(warnings, fmt.Sprintf("Failed to list Secrets: %v", secretsErr))
 		}
+		secretConsumers := buildConsumerIndex(workloadSecretRefs, workloadNamespaces)
 		for _, secret := range secrets {
 			if !opts.MatchesNamespaceFilter(secret.Namespace) {
 				continue
@@ -3169,25 +3182,18 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// Only include Secrets that are referenced by workloads in the same namespace
 			secretID := fmt.Sprintf("secret/%s/%s", secret.Namespace, secret.Name)
-			isReferenced := false
+			consumers := secretConsumers[workloadRefKey{namespace: secret.Namespace, name: secret.Name}]
 
-			for workloadID, refs := range workloadSecretRefs {
-				// Only match if workload is in the same namespace as the Secret
-				if workloadNamespaces[workloadID] != secret.Namespace {
-					continue
-				}
-				if refs[secret.Name] {
-					isReferenced = true
-					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", secretID, workloadID),
-						Source: secretID,
-						Target: workloadID,
-						Type:   EdgeConfigures,
-					})
-				}
+			for _, workloadID := range consumers {
+				edges = append(edges, Edge{
+					ID:     fmt.Sprintf("%s-to-%s", secretID, workloadID),
+					Source: secretID,
+					Target: workloadID,
+					Type:   EdgeConfigures,
+				})
 			}
 
-			if isReferenced {
+			if len(consumers) > 0 {
 				nodes = append(nodes, Node{
 					ID:     secretID,
 					Kind:   KindSecret,
@@ -3211,6 +3217,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			log.Printf("WARNING [topology] Failed to list PersistentVolumeClaims: %v", pvcErr)
 			warnings = append(warnings, fmt.Sprintf("Failed to list PersistentVolumeClaims: %v", pvcErr))
 		}
+		pvcConsumers := buildConsumerIndex(workloadPVCRefs, workloadNamespaces)
 		for _, pvc := range pvcs {
 			if !opts.MatchesNamespaceFilter(pvc.Namespace) {
 				continue
@@ -3218,25 +3225,18 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// Only include PVCs that are referenced by workloads in the same namespace
 			pvcID := fmt.Sprintf("persistentvolumeclaim/%s/%s", pvc.Namespace, pvc.Name)
-			isReferenced := false
+			consumers := pvcConsumers[workloadRefKey{namespace: pvc.Namespace, name: pvc.Name}]
 
-			for workloadID, refs := range workloadPVCRefs {
-				// Only match if workload is in the same namespace as the PVC
-				if workloadNamespaces[workloadID] != pvc.Namespace {
-					continue
-				}
-				if refs[pvc.Name] {
-					isReferenced = true
-					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", pvcID, workloadID),
-						Source: pvcID,
-						Target: workloadID,
-						Type:   EdgeUses,
-					})
-				}
+			for _, workloadID := range consumers {
+				edges = append(edges, Edge{
+					ID:     fmt.Sprintf("%s-to-%s", pvcID, workloadID),
+					Source: pvcID,
+					Target: workloadID,
+					Type:   EdgeUses,
+				})
 			}
 
-			if isReferenced {
+			if len(consumers) > 0 {
 				// Get storage info
 				var storageSize string
 				if pvc.Spec.Resources.Requests != nil {
@@ -3254,7 +3254,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					ID:     pvcID,
 					Kind:   KindPVC,
 					Name:   pvc.Name,
-					Status: getPVCStatus(pvc.Status.Phase),
+					Status: getPVCStatus(pvc),
 					Data: map[string]any{
 						"namespace":    pvc.Namespace,
 						"storageClass": storageClass,
@@ -5234,7 +5234,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// Summary mode: stamp collapsed pod counts onto their workload nodes.
 	stampPodSummaries(nodes, podSummaries)
 
-	topo := &Topology{Nodes: nodes, Edges: edges, Warnings: warnings}
+	topo := &Topology{Nodes: stampAuditKeys(nodes), Edges: edges, Warnings: warnings}
 
 	// Add CRD discovery status
 	if b.dynamic != nil {
@@ -6767,7 +6767,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 		}
 	}
 
-	topo := &Topology{Nodes: nodes, Edges: edges, Warnings: warnings}
+	topo := &Topology{Nodes: stampAuditKeys(nodes), Edges: edges, Warnings: warnings}
 
 	// Add CRD discovery status
 	if b.dynamic != nil {
@@ -6843,7 +6843,7 @@ func addPodHealth(summaries map[string]*PodSummary, nodeID string, pod *corev1.P
 		summaries[nodeID] = s
 	}
 	s.Total++
-	switch getPodStatus(string(pod.Status.Phase)) {
+	switch podSummaryStatus(pod) {
 	case StatusHealthy:
 		s.Healthy++
 	case StatusDegraded:
@@ -6966,17 +6966,12 @@ func (b *Builder) createPodOwnerEdges(
 	return edges
 }
 
-func getPodStatus(phase string) HealthStatus {
-	switch phase {
-	case "Running", "Succeeded":
-		return StatusHealthy
-	case "Pending":
-		return StatusDegraded
-	case "Failed", "CrashLoopBackOff":
-		return StatusUnhealthy
-	default:
-		return StatusUnknown
-	}
+// getPodStatus returns the node-coloring health of a pod via the canonical
+// classifier. It inspects container state (crashloop, OOM, fatal waiting), not
+// just pod.Status.Phase — so a crashlooping pod (phase Running) now reads
+// unhealthy here instead of healthy, matching the resource table.
+func getPodStatus(pod *corev1.Pod) HealthStatus {
+	return healthLevelToStatus(topoPodLevel(pod))
 }
 
 func getDeploymentStatus(ready, total int32) HealthStatus {
@@ -6993,33 +6988,11 @@ func getDeploymentStatus(ready, total int32) HealthStatus {
 }
 
 func getJobStatus(job *batchv1.Job) HealthStatus {
-	// Check completion conditions
-	for _, cond := range job.Status.Conditions {
-		if cond.Type == batchv1.JobComplete && cond.Status == corev1.ConditionTrue {
-			return StatusHealthy
-		}
-		if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
-			return StatusUnhealthy
-		}
-	}
-	// Still running
-	if job.Status.Active > 0 {
-		return StatusDegraded
-	}
-	return StatusUnknown
+	return healthLevelToStatus(health.Workload(job, time.Now()).Level)
 }
 
-func getPVCStatus(phase corev1.PersistentVolumeClaimPhase) HealthStatus {
-	switch phase {
-	case corev1.ClaimBound:
-		return StatusHealthy
-	case corev1.ClaimPending:
-		return StatusDegraded
-	case corev1.ClaimLost:
-		return StatusUnhealthy
-	default:
-		return StatusUnknown
-	}
+func getPVCStatus(pvc *corev1.PersistentVolumeClaim) HealthStatus {
+	return healthLevelToStatus(health.Workload(pvc, time.Now()).Level)
 }
 
 // getFluxReadyStatus extracts the Ready condition status from a FluxCD resource's status map.
@@ -7461,10 +7434,16 @@ func extractKarpenterNodeClaimStatus(nc unstructured.Unstructured) HealthStatus 
 func extractNodeStatus(node corev1.Node) HealthStatus {
 	for _, cond := range node.Status.Conditions {
 		if cond.Type == corev1.NodeReady {
-			if cond.Status == corev1.ConditionTrue {
-				return StatusHealthy
+			if cond.Status != corev1.ConditionTrue {
+				return StatusUnhealthy
 			}
-			return StatusUnhealthy
+			// Ready but cordoned = lost scheduling capacity — degraded (amber),
+			// matching the node table badge + drawer + Cordoned audit, so the same
+			// node doesn't read green here while it's flagged elsewhere.
+			if node.Spec.Unschedulable {
+				return StatusDegraded
+			}
+			return StatusHealthy
 		}
 	}
 	return StatusUnknown
@@ -7472,14 +7451,15 @@ func extractNodeStatus(node corev1.Node) HealthStatus {
 
 // extractKedaScaledObjectStatus reads conditions and annotations from a KEDA ScaledObject
 func extractKedaScaledObjectStatus(so unstructured.Unstructured) HealthStatus {
-	// Check for Paused annotation (two variants)
+	// Check for Paused annotation (two variants). Paused = an operator
+	// deliberately froze autoscaling — intentional, so neutral (sky), not amber.
 	annotations := so.GetAnnotations()
 	if annotations != nil {
 		if paused, ok := annotations["autoscaling.keda.sh/paused"]; ok && paused == "true" {
-			return StatusDegraded
+			return StatusNeutral
 		}
 		if _, ok := annotations["autoscaling.keda.sh/paused-replicas"]; ok {
-			return StatusDegraded
+			return StatusNeutral
 		}
 	}
 
@@ -7519,7 +7499,10 @@ func extractKedaScaledObjectStatus(so unstructured.Unstructured) HealthStatus {
 		case "True":
 			return StatusHealthy
 		case "False":
-			return StatusDegraded
+			// Idle (no triggers firing, scaled to zero) is the normal resting
+			// state of a Ready scaler — intentional/off, so neutral (sky), not the
+			// green of an actively-serving workload.
+			return StatusNeutral
 		}
 	}
 
@@ -7551,23 +7534,25 @@ func extractKedaScaledJobStatus(sj unstructured.Unstructured) HealthStatus {
 		}
 	}
 
-	// Ready condition takes priority
-	if readyCond != nil {
-		switch readyCond["status"] {
-		case "True":
-			return StatusHealthy
-		case "False":
-			return StatusDegraded
-		}
+	// Ready=False = not operational; surface it before the idle check.
+	if readyCond != nil && readyCond["status"] == "False" {
+		return StatusDegraded
 	}
 
+	// Check Active before treating Ready=True as healthy: an operational scaler
+	// with no jobs running (Active=False) is intentionally idle → neutral (sky),
+	// not the green of a busy one. (Ready=True first would make Idle unreachable.)
 	if activeCond != nil {
 		switch activeCond["status"] {
 		case "True":
 			return StatusHealthy
 		case "False":
-			return StatusDegraded
+			return StatusNeutral
 		}
+	}
+
+	if readyCond != nil && readyCond["status"] == "True" {
+		return StatusHealthy
 	}
 
 	return StatusUnknown

@@ -63,6 +63,7 @@ const (
 	HealthHealthy   = pkgtimeline.HealthHealthy
 	HealthDegraded  = pkgtimeline.HealthDegraded
 	HealthUnhealthy = pkgtimeline.HealthUnhealthy
+	HealthNeutral   = pkgtimeline.HealthNeutral
 	HealthUnknown   = pkgtimeline.HealthUnknown
 
 	// GroupingMode constants
@@ -100,9 +101,6 @@ func NewHistoricalEvent(kind, apiVersion, namespace, name string, ts time.Time, 
 }
 func ExtractOwner(obj any) *OwnerInfo         { return pkgtimeline.ExtractOwner(obj) }
 func ExtractLabels(obj any) map[string]string { return pkgtimeline.ExtractLabels(obj) }
-func DetermineHealthState(kind string, obj any) HealthState {
-	return pkgtimeline.DetermineHealthState(kind, obj)
-}
 func OperationToEventType(op string) EventType  { return pkgtimeline.OperationToEventType(op) }
 func EventTypeToOperation(et EventType) string  { return pkgtimeline.EventTypeToOperation(et) }
 func HealthStateToString(hs HealthState) string { return pkgtimeline.HealthStateToString(hs) }

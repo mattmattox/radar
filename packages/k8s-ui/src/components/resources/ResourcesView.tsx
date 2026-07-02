@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef, useContext, useId } from 'react'
 import { TableVirtuoso, type TableVirtuosoHandle } from 'react-virtuoso'
-import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
 import { PaneLoader } from '../ui/PaneLoader'
+import { RestrictedState } from '../ui/RestrictedState'
 import type { TopPodMetrics, TopNodeMetrics } from '../../types'
 import {
   Search,
@@ -12,7 +12,6 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowUpDown,
-  Clock,
   ListFilter,
   X,
   Columns3,
@@ -128,11 +127,13 @@ import {
   podMatchesProblemCategory,
   SEVERITY_DOT_COLOR,
 } from './resource-utils'
-import { SEVERITY_BADGE, EVENT_TYPE_COLORS } from '../../utils/badge-colors'
+import { SEVERITY_BADGE, EVENT_TYPE_COLORS, SEVERITY_TEXT } from '../../utils/badge-colors'
 import { pluralize } from '../../utils/pluralize'
 import { getPodGpuCount, getNodeGpuCount } from '../../utils/extended-resources'
 import { type CustomColumnDef, type CustomColumnSource, customColumnKey, readCustomColumnValue, sanitizeCustomColumnDefs } from '../../utils/custom-columns'
+import { FreshnessControl, type FreshnessConnection } from '../ui/FreshnessControl'
 import { Tooltip } from '../ui/Tooltip'
+import { AuditBadgeTooltip, type AuditBadgeMessage } from '../audit/AuditBadgeTooltip'
 // CRD-specific cell components (extracted)
 import { GitRepositoryCell, OCIRepositoryCell, HelmRepositoryCell, KustomizationCell, FluxHelmReleaseCell, FluxAlertCell } from './renderers/flux-cells'
 import { ArgoApplicationCell, ArgoApplicationSetCell, ArgoAppProjectCell } from './renderers/argo-cells'
@@ -1799,6 +1800,9 @@ interface ResourcesViewData {
   onNavigate?: (path: string, options?: { replace?: boolean }) => void
   certExpiry?: Record<string, { expired?: boolean; daysLeft: number }>
   certExpiryError?: boolean
+  // Cluster Audit findings for the listed kind, keyed by "namespace/name" (the
+  // list shows one kind at a time, so ns/name is unambiguous). Host-injected.
+  auditBadges?: Record<string, { danger: number; warning: number; messages?: AuditBadgeMessage[] }>
   onOpenLogs?: (params: { namespace: string; podName: string; containers: string[]; containerName?: string }) => void
   onOpenWorkloadLogs?: (params: { namespace: string; workloadKind: string; workloadName: string }) => void
 }
@@ -1816,6 +1820,7 @@ export interface ResourceQueryResult {
 export interface LargeListGuardState {
   kind: string
   count?: number
+  reason?: 'too-many' | 'count-unavailable'
   limit: number
   namespaces: string[]
 }
@@ -1839,13 +1844,22 @@ interface ResourcesViewProps {
   // Lightweight counts for sidebar badges (from /api/resource-counts)
   resourceCounts?: Record<string, number>
   resourceForbidden?: string[]
+  /** Per-kind reason a forbidden kind is hidden ("rbac_denied" | "unavailable"),
+   *  keyed by the same count key as resourceForbidden. Drives RestrictedState copy. */
+  resourceReasons?: Record<string, string>
+  resourceUnavailable?: string[]
   // Single query for the currently selected kind's full data
   selectedKindQuery?: ResourceQueryResult
+  // Cluster/SSE connection health — the list is SSE-invalidated ("Auto-updating"),
+  // so it must degrade to "Reconnecting…" when the stream drops.
+  connectionState?: FreshnessConnection
   largeListGuard?: LargeListGuardState | null
   topPodMetrics?: TopPodMetrics[]
   topNodeMetrics?: TopNodeMetrics[]
   certExpiry?: Record<string, { expired?: boolean; daysLeft: number }>
   certExpiryError?: boolean
+  // Cluster Audit findings for the selected kind, keyed by "namespace/name".
+  auditBadges?: Record<string, { danger: number; warning: number; messages?: AuditBadgeMessage[] }>
   // Pinned kinds
   pinned?: Array<{ name: string; kind: string; group: string }>
   togglePin?: (kind: { name: string; kind: string; group: string }) => void
@@ -2005,63 +2019,22 @@ function getInitialFiltersFromURL() {
 // Sort state type
 type SortDirection = 'asc' | 'desc' | null
 
-// Coarse "just now / Xm / Xh / Xd" buckets — finer-grained updates
-// add motion in the periphery without aiding any user decision.
-function formatLastUpdatedBucket(elapsedMs: number): string {
-  const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000))
-  if (elapsedSec < 60) return 'just now'
-  const minutes = Math.floor(elapsedSec / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
-
-// ms until the displayed bucket would change.
-function msToNextBucket(elapsedMs: number): number {
-  const elapsed = Math.max(0, elapsedMs)
-  if (elapsed < 60_000) return 60_000 - elapsed
-  if (elapsed < 3_600_000) return 60_000 - (elapsed % 60_000)
-  if (elapsed < 86_400_000) return 3_600_000 - (elapsed % 3_600_000)
-  return 86_400_000 - (elapsed % 86_400_000)
-}
-
-// Isolated subtree so re-renders don't cascade into the parent's
-// virtualized table.
-function LastUpdatedLabel({ lastUpdated }: { lastUpdated: Date }) {
-  const [, force] = useState(0)
-  useEffect(() => {
-    let id: ReturnType<typeof setTimeout>
-    function schedule() {
-      const delay = Math.max(1000, msToNextBucket(Date.now() - lastUpdated.getTime()))
-      id = setTimeout(() => {
-        force(t => t + 1)
-        schedule()
-      }, delay)
-    }
-    schedule()
-    return () => clearTimeout(id)
-  }, [lastUpdated])
-  return (
-    <div className="flex items-center gap-1.5 text-xs text-theme-text-tertiary">
-      <Clock className="w-3.5 h-3.5" />
-      <span>Updated {formatLastUpdatedBucket(Date.now() - lastUpdated.getTime())}</span>
-    </div>
-  )
-}
-
 export function ResourcesView({
   namespaces, selectedResource, onResourceClick, onResourceClickYaml, onKindChange,
   apiResources: apiResourcesProp,
   resourceQueries: resourceQueriesProp,
   resourceCounts: resourceCountsProp,
   resourceForbidden: resourceForbiddenProp,
+  resourceReasons,
+  resourceUnavailable: resourceUnavailableProp,
   selectedKindQuery: selectedKindQueryProp,
+  connectionState,
   largeListGuard,
   topPodMetrics,
   topNodeMetrics,
   certExpiry,
   certExpiryError,
+  auditBadges,
   pinned = [],
   togglePin = () => {},
   isPinned = () => false,
@@ -2115,7 +2088,6 @@ export function ResourcesView({
   const [regexMode, setRegexMode] = useState(false)
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] = useState<SortDirection>(null)
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   // Filter state
   const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>(initialFilters.columnFilters)
   const [problemFilters, setProblemFilters] = useState<string[]>(initialFilters.problemFilters)
@@ -2936,6 +2908,11 @@ export function ResourcesView({
       params.set('resource', resourceNs ? `${resourceNs}/${resourceName}` : resourceName)
     } else {
       params.delete('resource')
+      // `full` (over-list fullscreen) and `tab` are resource-scoped — when no
+      // resource is selected they're stale; drop them so they can't leak onto a
+      // later selection (e.g. after a kind switch or closing the drawer).
+      params.delete('full')
+      params.delete('tab')
     }
 
     const newPath = `${basePath}/${kindInfo.name}`
@@ -3229,45 +3206,34 @@ export function ResourcesView({
   }, [resources])
   const isLoading = selectedQuery?.isLoading ?? true
   const selectedQueryError = selectedQuery?.error
-  const isSelectedForbidden = isForbiddenError(selectedQueryError)
-  const refetchFn = selectedQuery?.refetch
-  const dataUpdatedAt = selectedQuery?.dataUpdatedAt
-
-  const [refetch, isRefreshAnimating, refreshPhase] = useRefreshAnimation(() => refetchFn?.())
-
-  // React Query bumps dataUpdatedAt on no-op refetches (window focus,
-  // mount, sibling subscribers); structural sharing returns the same
-  // resources reference when data is byte-identical. Skip the timer
-  // reset in that case — otherwise opening a filter drawer looks like
-  // it triggered a real fetch.
-  const lastDataRef = useRef<unknown>(undefined)
-  useEffect(() => {
-    if (!dataUpdatedAt) return
-    if (resources === lastDataRef.current) return
-    lastDataRef.current = resources
-    setLastUpdated(new Date(dataUpdatedAt))
-  }, [dataUpdatedAt, resources])
 
   // Derive counts — prefer lightweight resourceCounts prop over full query data
   const counts = useMemo(() => {
     if (useNewCountsMode) {
       // resourceCountsProp uses "group/Kind" keys for CRDs, "Kind" for core — same format as sidebar
-      const results: Record<string, number> = {}
+      const unavailableKinds = new Set(resourceUnavailableProp ?? [])
+      const results: Record<string, number | null> = {}
       for (const resource of resourcesToCount) {
         const key = resource.group ? `${resource.group}/${resource.kind}` : resource.kind
-        results[key] = resourceCountsProp![key] ?? 0
+        if (unavailableKinds.has(key)) {
+          results[key] = null
+        } else if (key in resourceCountsProp!) {
+          results[key] = resourceCountsProp![key]
+        } else {
+          results[key] = 0
+        }
       }
       return results
     }
     // Legacy: derive counts from full query data
-    const results: Record<string, number> = {}
+    const results: Record<string, number | null> = {}
     resourcesToCount.forEach((resource, index) => {
       const data = resourceQueries[index]?.data
       const key = resource.group ? `${resource.group}/${resource.kind}` : resource.kind
       results[key] = Array.isArray(data) ? data.length : 0
     })
     return results
-  }, [useNewCountsMode, resourcesToCount, resourceCountsProp, resourceQueries])
+  }, [useNewCountsMode, resourcesToCount, resourceCountsProp, resourceUnavailableProp, resourceQueries])
 
   // Track which resource kinds returned 403 Forbidden
   const forbiddenKinds = useMemo(() => {
@@ -3283,6 +3249,23 @@ export function ResourcesView({
     })
     return result
   }, [useNewCountsMode, resourceForbiddenProp, resourcesToCount, resourceQueries])
+
+  // Render the restricted state when EITHER the list query 403s (namespaced
+  // denials) OR the selected kind is in the counts `forbidden` set. Denied
+  // cluster-scoped kinds return 200 with `[]` from the list endpoint, so the
+  // 403 signal alone misses them — they'd fall through to "No <kind> found".
+  const selectedKindCountKey = selectedKind.group
+    ? `${selectedKind.group}/${selectedKind.kind}`
+    : selectedKind.kind
+  // Actual rows win over a stale counts `forbidden` entry: a kind can be marked
+  // forbidden/unavailable in counts (e.g. an informer not yet synced at counts
+  // time) while the list query has since returned data — show the table, not
+  // RestrictedState. A 403 on the list itself never carries rows, so it still
+  // forces the restricted state.
+  const selectedHasRows = Array.isArray(resources) && resources.length > 0
+  const isSelectedForbidden =
+    isForbiddenError(selectedQueryError) ||
+    (!selectedHasRows && forbiddenKinds.has(selectedKindCountKey))
 
   // Reset sort and filters when kind changes (but not when syncing from URL navigation)
   // Track previous kind to skip on mount (where the effect fires but kind hasn't actually changed)
@@ -3983,9 +3966,10 @@ export function ResourcesView({
     onNavigate,
     certExpiry,
     certExpiryError,
+    auditBadges,
     onOpenLogs,
     onOpenWorkloadLogs,
-  }), [onNavigate, certExpiry, certExpiryError, onOpenLogs, onOpenWorkloadLogs])
+  }), [onNavigate, certExpiry, certExpiryError, auditBadges, onOpenLogs, onOpenWorkloadLogs])
 
   return (
     <ResourcesViewDataContext.Provider value={resourcesViewDataContextValue}>
@@ -4002,6 +3986,7 @@ export function ResourcesView({
           apiResources={apiResourcesProp}
           resourceCounts={counts}
           resourceForbidden={Array.from(forbiddenKinds)}
+          resourceUnavailable={resourceUnavailableProp}
           pinned={pinned}
           togglePin={togglePin}
           isPinned={isPinned}
@@ -4248,19 +4233,19 @@ export function ResourcesView({
             </Tooltip>
           )}
 
-          {lastUpdated && <LastUpdatedLabel lastUpdated={lastUpdated} />}
           {/* Column picker */}
           <div className="relative" ref={columnPickerRef}>
+            <Tooltip content="Configure columns">
             <button
               onClick={() => setShowColumnPicker(prev => !prev)}
               className={clsx(
                 'p-2 text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded-lg',
                 showColumnPicker && 'bg-theme-elevated text-theme-text-primary'
               )}
-              title="Configure columns"
             >
               <Columns3 className="w-4 h-4" />
             </button>
+            </Tooltip>
             {showColumnPicker && (
               <div className="absolute right-0 top-full mt-1 z-50 bg-theme-surface border border-theme-border rounded-lg shadow-lg py-1 min-w-[200px] max-h-[400px] flex flex-col">
                 <div className="shrink-0 px-3 py-2 border-b border-theme-border flex items-center justify-between">
@@ -4366,20 +4351,6 @@ export function ResourcesView({
               </div>
             )}
           </div>
-          <button
-            onClick={refetch}
-            disabled={isRefreshAnimating}
-            className={clsx(
-              'p-2 hover:bg-theme-elevated rounded-lg disabled:opacity-50 transition-colors duration-500',
-              refreshPhase === 'success' ? 'text-emerald-400' : 'text-theme-text-secondary hover:text-theme-text-primary'
-            )}
-            title="Refresh"
-          >
-            {refreshPhase === 'success'
-              ? <Check className="w-4 h-4 stroke-[2.5]" />
-              : <RefreshCw className={clsx('w-4 h-4', refreshPhase === 'spinning' && 'animate-spin')} />
-            }
-          </button>
           {onCreateResource && (
             <Tooltip content={`Create ${selectedKind.kind || 'resource'}`}>
               <button
@@ -4430,6 +4401,14 @@ export function ResourcesView({
               </button>
             </Tooltip>
           )}
+          {/* Freshness/liveness status — trailing and divided off from the action
+              buttons so it reads as a status, not another control. Resources has
+              no PageHeader, so this toolbar is its home. */}
+          <div className="mx-1 h-5 w-px bg-theme-border/60" />
+          {/* The list is SSE-invalidated (near-real-time), so it reads
+              "Auto-updating" with no refresh button — the stream keeps it
+              current, so a manual refresh would only undercut the claim. */}
+          <FreshnessControl mode="auto" connectionState={connectionState} />
         </div>
 
         {/* Bulk actions bar */}
@@ -4494,20 +4473,31 @@ export function ResourcesView({
           {isLoading ? (
             <PaneLoader className="absolute inset-0" />
           ) : isSelectedForbidden ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-theme-text-tertiary">
-              <Shield className="w-8 h-8 text-amber-400 mb-2" />
-              <p className="text-theme-text-secondary font-medium">Access Restricted</p>
-              <p className="text-sm mt-1">Insufficient permissions to list {selectedKind.kind} resources</p>
+            // overflow-y-auto + min-h-full: centered when the panel is short
+            // (collapsed), scrollable (no top clip) when the RBAC snippet is
+            // expanded on a shorter pane.
+            <div className="absolute inset-0 overflow-y-auto">
+              <div className="min-h-full flex items-center justify-center">
+                <RestrictedState
+                  kindLabel={selectedKind.kind}
+                  group={selectedKind.group}
+                  resource={selectedKind.name}
+                  reason={resourceReasons?.[selectedKindCountKey]}
+                />
+              </div>
             </div>
           ) : largeListGuard ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-theme-text-tertiary px-6 text-center">
               <AlertTriangle className="w-8 h-8 text-amber-400 mb-2" />
               <p className="text-theme-text-secondary font-medium">
-                Too many {largeListGuard.kind.toLowerCase()} to show
+                {largeListGuard.reason === 'count-unavailable'
+                  ? `${largeListGuard.kind} count unavailable`
+                  : `Too many ${largeListGuard.kind.toLowerCase()} to show`}
               </p>
               <p className="text-sm mt-1 max-w-xl">
-                {largeListGuard.count?.toLocaleString()} {largeListGuard.kind.toLowerCase()} are in the current scope.
-                Choose a namespace or smaller namespace set to load this view.
+                {largeListGuard.reason === 'count-unavailable'
+                  ? 'Radar could not verify this list is small enough to load. Choose a namespace or smaller namespace set to try again.'
+                  : `${largeListGuard.count?.toLocaleString()} ${largeListGuard.kind.toLowerCase()} are in the current scope. Choose a namespace or smaller namespace set to load this view.`}
               </p>
               <p className="text-xs mt-2 text-theme-text-disabled">
                 Radar limits full table loads to {largeListGuard.limit.toLocaleString()} resources to keep the UI responsive.
@@ -5112,6 +5102,7 @@ interface CellContentProps {
 }
 
 function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, extraColumn, nameHref }: CellContentProps) {
+  const { auditBadges } = useContext(ResourcesViewDataContext)
   // Parent-injected extra columns short-circuit the built-in switch.
   // Used by hosts that inject leading columns (e.g. a multi-cluster Cluster column).
   if (extraColumn) {
@@ -5124,6 +5115,8 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
   if (column === 'name') {
     const isTerminating = !!meta.deletionTimestamp
     const nameClass = clsx('text-sm font-medium truncate block', isTerminating ? 'text-theme-text-tertiary line-through' : 'text-theme-text-primary')
+    const audit = auditBadges?.[`${meta.namespace || ''}/${meta.name}`]
+    const auditTotal = audit ? audit.danger + audit.warning : 0
     return (
       <div className="flex items-center gap-1.5 min-w-0">
         <Tooltip content={meta.name}>
@@ -5141,6 +5134,16 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
           )}
         </Tooltip>
         <CopyNameButton name={meta.name} />
+        {auditTotal > 0 && audit && (
+          <Tooltip content={audit.messages && audit.messages.length > 0
+            ? <AuditBadgeTooltip messages={audit.messages} />
+            : `${auditTotal} audit ${auditTotal === 1 ? 'finding' : 'findings'}${audit.danger > 0 ? ` · ${audit.danger} danger` : ''}`}>
+            <span className={clsx('shrink-0 inline-flex items-center gap-0.5 text-[10px] font-medium cursor-help', audit.danger > 0 ? SEVERITY_TEXT.error : SEVERITY_TEXT.warning)}>
+              <AlertTriangle className="w-3 h-3" />
+              {auditTotal}
+            </span>
+          </Tooltip>
+        )}
         {isTerminating && (
           <Tooltip content="Resource is being deleted (has deletionTimestamp set). May be stuck due to finalizers.">
             <span className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-red-500/15 text-red-600 dark:text-red-400 rounded">
@@ -5979,6 +5982,7 @@ function ReplicaSetCell({ resource, column }: { resource: any; column: string })
 }
 
 function ServiceCell({ resource, column }: { resource: any; column: string }) {
+  const { auditBadges } = useContext(ResourcesViewDataContext)
   switch (column) {
     case 'type': {
       const status = getServiceStatus(resource)
@@ -5999,6 +6003,20 @@ function ServiceCell({ resource, column }: { resource: any; column: string }) {
       )
     }
     case 'endpoints': {
+      // getServiceEndpointsStatus can't see live pods, so it optimistically
+      // reports "Active" for any service with a selector. The audit's
+      // serviceNoMatchingPods check DOES resolve the selector against live pods —
+      // the only badge-worthy finding a Service can carry — so when it fired,
+      // trust it over the guess instead of showing a false-green "Active".
+      const meta = resource.metadata || {}
+      const flagged = auditBadges?.[`${meta.namespace || ''}/${meta.name}`]
+      if (flagged && flagged.danger + flagged.warning > 0) {
+        return (
+          <span className={clsx('badge', flagged.danger > 0 ? 'status-unhealthy' : 'status-degraded')}>
+            No endpoints
+          </span>
+        )
+      }
       const { status, color } = getServiceEndpointsStatus(resource)
       return (
         <span className={clsx('badge', color)}>

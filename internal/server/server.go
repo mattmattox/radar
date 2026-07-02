@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -14,6 +15,8 @@ import (
 	"net/url"
 	"reflect"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +44,7 @@ import (
 	prometheuspkg "github.com/skyhook-io/radar/internal/prometheus"
 	"github.com/skyhook-io/radar/internal/settings"
 	"github.com/skyhook-io/radar/internal/timeline"
+	"github.com/skyhook-io/radar/internal/traffic"
 	"github.com/skyhook-io/radar/internal/updater"
 	"github.com/skyhook-io/radar/internal/version"
 	"github.com/skyhook-io/radar/pkg/hpadiag"
@@ -75,6 +79,13 @@ type Server struct {
 	// time. Picking does NOT narrow the shared informer cache (would corrupt
 	// other users' views).
 	nsPreferences sync.Map
+
+	// scopeMutationMu serializes a forced (--namespace-scope) namespace change so
+	// its persisted pick and the live cache scope move as one commit. Without it,
+	// two concurrent rescope requests could persist one namespace while the cache
+	// ends on another (PerformNamespaceRescope's own lock only serializes the
+	// rebuild, not this handler's persist step).
+	scopeMutationMu sync.Mutex
 
 	// Short-TTL cache for topology builds. The Topology graph is a
 	// deterministic projection of the informer cache; rebuilding it walks
@@ -129,6 +140,12 @@ func New(cfg Config) *Server {
 	k8s.OnContextSwitch(func(_ string) {
 		s.finalizePostContextSwitch()
 	})
+
+	// Let the destructive cache operations (context switch, namespace rescope)
+	// terminate active sessions at their point of no return, rather than the
+	// handlers stopping them up front — a switch/rescope that fails before
+	// teardown must leave port-forwards / exec terminals intact.
+	k8s.SetSessionStopper(StopAllSessions)
 
 	// Initialize auth components when auth is enabled
 	if s.authConfig.Enabled() {
@@ -193,6 +210,12 @@ func (s *Server) setupRoutes() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	// Note: Timeout middleware is applied per-group below to exempt streaming endpoints
+
+	// gzip response compression (content-type aware: JSON yes, SSE/WS no).
+	// nil when RADAR_COMPRESS_LEVEL=0. See compress.go.
+	if cm := compressMiddleware(); cm != nil {
+		r.Use(cm)
+	}
 
 	// CORS for development
 	r.Use(cors.Handler(cors.Options{
@@ -322,6 +345,7 @@ func (s *Server) setupRoutes() {
 			// fallback into one normalized list. Used by the hub
 			// fan-out for cross-cluster issues.
 			r.Get("/issues", s.handleIssues)
+			r.Get("/issues/resource/{kind}/{namespace}/{name}", s.handleResourceIssues)
 			r.Get("/settings/audit", s.handleGetAuditSettings)
 			r.Put("/settings/audit", s.handlePutAuditSettings)
 			r.Get("/events", s.handleEvents)
@@ -360,6 +384,10 @@ func (s *Server) setupRoutes() {
 			r.Delete("/portforwards/{id}", s.handleStopPortForward)
 			r.Get("/portforwards/available/{type}/{namespace}/{name}", s.handleGetAvailablePorts)
 
+			// Curl a Service's HTTP endpoint server-side (direct in-cluster dial,
+			// no credentials). Works in-cluster/Cloud where port-forward can't.
+			r.Post("/curl/service", s.handleCurlService)
+
 			// Active sessions (for context switch confirmation)
 			r.Get("/sessions", s.handleGetSessions)
 
@@ -379,7 +407,7 @@ func (s *Server) setupRoutes() {
 			r.Get("/workloads/{kind}/{namespace}/{name}/pods", s.handleWorkloadPods)
 
 			// Helm routes
-			helmHandlers := helm.NewHandlers()
+			helmHandlers := helm.NewHandlers(s.resolveHelmNamespaces)
 			helmHandlers.RegisterRoutes(r)
 
 			// Image inspection routes
@@ -488,6 +516,7 @@ func (s *Server) setupRoutes() {
 			// Config (persisted startup configuration)
 			r.Get("/config", s.handleGetConfig)
 			r.Put("/config", s.handlePutConfig)
+			r.Put("/integrations/prometheus", s.handleApplyPrometheusURL)
 
 			// Desktop routes
 			r.Post("/desktop/open-url", s.handleDesktopOpenURL)
@@ -748,6 +777,17 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Port-forward binds a local TCP listener on the radar host and proxies it to
+	// the pod — only reachable when radar runs as a local binary. In-cluster
+	// (Radar Cloud, reached over the tunnel) the listener would live on the radar
+	// pod, unreachable from the user's browser, so the feature can't work
+	// regardless of RBAC. Force it off after the namespace merge so a clean
+	// per-namespace RBAC grant can't re-enable a capability the runtime can't
+	// honor. Mirrors LocalTerminal's runtime-mode gate.
+	if k8s.IsInCluster() {
+		caps.PortForward = false
+	}
+
 	// Resource permissions come straight from the cached probe result, which
 	// populates every field of ResourcePermissions via field pointers in
 	// resourceProbeTargets(). Using GetEnabledResources() instead would
@@ -807,6 +847,19 @@ func mergeNamespaceCapability(global, namespaced, checkErrored bool) bool {
 func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 	namespaces := parseNamespaces(r.URL.Query())
 	pickFallback := false
+	if k8s.ForceNamespaceScope {
+		target := k8s.GetNamespaceScopeTarget()
+		if target == "" {
+			return []string{}
+		}
+		if namespaces == nil {
+			namespaces = []string{target}
+		} else if slices.Contains(namespaces, target) {
+			namespaces = []string{target}
+		} else {
+			return []string{}
+		}
+	}
 	if namespaces == nil {
 		// No explicit filter — use the user's saved picks if any.
 		s.loadSavedNamespacePreference(r)
@@ -826,6 +879,119 @@ func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 		filtered = s.getUserNamespaces(r, nil)
 	}
 	return filtered
+}
+
+// resolveHelmNamespaces decides which namespaces a Helm list (releases, upgrade
+// checks, dashboard summary) should query for this request. Helm releases are
+// always namespaced (stored as Secrets/ConfigMaps in a namespace), so unlike
+// cluster-scoped kinds it is always safe to narrow an "all namespaces" request
+// to the identity's accessible namespaces — which is what lets a
+// namespace-restricted ServiceAccount read Helm without a cluster-wide
+// `list secrets`.
+//
+// Returns:
+//   - (nil, true)        cluster-wide: a single AllNamespaces list
+//   - (namespaces, true) list each and merge
+//   - (nil, false)       no namespace access — caller returns an empty result
+func (s *Server) resolveHelmNamespaces(r *http.Request) ([]string, bool) {
+	// An explicit ?namespace=/?namespaces= request is honored as-is. Helm reads
+	// run as the caller (user impersonation, or the SA when auth is off), so the
+	// apiserver authorizes the secrets read directly — routing this through
+	// parseNamespacesForUser would intersect it with the pod/deployment-based
+	// namespace discovery and wrongly drop a namespace where the caller has
+	// secrets but no pod access. A denied namespace surfaces as a 403 from the
+	// per-namespace list rather than a silent empty result.
+	//
+	// Guard on len > 0, not != nil: parseNamespaces returns an empty non-nil
+	// slice for a degenerate query like ?namespaces=,, — treat that as "no
+	// explicit filter" and fall through, rather than short-circuiting to a
+	// zero-namespace (empty) result.
+	if explicit := parseNamespaces(r.URL.Query()); len(explicit) > 0 {
+		// Under --namespace-scope the informer cache holds only the pinned
+		// namespace; keep Helm consistent with the rest of the UI by clamping an
+		// explicit filter to the pinned namespace (empty when it's out of scope)
+		// instead of reading releases the cache doesn't cover.
+		if k8s.ForceNamespaceScope {
+			if target := k8s.GetNamespaceScopeTarget(); target != "" && slices.Contains(explicit, target) {
+				return []string{target}, true
+			}
+			return []string{}, true
+		}
+		return explicit, true
+	}
+
+	namespaces := s.parseNamespacesForUser(r)
+	if noNamespaceAccess(namespaces) {
+		return nil, false
+	}
+	if namespaces == nil {
+		if auth.UserFromContext(r.Context()) == nil {
+			// "All namespaces" in no-auth mode. A namespace-restricted
+			// ServiceAccount can't list cluster-wide; resolve to the namespaces
+			// it can actually see so the Helm list degrades gracefully instead
+			// of 403-ing. Authenticated users are handled below; Helm lists
+			// impersonate them directly, so narrowing them with the backend
+			// client's fallback namespaces would under-list users whose RBAC is
+			// wider than Radar's own ServiceAccount.
+			if fallback := helm.ResolveNoAuthListNamespaces(r.Context()); len(fallback) > 0 {
+				return fallback, true
+			}
+		} else if !s.canRead(r, "", "secrets", "", "list") {
+			// Authenticated user with cluster-wide pod access (parseNamespacesFor-
+			// User returned nil) but NOT cluster-wide `list secrets`. Helm storage
+			// is Secrets, so a single cluster-wide list would 403 wholesale and
+			// blank the view. Resolve to the namespaces where the user CAN list
+			// secrets — a per-namespace SAR memoized on the user's perms (2-min
+			// TTL), so repeat page loads don't re-probe. Falls through to the
+			// cluster-wide path (→ honest 403) when they can't read secrets
+			// anywhere.
+			if allowed := s.filterNamespacesByCanRead(r, "", "secrets", "list", s.allNamespaceNames()); len(allowed) > 0 {
+				return allowed, true
+			}
+		}
+	}
+	return namespaces, true
+}
+
+// allNamespaceNames returns every namespace name from the shared cache lister,
+// or nil when the namespace informer isn't available. Used as the candidate
+// pool for per-user secrets-SAR filtering — the SAR is the authorization gate,
+// so the (cluster-wide) pool only needs to be a superset of what the user can
+// read.
+func (s *Server) allNamespaceNames() []string {
+	cache := k8s.GetResourceCache()
+	if cache == nil {
+		return nil
+	}
+	lister := cache.Namespaces()
+	if lister == nil {
+		return nil
+	}
+	nsList, err := lister.List(labels.Everything())
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(nsList))
+	for _, ns := range nsList {
+		names = append(names, ns.Name)
+	}
+	return names
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := values[:0]
+	for _, v := range values {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 // noNamespaceAccess returns true when a namespace filter explicitly grants no access
@@ -905,12 +1071,32 @@ func (s *Server) filterNamespacesByCanRead(r *http.Request, group, resource, ver
 	if len(namespaces) == 0 {
 		return namespaces
 	}
+	// Bounded-parallel: each canRead miss is a SAR round-trip, so a serial loop
+	// over a large candidate set (e.g. a cluster-wide reader's full namespace
+	// list in resolveHelmNamespaces) would block the request for N round-trips.
+	// canRead memoizes on the mutex-guarded UserPermissions.canI, mirroring the
+	// parallel SAR probing in internal/k8s/capabilities.go. Result is sorted so
+	// the output is deterministic regardless of goroutine completion order.
+	const maxConcurrent = 16
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	out := make([]string, 0, len(namespaces))
 	for _, ns := range namespaces {
-		if s.canRead(r, group, resource, ns, verb) {
-			out = append(out, ns)
-		}
+		wg.Add(1)
+		go func(ns string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if s.canRead(r, group, resource, ns, verb) {
+				mu.Lock()
+				out = append(out, ns)
+				mu.Unlock()
+			}
+		}(ns)
 	}
+	wg.Wait()
+	sort.Strings(out)
 	return out
 }
 
@@ -953,7 +1139,7 @@ func parseNamespaces(query url.Values) []string {
 				result = append(result, trimmed)
 			}
 		}
-		return result
+		return dedupeStrings(result)
 	}
 	// Fall back to "namespace" (singular) for backward compatibility
 	if ns := query.Get("namespace"); ns != "" {
@@ -1749,10 +1935,10 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 		// resource so ManagedBy synthesis disambiguates by group (avoids
 		// kind/plural collisions like Knative Service vs core Service).
 		var relationships *topology.Relationships
-		if cachedTopo := s.broadcaster.GetCachedTopology(); cachedTopo != nil {
+		if cachedTopo, relIdx := s.broadcaster.GetCachedTopologyWithIndex(); cachedTopo != nil {
 			relationships = topology.GetRelationshipsWithObject(kind, namespace, name, resource, cachedTopo,
 				k8s.NewTopologyResourceProvider(k8s.GetResourceCache()),
-				k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()), nil)
+				k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()), relIdx)
 		}
 
 		s.writeJSON(w, topology.ResourceWithRelationships{
@@ -1964,10 +2150,10 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	// resource so ManagedBy synthesis uses the authoritative object instead
 	// of a group-blind kind/name lookup.
 	var relationships *topology.Relationships
-	if cachedTopo := s.broadcaster.GetCachedTopology(); cachedTopo != nil {
+	if cachedTopo, relIdx := s.broadcaster.GetCachedTopologyWithIndex(); cachedTopo != nil {
 		relationships = topology.GetRelationshipsWithObject(kind, namespace, name, resource, cachedTopo,
 			k8s.NewTopologyResourceProvider(k8s.GetResourceCache()),
-			k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()), nil)
+			k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()), relIdx)
 	}
 
 	// Return resource with relationships
@@ -1994,6 +2180,11 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePodMetrics(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
+
+	if noNamespaceAccess(s.getUserNamespaces(r, []string{namespace})) {
+		s.writeError(w, http.StatusForbidden, "no access to namespace "+namespace)
+		return
+	}
 
 	metrics, err := k8s.GetPodMetrics(r.Context(), namespace, name)
 	if err != nil {
@@ -2033,6 +2224,11 @@ func (s *Server) handleNodeMetrics(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePodMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
+
+	if noNamespaceAccess(s.getUserNamespaces(r, []string{namespace})) {
+		s.writeError(w, http.StatusForbidden, "no access to namespace "+namespace)
+		return
+	}
 
 	store := k8s.GetMetricsHistory()
 	if store == nil {
@@ -3090,10 +3286,13 @@ func (s *Server) handleSwitchContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stop all active sessions before switching
-	StopAllSessions()
-
 	if err := k8s.PerformContextSwitch(name); err != nil {
+		// A preflight rejection fails before any teardown — the current cluster is
+		// still connected, so don't poison the global connection status.
+		if errors.Is(err, k8s.ErrContextSwitchPreflight) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		k8s.SetConnectionStatus(k8s.ConnectionStatus{
 			State:     k8s.StateDisconnected,
 			Context:   name,
@@ -3148,11 +3347,13 @@ func (s *Server) handleConnectionRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stop all active sessions before retrying
-	StopAllSessions()
-
-	// Reconnect to the same context (reuses PerformContextSwitch which handles full reinit)
+	// Reconnect to the same context (reuses PerformContextSwitch which handles full
+	// reinit, including stopping active sessions at teardown)
 	if err := k8s.PerformContextSwitch(ctx); err != nil {
+		if errors.Is(err, k8s.ErrContextSwitchPreflight) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		// Set disconnected state with error
 		k8s.SetConnectionStatus(k8s.ConnectionStatus{
 			State:     k8s.StateDisconnected,
@@ -3304,9 +3505,11 @@ func (s *Server) handleCAPIClusterConnect(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	StopAllSessions()
-
 	if err := k8s.PerformContextSwitch(qualifiedName); err != nil {
+		if errors.Is(err, k8s.ErrContextSwitchPreflight) {
+			s.writeError(w, http.StatusBadRequest, "failed to switch context: "+err.Error())
+			return
+		}
 		k8s.SetConnectionStatus(k8s.ConnectionStatus{
 			State:     k8s.StateDisconnected,
 			Context:   qualifiedName,
@@ -3408,7 +3611,9 @@ func (s *Server) requireConnected(w http.ResponseWriter) bool {
 // Auth handlers and helpers
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, auth.ClearSessionCookie())
+	for _, c := range auth.ClearSessionCookie(r) {
+		http.SetCookie(w, c)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]string{"status": "logged out"}
 	// Clearing Radar's cookie alone doesn't switch users: the proxy
@@ -3579,7 +3784,23 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	r.URL.RawQuery = q.Encode()
-	s.broadcaster.HandleSSE(w, r)
+	// Cluster-scoped topology kinds (Nodes, PV, StorageClass, NodePool, …) have
+	// no namespace to filter on, so strip the ones this user can't list — the
+	// same gate the REST /api/topology handler applies. Resolved here (the
+	// request is available) and threaded through so the broadcast loop never
+	// runs a SAR.
+	deny := s.deniedClusterScopedTopoKinds(r)
+	// Namespace objects are cluster-scoped too (a Namespace k8s_event carries
+	// namespace=""), but Namespace is deliberately not in the topology table.
+	// Deny its change frames when the user can't list namespaces, so a
+	// namespace-restricted user doesn't learn namespace names via SSE.
+	if !s.canRead(r, "", "namespaces", "", "list") {
+		if deny == nil {
+			deny = map[topology.NodeKind]bool{}
+		}
+		deny[topology.KindNamespace] = true
+	}
+	s.broadcaster.HandleSSE(w, r, deny)
 }
 
 // Settings handlers
@@ -3605,7 +3826,7 @@ func deploymentMode() k8s.DeploymentMode {
 	if cloudMode() {
 		return k8s.DeploymentModeCloud
 	}
-	if k8s.GetKubeconfigSummary().Mode == "in-cluster" {
+	if k8s.IsInCluster() || k8s.GetKubeconfigSummary().Mode == "in-cluster" {
 		return k8s.DeploymentModeInCluster
 	}
 	return k8s.DeploymentModeLocal
@@ -3665,6 +3886,9 @@ type configResponse struct {
 	File      config.Config `json:"file"`
 	Effective config.Config `json:"effective"`
 	IsDesktop bool          `json:"isDesktop"`
+	// PrometheusHeaderKeys lists the configured Prometheus header names so the UI
+	// can show what's set without ever receiving the (secret) values.
+	PrometheusHeaderKeys []string `json:"prometheusHeaderKeys,omitempty"`
 }
 
 // handleGetConfig returns the on-disk config file alongside the effective startup config.
@@ -3672,10 +3896,16 @@ type configResponse struct {
 // diagnostics endpoint already masks them as a presence bool.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	file := config.Load()
+	headerKeys := make([]string, 0, len(file.PrometheusHeaders))
+	for k := range file.PrometheusHeaders {
+		headerKeys = append(headerKeys, k)
+	}
+	sort.Strings(headerKeys)
 	file.PrometheusHeaders = nil
 	resp := configResponse{
-		File:      file,
-		IsDesktop: version.IsDesktop(),
+		File:                 file,
+		IsDesktop:            version.IsDesktop(),
+		PrometheusHeaderKeys: headerKeys,
 	}
 	if s.effectiveConfig != nil {
 		effective := *s.effectiveConfig
@@ -3710,6 +3940,96 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	result.PrometheusHeaders = nil
 	s.writeJSON(w, result)
+}
+
+// handleApplyPrometheusURL re-points the running Prometheus client at a new URL
+// immediately and persists it. The Prometheus URL is one of the few settings
+// that doesn't need a restart: the metrics path reads it from a mutable global
+// per query, so re-pointing it live is safe and saves operators a restart loop
+// when tuning discovery. Reset() drops the cached connection so the next probe
+// rediscovers against the new URL rather than reusing the old endpoint. The
+// response carries the live reachability result so the UI can confirm the URL
+// actually works. An empty URL reverts to auto-discovery.
+func (s *Server) handleApplyPrometheusURL(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCloudRole(w, r, auth.RoleOwner, "modify Radar configuration") {
+		return
+	}
+	// No requireConnected: persisting + applying a manual URL needs no cluster
+	// (the probe hits the URL over HTTP), so operators can point at an external
+	// Prometheus even while the cluster is unreachable, like handlePutConfig.
+	var body struct {
+		PrometheusURL string `json:"prometheusUrl"`
+		// Headers is a pointer so we can tell "not editing headers" (nil — keep
+		// what's on disk) apart from "clear all headers" (present but empty). The
+		// UI only sends it when the user touched the header editor, since GET
+		// redacts the values and can't round-trip them.
+		Headers *map[string]string `json:"headers"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	rawURL := strings.TrimSpace(body.PrometheusURL)
+
+	// Reject anything startup would log.Fatalf on, so "Apply now" can't persist a
+	// config that bricks the next launch. Empty reverts to auto-discovery.
+	if rawURL != "" {
+		if u, err := url.Parse(rawURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			s.writeError(w, http.StatusBadRequest, "Prometheus URL must be a valid HTTP(S) URL (e.g., http://prometheus-server.monitoring:9090)")
+			return
+		}
+	}
+
+	var headers map[string]string
+	if body.Headers != nil {
+		headers = make(map[string]string, len(*body.Headers))
+		for k, v := range *body.Headers {
+			if k = strings.TrimSpace(k); k != "" {
+				headers[k] = v
+			}
+		}
+	}
+
+	// Persist first: a failed disk write must not leave the running client
+	// pointed somewhere the on-disk config disagrees with.
+	if _, err := config.Update(func(c *config.Config) {
+		c.PrometheusURL = rawURL
+		if body.Headers != nil {
+			c.PrometheusHeaders = headers
+		}
+	}); err != nil {
+		log.Printf("[config] Failed to persist Prometheus URL: %v", err)
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Apply to the running client. Reset() drops the cached connection so the
+	// probe below rediscovers against the new URL instead of the old endpoint.
+	prometheuspkg.SetManualURL(rawURL)
+	traffic.SetMetricsURL(rawURL)
+	if body.Headers != nil {
+		prometheuspkg.SetHeaders(headers)
+		traffic.SetMetricsHeaders(headers)
+	}
+	prometheuspkg.Reset()
+
+	resp := struct {
+		Connected bool   `json:"connected"`
+		Address   string `json:"address,omitempty"`
+		Error     string `json:"error,omitempty"`
+	}{}
+	if client := prometheuspkg.GetClient(); client != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		addr, _, err := client.EnsureConnected(ctx)
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Connected = true
+			resp.Address = addr
+		}
+	}
+	s.writeJSON(w, resp)
 }
 
 // Debug handlers for event pipeline diagnostics

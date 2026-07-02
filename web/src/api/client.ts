@@ -16,8 +16,12 @@ import type {
   HelmReleaseDetail,
   HelmValues,
   ManifestDiff,
+  NotesDiff,
+  HooksDiff,
+  ResourceDiff,
   UpgradeInfo,
   BatchUpgradeInfo,
+  ValuesDiff,
   ValuesPreviewResponse,
   HelmRepository,
   ChartSearchResult,
@@ -31,6 +35,15 @@ import type {
 import type { GitOpsOperationResponse } from '../types/gitops'
 import { getApiBase, getAuthHeaders, getCredentialsMode, getBasename, routePath } from './config'
 import { pluralToKind } from '../utils/navigation'
+
+// Auto-refresh cadences (ms) — named constants for each polled hook's
+// refetchInterval below, so the poll rate reads clearly at each call site.
+const DASHBOARD_REFRESH_INTERVAL_MS = 30_000
+const AUDIT_REFRESH_INTERVAL_MS = 60_000
+const ISSUES_REFRESH_INTERVAL_MS = 30_000
+const COST_REFRESH_INTERVAL_MS = 60_000
+const CHANGES_REFRESH_INTERVAL_MS = 60_000
+const APPLICATIONS_REFRESH_INTERVAL_MS = 60_000
 
 // Wrapper around fetch that always includes credentials (for session cookies)
 // and handles 401 responses globally. Merges caller-provided headers with
@@ -323,7 +336,7 @@ export function useDashboard(namespaces: string[] = []) {
     queryKey: ['dashboard', namespaces],
     queryFn: () => fetchJSON(`/dashboard${params}`),
     staleTime: 15000, // 15 seconds
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: DASHBOARD_REFRESH_INTERVAL_MS,
   })
 }
 
@@ -334,7 +347,7 @@ export function useAudit(namespaces: string[] = []) {
     queryKey: ['audit', namespaces],
     queryFn: () => fetchJSON(`/audit${params}`),
     staleTime: 30000,
-    refetchInterval: 60000,
+    refetchInterval: AUDIT_REFRESH_INTERVAL_MS,
     placeholderData: (prev) => prev,
   })
 }
@@ -365,7 +378,7 @@ export function useIssues(namespaces: string[] = []) {
     queryKey: ['issues', namespaces],
     queryFn: () => fetchJSON(`/issues${params}`),
     staleTime: 30000,
-    refetchInterval: 30000,
+    refetchInterval: ISSUES_REFRESH_INTERVAL_MS,
   })
 }
 
@@ -374,6 +387,28 @@ export function useResourceAudit(kind: string, namespace: string, name: string) 
     queryKey: ['audit', 'resource', kind, namespace, name],
     queryFn: () => fetchJSON(`/audit/resource/${kind}/${namespace}/${name}`),
     staleTime: 30000,
+  })
+}
+
+// Live Issues that touch ONE resource — its own issues plus, for a workload, its
+// owned pods' issues (server-side owner rollup via issues.RelatedIssues). Backs
+// the "Operational Issues" section in the resource detail. Cluster-scoped
+// resources pass "_" for namespace; namespaced ones also scope the scan via
+// ?namespaces= for a cheap, bounded Compose.
+export function useResourceIssues(kind: string, group: string | undefined, namespace: string, name: string, enabled = true) {
+  const clusterScoped = !namespace
+  const pathNs = clusterScoped ? '_' : encodeURIComponent(namespace)
+  const params = new URLSearchParams()
+  if (group) params.set('group', group)
+  const path = `/issues/resource/${encodeURIComponent(kind)}/${pathNs}/${encodeURIComponent(name)}`
+  const qs = params.toString()
+  return useQuery<Issue[]>({
+    queryKey: ['issues', 'resource', kind, group ?? '', namespace, name],
+    queryFn: () => fetchJSON(`${path}${qs ? `?${qs}` : ''}`),
+    // No refetchInterval: a drawer doesn't need to poll; staleTime keeps it fresh
+    // on reopen without re-running an uncapped Compose every 30s.
+    staleTime: 30000,
+    enabled: enabled && !!kind && !!name,
   })
 }
 
@@ -491,7 +526,7 @@ export function useOpenCostSummary() {
   return useQuery<OpenCostSummary>({
     queryKey: ['opencost-summary'],
     queryFn: () => fetchJSON('/opencost/summary'),
-    refetchInterval: 60000, // Refresh every minute
+    refetchInterval: COST_REFRESH_INTERVAL_MS,
     staleTime: 30000,
     placeholderData: (prev) => prev, // Keep previous data visible during refetch
   })
@@ -929,7 +964,7 @@ export function useApplications(namespaces: string[]) {
     queryKey: ['applications', namespaces],
     queryFn: () => fetchJSON(`/applications${queryString ? `?${queryString}` : ''}`),
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: APPLICATIONS_REFRESH_INTERVAL_MS,
   })
 }
 
@@ -1088,7 +1123,7 @@ export function useChanges(options: UseChangesOptions = {}) {
     queryKey: ['changes', namespaces, kind, timeRange, filter, includeK8sEvents, includeManaged, includeDeleted, limit],
     queryFn: () => fetchJSON(`/changes${queryString ? `?${queryString}` : ''}`),
     staleTime: 5000, // Consider data stale after 5 seconds to ensure fresh data on navigation
-    refetchInterval: 60000, // SSE handles real-time updates; this is a fallback
+    refetchInterval: CHANGES_REFRESH_INTERVAL_MS, // SSE handles real-time updates; this is a fallback
     enabled,
   })
 }
@@ -1509,7 +1544,7 @@ export function useAutoPromConnect(): void {
     if (attemptedRef.current === context) return
     let cached: string | null = null
     try { cached = window.localStorage.getItem(promAutoConnectKey(context)) } catch {
-      cached = null
+      // keep the null fallback
     }
 
     attemptedRef.current = context
@@ -2311,11 +2346,15 @@ export function useDrainNode() {
 // Helm API hooks
 // ============================================================================
 
+function helmNamespaceParams(namespaces: string[] = []) {
+  return namespaces.length > 0 ? `?namespaces=${namespaces.join(',')}` : ''
+}
+
 // List all Helm releases
-export function useHelmReleases(namespace?: string) {
-  const params = namespace ? `?namespace=${namespace}` : ''
+export function useHelmReleases(namespaces: string[] = []) {
+  const params = helmNamespaceParams(namespaces)
   return useQuery<HelmRelease[]>({
-    queryKey: ['helm-releases', namespace],
+    queryKey: ['helm-releases', namespaces],
     queryFn: () => fetchJSON(`/helm/releases${params}`),
     staleTime: 30000, // 30 seconds
   })
@@ -2354,11 +2393,14 @@ export function useHelmManifest(namespace: string, name: string, revision?: numb
 }
 
 // Get values for a Helm release. `enabled` see useHelmManifest.
-export function useHelmValues(namespace: string, name: string, allValues?: boolean, enabled = true) {
-  const params = allValues ? '?all=true' : ''
+export function useHelmValues(namespace: string, name: string, allValues?: boolean, enabled = true, revision?: number) {
+  const params = new URLSearchParams()
+  if (allValues) params.set('all', 'true')
+  if (revision && revision > 0) params.set('revision', String(revision))
+  const query = params.toString() ? `?${params.toString()}` : ''
   return useQuery<HelmValues>({
-    queryKey: ['helm-values', namespace, name, allValues],
-    queryFn: () => fetchJSON(`/helm/releases/${namespace}/${name}/values${params}`),
+    queryKey: ['helm-values', namespace, name, allValues, revision],
+    queryFn: () => fetchJSON(`/helm/releases/${namespace}/${name}/values${query}`),
     enabled: Boolean(namespace && name && enabled),
     staleTime: 60000,
   })
@@ -2381,6 +2423,77 @@ export function useHelmManifestDiff(
   })
 }
 
+export function useHelmValuesDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  allValues = false,
+  enabled = true,
+) {
+  return useQuery<ValuesDiff>({
+    queryKey: ['helm-values-diff', namespace, name, revision1, revision2, allValues],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        revision1: String(revision1),
+        revision2: String(revision2),
+      })
+      if (allValues) params.set('all', 'true')
+      return fetchJSON(`/helm/releases/${namespace}/${name}/values/diff?${params.toString()}`)
+    },
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
+export function useHelmNotesDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  enabled = true,
+) {
+  return useQuery<NotesDiff>({
+    queryKey: ['helm-notes-diff', namespace, name, revision1, revision2],
+    queryFn: () =>
+      fetchJSON(`/helm/releases/${namespace}/${name}/notes/diff?revision1=${revision1}&revision2=${revision2}`),
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
+export function useHelmHooksDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  enabled = true,
+) {
+  return useQuery<HooksDiff>({
+    queryKey: ['helm-hooks-diff', namespace, name, revision1, revision2],
+    queryFn: () =>
+      fetchJSON(`/helm/releases/${namespace}/${name}/hooks/diff?revision1=${revision1}&revision2=${revision2}`),
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
+export function useHelmResourceDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  enabled = true,
+) {
+  return useQuery<ResourceDiff>({
+    queryKey: ['helm-resource-diff', namespace, name, revision1, revision2],
+    queryFn: () =>
+      fetchJSON(`/helm/releases/${namespace}/${name}/resources/diff?revision1=${revision1}&revision2=${revision2}`),
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
 // Check for upgrade availability (lazy - called when drawer opens)
 export function useHelmUpgradeInfo(namespace: string, name: string, enabled = true) {
   return useQuery<UpgradeInfo>({
@@ -2392,11 +2505,24 @@ export function useHelmUpgradeInfo(namespace: string, name: string, enabled = tr
   })
 }
 
+// Available chart versions for a release (newest-first), for the upgrade dialog's
+// version picker. Empty when the source can't be resolved — the dialog then falls
+// back to the latest version from upgrade-info.
+export function useHelmReleaseVersions(namespace: string, name: string, enabled = true) {
+  return useQuery<string[]>({
+    queryKey: ['helm-release-versions', namespace, name],
+    queryFn: () => fetchJSON(`/helm/releases/${namespace}/${name}/versions`),
+    enabled: Boolean(namespace && name && enabled),
+    staleTime: 30000,
+    retry: false,
+  })
+}
+
 // Batch check for upgrade availability (for list view)
-export function useHelmBatchUpgradeInfo(namespace?: string, enabled = true) {
-  const params = namespace ? `?namespace=${namespace}` : ''
+export function useHelmBatchUpgradeInfo(namespaces: string[] = [], enabled = true) {
+  const params = helmNamespaceParams(namespaces)
   return useQuery<BatchUpgradeInfo>({
-    queryKey: ['helm-batch-upgrade-info', namespace],
+    queryKey: ['helm-batch-upgrade-info', namespaces],
     queryFn: () => fetchJSON(`/helm/upgrade-check${params}`),
     enabled,
     staleTime: 30000, // 30 seconds - keep in sync with release list
@@ -2661,6 +2787,54 @@ export function useUpdateRepositorySilent() {
   return useMutation({
     mutationFn: updateRepositoryFn,
     onSuccess: () => invalidateHelmAfterRepoUpdate(queryClient),
+  })
+}
+
+// Registered OCI chart sources (the OCI analog of `helm repo add`). Used to
+// track upgrades for the user's own OCI-published charts.
+export function useHelmOCISources() {
+  return useQuery<string[]>({
+    queryKey: ['helm-oci-sources'],
+    queryFn: () => fetchJSON('/helm/oci-sources'),
+  })
+}
+
+async function mutateOCISource(method: 'POST' | 'DELETE', source: string): Promise<string[]> {
+  const response = await apiFetch(`${getApiBase()}/helm/oci-sources`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source }),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Unknown error' }))
+    throw new Error(error.error || `HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+// Invalidate the upgrade-info queries so a newly-registered source is probed
+// immediately and "source not tracked" re-resolves.
+function invalidateHelmAfterSourceChange(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ['helm-oci-sources'] })
+  queryClient.invalidateQueries({ queryKey: ['helm-upgrade-info'] })
+  queryClient.invalidateQueries({ queryKey: ['helm-batch-upgrade-info'] })
+}
+
+export function useAddOCISource() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (source: string) => mutateOCISource('POST', source),
+    meta: { errorMessage: 'Failed to add chart source', successMessage: 'Chart source added' },
+    onSuccess: () => invalidateHelmAfterSourceChange(queryClient),
+  })
+}
+
+export function useRemoveOCISource() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (source: string) => mutateOCISource('DELETE', source),
+    meta: { errorMessage: 'Failed to remove chart source', successMessage: 'Chart source removed' },
+    onSuccess: () => invalidateHelmAfterSourceChange(queryClient),
   })
 }
 
@@ -3044,7 +3218,7 @@ export function useSwitchContext() {
       } catch (error) {
         clearTimeout(timeoutId)
         if (error instanceof Error && error.name === 'AbortError') {
-          throw new Error('Context switch timed out. The cluster may be unreachable.')
+          throw new Error('Context switch timed out. The cluster may be unreachable.', { cause: error })
         }
         throw error
       }
@@ -3082,6 +3256,11 @@ export interface NamespaceScope {
   authoritative: boolean
   /** false when clearing would leave no usable namespace fallback. */
   canClearNamespace: boolean
+  /** true when the backend informer cache is pinned to a namespace. */
+  cacheScoped: boolean
+  cacheScopeNamespace?: string
+  /** true when this client may rebuild the local cache for another namespace. */
+  namespaceRescope: boolean
 }
 
 export function useNamespaceScope() {
@@ -3093,6 +3272,7 @@ export function useNamespaceScope() {
 }
 
 const NAMESPACE_SWITCH_TIMEOUT = 5000
+const NAMESPACE_RESCOPE_TIMEOUT = 120000
 
 export function debugNamespaceLog(label: string, payload?: Record<string, unknown>) {
   if (typeof window === 'undefined') return
@@ -3119,7 +3299,16 @@ export function useSetActiveNamespace() {
     mutationFn: async ({ namespaces }) => {
       debugNamespaceLog('mutation:start', { namespaces })
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), NAMESPACE_SWITCH_TIMEOUT)
+      const currentScope = queryClient.getQueryData<NamespaceScope>(['namespace-scope'])
+      // cacheScoped is a stable per-process property (the server's --namespace-scope
+      // flag). If the scope query is missing/stale we can't yet tell a cheap
+      // view-filter change from a cache-rebuilding rescope, so bias to the long
+      // timeout — only a confirmed non-scoped session gets the fast switch timeout.
+      // Aborting a real rebuild at 5s surfaces a spurious failure while the server
+      // keeps going.
+      const isRescope = currentScope?.cacheScoped !== false
+      const timeoutMs = isRescope ? NAMESPACE_RESCOPE_TIMEOUT : NAMESPACE_SWITCH_TIMEOUT
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
       const startedAt = performance.now()
       try {
         const response = await apiFetch(`${getApiBase()}/cluster/namespace`, {
@@ -3147,7 +3336,9 @@ export function useSetActiveNamespace() {
           error: error instanceof Error ? error.message : String(error),
         })
         if (error instanceof Error && error.name === 'AbortError') {
-          throw new Error('Namespace switch timed out. The cluster may be unreachable.')
+          throw new Error(isRescope
+            ? 'Namespace rescope timed out. The cluster may still be loading.'
+            : 'Namespace switch timed out. The cluster may be unreachable.', { cause: error })
         }
         throw error
       }
@@ -3158,7 +3349,13 @@ export function useSetActiveNamespace() {
         mode: scope.mode,
         accessibleCount: scope.accessibleNamespaces.length,
       })
+      if (scope.cacheScoped) {
+        queryClient.removeQueries({ predicate: query => query.queryKey[0] !== 'namespace-scope' })
+      }
       queryClient.setQueryData<NamespaceScope>(['namespace-scope'], scope)
+      if (scope.cacheScoped) {
+        queryClient.invalidateQueries()
+      }
       debugNamespaceLog('mutation:success-after-scope-cache-write')
     },
     onError: () => {

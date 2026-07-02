@@ -15,6 +15,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"github.com/skyhook-io/radar/pkg/health"
 )
 
 const probeFailureWindow = 10 * time.Minute
@@ -169,6 +171,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					Group:            "apps",
 					Severity:         "critical",
 					Reason:           "ReplicaFailure",
+					Action:           "Check the ReplicaSet's events — pod creation is being rejected (often a quota, admission webhook, or PodSecurity rule).",
 					Message:          replicaFailure.Message,
 					Fingerprint:      "deployment:replica-failure",
 					Age:              FormatAge(ageDur),
@@ -251,6 +254,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					Group:            "apps",
 					Severity:         "critical",
 					Reason:           "Rollout stuck",
+					Action:           "Inspect the new pods (image, readiness probe, resources) — the rollout is waiting on them to become ready.",
 					Message:          message,
 					Age:              FormatAge(now.Sub(d.CreationTimestamp.Time)),
 					AgeSeconds:       int64(now.Sub(d.CreationTimestamp.Time).Seconds()),
@@ -355,25 +359,25 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				problems = append(problems, det)
 				continue
 			}
-			health := ClassifyPodHealth(pod, now)
+			healthStr := health.Pod(pod, now).LegacyString()
 			earlyProbeTargetProblem, hasEarlyProbeTargetProblem := activeProbeTargetProblem(pod, "")
-			if health == "healthy" && !hasEarlyProbeTargetProblem {
+			if healthStr == "healthy" && !hasEarlyProbeTargetProblem {
 				continue
 			}
 			// Unschedulable pods are owned by the scheduling source, which
 			// names the offending constraint instead of a bare "Pending".
-			if IsPodUnschedulable(pod) {
+			if health.IsPodUnschedulable(pod) {
 				continue
 			}
 			ageDur := now.Sub(pod.CreationTimestamp.Time)
 			severity := "high"
-			if health == "error" {
+			if healthStr == "error" {
 				severity = "critical"
 			}
-			restartCount, lastTermReason := PodRestartContext(pod)
+			restartCount, lastTermReason := health.PodRestartContext(pod)
 			ownerGroup, ownerKind, ownerName := podOwnerKindName(cache, pod)
-			reason := PodProblemReason(pod)
-			message := PodProblemMessage(pod)
+			reason := health.PodProblemReason(pod, now)
+			message := health.PodProblemMessage(pod)
 			if pf, ok := probeFailures[pod.Namespace+"/"+pod.Name]; ok && shouldUseProbeFailure(pod, reason, lastTermReason, pf.reason, now) {
 				reason = pf.reason
 				message = pf.message
@@ -394,7 +398,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 			}
 			var cause, action string
 			if reason == crashLoopReason {
-				cause, action = podCrashLoopDiagnosis(pod, now)
+				cause, action = health.PodCrashLoopDiagnosis(pod, now)
 			} else if c, a := imagePullDiagnosis(reason, message); c != "" {
 				cause, action = c, a
 			}
@@ -537,6 +541,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					Name:            svc.Name,
 					Severity:        "high",
 					Reason:          "LoadBalancer pending",
+					Action:          "Check the cloud load-balancer controller and provider quota / subnet annotations.",
 					Message:         "Service is type LoadBalancer but has no assigned external address",
 					Fingerprint:     "svc:loadbalancer-pending",
 					Age:             FormatAge(ageDur),
@@ -565,6 +570,12 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				if scaledToZeroBackingWorkload(cache, svc) {
 					reason = "Backing workload scaled to 0"
 					message = "selector matches a Deployment/StatefulSet that is intentionally scaled to 0 replicas"
+				} else if selectorMatchesSucceededPod(svc, podsByNamespace[svc.Namespace]) {
+					// The selector DOES match pods — they're just completed Job pods,
+					// which aren't routable endpoints. "matches no pods" would be a
+					// false lead for an operator who can see them with kubectl.
+					reason = "Selector matches only completed pods"
+					message = "selector matches finished Job pods, which are not routable endpoints"
 				}
 				problems = append(problems, Detection{
 					Kind:            "Service",
@@ -766,6 +777,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				Group:           "policy",
 				Severity:        "high",
 				Reason:          "Voluntary evictions blocked",
+				Action:          "Relax the PDB (minAvailable / maxUnavailable) or add replicas so drains and node upgrades can proceed.",
 				Message:         pdbBlocksEvictionsMessage(pdb),
 				Fingerprint:     "pdb:zero-disruptions",
 				Age:             FormatAge(ageDur),
@@ -865,6 +877,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					Severity:        "critical",
 					Reason:          "Lost",
 					Message:         "PVC has lost its bound volume",
+					Action:          "The bound PersistentVolume is gone — restore it from backup or recreate the PVC (data may be unrecoverable).",
 					Age:             FormatAge(ageDur),
 					AgeSeconds:      int64(ageDur.Seconds()),
 					Duration:        FormatAge(ageDur),
@@ -960,6 +973,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				Severity:        "critical",
 				Reason:          "Failed",
 				Message:         pv.Status.Message,
+				Action:          "Check the volume's status message and the storage backend / CSI driver events; replace the PV only after confirming the data and its reclaim policy.",
 				Age:             FormatAge(ageDur),
 				AgeSeconds:      int64(ageDur.Seconds()),
 				Duration:        FormatAge(ageDur),
@@ -985,6 +999,13 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				continue
 			}
 			ageDur := now.Sub(job.CreationTimestamp.Time)
+			// A failed Job stays its OWN subject — deliberately NOT rolled up to a
+			// CronJob owner. The Job's pods resolve their top owner to the CronJob
+			// (skipping the Job), so stamping the CronJob here would move job_failed
+			// off the Job and fold it away, leaving a failing Job's own detail page
+			// with no Operational Issues. Keeping the Job as the subject preserves
+			// that drill-down; standalone Jobs already fold with their pods (whose
+			// top owner is the Job).
 			if cond := failedJobCondition(job); cond != nil {
 				durDur := ageDur
 				if !cond.LastTransitionTime.IsZero() {
@@ -1382,7 +1403,7 @@ func classifyProbeFailureEvent(reason, msg string) (string, bool) {
 func shouldUseProbeFailure(pod *corev1.Pod, currentReason, lastTerminatedReason, probeReason string, now time.Time) bool {
 	switch probeReason {
 	case readinessProbeFailedReason:
-		return currentReason == readinessProbeFailedReason || podHasReadinessProbeFailure(pod, now)
+		return currentReason == readinessProbeFailedReason || health.PodHasReadinessProbeFailure(pod, now)
 	case livenessProbeFailedReason:
 		if lastTerminatedReason == "OOMKilled" {
 			return false
@@ -1427,6 +1448,7 @@ func terminatingProblem(kind, group string, obj metav1.Object, now time.Time) (D
 		Name:             obj.GetName(),
 		Severity:         severity,
 		Reason:           "Terminating stuck",
+		Action:           "Check for finalizers holding the object (metadata.finalizers) and whether their controller is running.",
 		Message:          msg,
 		Fingerprint:      "lifecycle:terminating",
 		Age:              FormatAge(now.Sub(obj.GetCreationTimestamp().Time)),
@@ -1678,11 +1700,37 @@ func podsMatchingService(svc *corev1.Service, pods []*corev1.Pod) []*corev1.Pod 
 	selector := labels.SelectorFromSet(labels.Set(svc.Spec.Selector))
 	out := make([]*corev1.Pod, 0, len(pods))
 	for _, pod := range pods {
+		// Succeeded pods are never endpoints — Kubernetes excludes them from
+		// EndpointSlices. A Service whose selector happens to overlap completed
+		// Job pods (common when a chart shares app labels) must not be counted as
+		// "0/N ready" because of those benign, finished pods. Failed pods are
+		// deliberately kept: a Service backed only by Failed pods is a real
+		// no-ready-endpoints outage, not a benign empty selector.
+		if pod.Status.Phase == corev1.PodSucceeded {
+			continue
+		}
 		if selector.Matches(labels.Set(pod.Labels)) {
 			out = append(out, pod)
 		}
 	}
 	return out
+}
+
+// selectorMatchesSucceededPod reports whether the Service's selector matches at
+// least one Succeeded pod. Used only on the zero-live-endpoints branch to tell a
+// genuinely-orphaned selector from one matching only completed Job pods, so the
+// message stays accurate.
+func selectorMatchesSucceededPod(svc *corev1.Service, pods []*corev1.Pod) bool {
+	if svc == nil || len(svc.Spec.Selector) == 0 {
+		return false
+	}
+	selector := labels.SelectorFromSet(labels.Set(svc.Spec.Selector))
+	for _, pod := range pods {
+		if pod.Status.Phase == corev1.PodSucceeded && selector.Matches(labels.Set(pod.Labels)) {
+			return true
+		}
+	}
+	return false
 }
 
 // scaledToZeroBackingWorkload reports whether the Service's selector matches a

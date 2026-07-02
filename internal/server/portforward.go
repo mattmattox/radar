@@ -19,13 +19,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	pfpkg "github.com/skyhook-io/radar/pkg/portforward"
 )
 
 // PortForwardSession represents an active port forward
@@ -107,6 +108,16 @@ type PortForwardRequest struct {
 
 // handleStartPortForward creates a new port forward session
 func (s *Server) handleStartPortForward(w http.ResponseWriter, r *http.Request) {
+	// Port-forward opens a local TCP listener on the radar host. In-cluster the
+	// listener lives on the radar pod, unreachable from the user's browser, so
+	// the feature can't work — refuse rather than create a session that proxies
+	// to nowhere. The capability is reported false here too, so the UI never
+	// offers this; this guards direct/stale callers.
+	if k8s.IsInCluster() {
+		s.writeError(w, http.StatusBadRequest, "Port forwarding is unavailable when Radar runs in-cluster")
+		return
+	}
+
 	var req PortForwardRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
@@ -290,12 +301,10 @@ func runPortForward(ctx context.Context, session *PortForwardSession) error {
 			Ports: []int32{int32(session.PodPort)},
 		}, scheme.ParameterCodec)
 
-	transport, upgrader, err := spdy.RoundTripperFor(config)
+	dialer, err := pfpkg.NewDialer(config, req.URL())
 	if err != nil {
-		return fmt.Errorf("failed to create round tripper: %w", err)
+		return err
 	}
-
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", req.URL())
 
 	ports := []string{fmt.Sprintf("%d:%d", session.LocalPort, session.PodPort)}
 	addresses := []string{session.ListenAddress}

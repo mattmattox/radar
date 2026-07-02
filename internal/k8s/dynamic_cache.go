@@ -47,6 +47,18 @@ func InitDynamicResourceCache(changeCh chan k8score.ResourceChange) error {
 			nsFallback = permResult.Namespace
 		}
 
+		// --namespace-scope pins namespaced CRD informers to the target namespace
+		// (typed informers are pinned via probeResourceAccess). Cluster-scoped CRDs
+		// stay cluster-wide — enforced by the gvrIsNamespaced guard in probeScope.
+		var nsScoped bool
+		var nsTarget string
+		if ForceNamespaceScope {
+			if t := GetNamespaceScopeTarget(); t != "" {
+				nsScoped = true
+				nsTarget = t
+			}
+		}
+
 		discovery := GetResourceDiscovery()
 		var sharedDiscovery *k8score.ResourceDiscovery
 		if discovery != nil {
@@ -58,6 +70,8 @@ func InitDynamicResourceCache(changeCh chan k8score.ResourceChange) error {
 			Discovery:         sharedDiscovery,
 			Changes:           changeCh,
 			NamespaceFallback: nsFallback,
+			NamespaceScoped:   nsScoped,
+			Namespace:         nsTarget,
 			DebugEvents:       DebugEvents,
 			OnReceived: func(kind string) {
 				timeline.IncrementReceived(kind)
@@ -75,6 +89,8 @@ func InitDynamicResourceCache(changeCh chan k8score.ResourceChange) error {
 					change.Operation,
 					oldObj,
 					obj,
+					change.Diff,
+					true,
 				)
 			},
 			OnDrop: func(kind, ns, name, reason, op string) {
@@ -224,6 +240,21 @@ var supportedCRDFallbacks = []supportedCRDResource{
 	{Group: "traefik.io", Versions: []string{"v1alpha1"}, Resource: "serverstransporttcps", Kind: "ServersTransportTCP", Namespaced: true},
 	{Group: "traefik.io", Versions: []string{"v1alpha1"}, Resource: "tlsoptions", Kind: "TLSOption", Namespaced: true},
 	{Group: "traefik.io", Versions: []string{"v1alpha1"}, Resource: "tlsstores", Kind: "TLSStore", Namespaced: true},
+	// Legacy Traefik group (Traefik ≤ ~v2.10; v2.11+ and v3 use traefik.io).
+	// Still a large install base. Discovery resolves single-group clusters fine
+	// either way — these entries just restore pre-warm parity so legacy clusters
+	// don't pay first-list latency. On a cluster serving BOTH groups, GetGVR
+	// resolves to one of them; true dual-group topology is tracked separately.
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "ingressroutes", Kind: "IngressRoute", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "ingressroutetcps", Kind: "IngressRouteTCP", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "ingressrouteudps", Kind: "IngressRouteUDP", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "middlewares", Kind: "Middleware", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "middlewaretcps", Kind: "MiddlewareTCP", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "traefikservices", Kind: "TraefikService", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "serverstransports", Kind: "ServersTransport", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "serverstransporttcps", Kind: "ServersTransportTCP", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "tlsoptions", Kind: "TLSOption", Namespaced: true},
+	{Group: "traefik.containo.us", Versions: []string{"v1alpha1"}, Resource: "tlsstores", Kind: "TLSStore", Namespaced: true},
 	{Group: "projectcontour.io", Versions: []string{"v1"}, Resource: "httpproxies", Kind: "HTTPProxy", Namespaced: true},
 	{Group: "cluster.x-k8s.io", Versions: []string{"v1beta2", "v1beta1"}, Resource: "clusters", Kind: "Cluster", Namespaced: true},
 	{Group: "cluster.x-k8s.io", Versions: []string{"v1beta2", "v1beta1"}, Resource: "machinedeployments", Kind: "MachineDeployment", Namespaced: true},

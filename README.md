@@ -137,6 +137,7 @@ radar
 | `--kubeconfig` | `~/.kube/config` | Path to kubeconfig file |
 | `--kubeconfig-dir` | | Comma-separated directories containing kubeconfig files |
 | `--namespace` | (all) | Initial namespace filter (supports multi-select in the UI; also used as RBAC fallback for namespace-scoped users) |
+| `--namespace-scope` | `false` | Pin namespaced informer caches to a **single** namespace for large clusters (scoping to multiple namespaces is not supported yet). Requires `--namespace`, a kubeconfig context namespace, or a saved local single-namespace pick. Local mode can rebuild the cache when switching namespaces; auth/cloud mode locks the shared cache to the startup namespace. |
 | `--port` | `9280` | Server port |
 | `--no-browser` | `false` | Don't auto-open browser |
 | `--browser` | | Browser to use when opening the UI, e.g. `firefox`, `google-chrome`, or `Google Chrome` on macOS |
@@ -265,15 +266,17 @@ Unified timeline of Kubernetes events and resource changes.
 
 ### Helm
 
-Manage Helm releases deployed in your cluster.
+Manage Helm releases deployed in your cluster — inspect values and rendered manifests, diff revisions, identify failed upgrades and rollback-after-failure patterns, diagnose failed hooks, upgrade, rollback, and uninstall. Radar tracks available chart upgrades (from your configured repos or your own OCI registries) and lets you pick a specific target version. See [Helm Support](docs/helm.md) for the detailed behavior and limits.
 
 <p align="center">
   <img src="docs/screenshots/helm-view.png" alt="Helm View" width="800">
   <br><em>Helm View — Manage your Helm deployments</em>
 </p>
 
-- View all releases across namespaces with status, chart version, and app version
-- Inspect values, compare revisions, view release history
+- View all releases across namespaces with status, chart version, app version, resource health, storage namespace, and Flux ownership
+- Inspect values, compare revisions across values/manifests/notes/resources, and view release history
+- Surface failed upgrades, stuck pending operations, rollback history, and inferred atomic-style rollbacks
+- Correlate failed/running hooks with remaining Job, Pod, Event, and redacted log evidence
 - Upgrade, rollback, or uninstall releases directly from the UI
 
 ### Compare Resources
@@ -379,7 +382,7 @@ Considered for follow-ups, deliberately not in this pass — RBAC audit checks (
 
 Radar includes a built-in [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets AI assistants — Claude, Cursor, Copilot, and others — query your cluster through Radar.
 
-Instead of raw `kubectl` output (verbose YAML that burns through LLM context windows), your AI gets pre-processed, token-optimized data: topology graphs, health assessments, deduplicated events, and filtered logs. Read tools are strictly read-only; write tools (restart, scale, sync) are clearly annotated and non-destructive.
+Instead of raw `kubectl` output (verbose YAML that burns through LLM context windows), your AI gets pre-processed, token-optimized data: topology graphs, health assessments, deduplicated events, and filtered logs. Read tools are strictly read-only; write tools (restart, scale, sync, and the like) carry explicit destructive-action hints and run under your cluster's RBAC, so the apiserver enforces what each identity is allowed to do.
 
 Enabled by default. Disable with `--no-mcp`. See the **[MCP Guide](docs/mcp.md)** for setup instructions.
 

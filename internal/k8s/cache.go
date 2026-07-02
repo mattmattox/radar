@@ -34,6 +34,10 @@ var DebugEvents bool
 // WatchList streaming isn't available; 0 keeps the standard behavior.
 var ListPageSize int64
 
+// ForceNamespaceScope pins all namespaced informer caches to one namespace.
+// Cluster-scoped resources still use cluster-wide informers.
+var ForceNamespaceScope bool
+
 // TimingLogs enables [startup-timing] log lines when true (set via --dev flag).
 // These are useful for profiling startup but too noisy for production.
 var TimingLogs bool
@@ -171,7 +175,7 @@ func InitResourceCache(ctx context.Context) error {
 				}
 
 				// Record to timeline store
-				recordToTimelineStore(change.Kind, change.Namespace, change.Name, change.UID, change.Operation, oldObj, obj)
+				recordToTimelineStore(change.Kind, change.Namespace, change.Name, change.UID, change.Operation, oldObj, obj, change.Diff, true)
 			},
 
 			OnEventChange: func(obj any, op string) {
@@ -364,8 +368,13 @@ func getGeneration(obj any) int64 {
 	return m.GetGeneration()
 }
 
-// recordToTimelineStore records an event to the timeline store
-func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj any) {
+// recordToTimelineStore records a resource change to the timeline. When the
+// caller has already computed the update diff (the cache layer does, before
+// firing OnChange), it passes it via precomputedDiff + diffPrecomputed=true so
+// we don't recompute the identical diff on the hottest per-update path. Callers
+// without a precomputed diff (tests, non-cache paths) pass nil + false and the
+// diff is computed here as before.
+func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj any, precomputedDiff *DiffInfo, diffPrecomputed bool) {
 	store := timeline.GetStore()
 	if store == nil {
 		return
@@ -394,7 +403,7 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 
 	owner := timeline.ExtractOwner(obj)
 	labels := timeline.ExtractLabels(obj)
-	healthState := timeline.DetermineHealthState(kind, obj)
+	healthState := classifyTimelineHealth(kind, obj, time.Now())
 	apiVersion := extractAPIVersion(obj)
 
 	var createdAt *time.Time
@@ -409,7 +418,13 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 
 	var diff *timeline.DiffInfo
 	if op == "update" && oldObj != nil && newObj != nil {
-		if localDiff := ComputeDiff(kind, oldObj, newObj); localDiff != nil {
+		// Reuse the cache layer's already-computed diff on the hot path; only
+		// recompute for callers (tests / non-cache) that didn't precompute it.
+		localDiff := precomputedDiff
+		if !diffPrecomputed {
+			localDiff = ComputeDiff(kind, oldObj, newObj)
+		}
+		if localDiff != nil {
 			diff = &timeline.DiffInfo{
 				Fields:  make([]timeline.FieldChange, len(localDiff.Fields)),
 				Summary: localDiff.Summary,
@@ -696,12 +711,21 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 					job.Status.StartTime.Time, "started", "", timeline.HealthDegraded, owner, labels))
 			}
 			if job.Status.CompletionTime != nil && !job.Status.CompletionTime.IsZero() {
-				health := timeline.HealthHealthy
-				if job.Status.Failed > 0 {
-					health = timeline.HealthUnhealthy
-				}
+				// CompletionTime is set only on SUCCESS — a completed Job is
+				// neutral/idle (done by design), even if earlier attempts failed
+				// (Status.Failed > 0 counts retries, not a terminal failure).
 				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
-					job.Status.CompletionTime.Time, "completed", "", health, owner, labels))
+					job.Status.CompletionTime.Time, "completed", "", timeline.HealthNeutral, owner, labels))
+			} else {
+				// Terminal failure (backoffLimit exceeded) has no CompletionTime —
+				// surface the JobFailed condition as unhealthy at its transition time.
+				for _, cond := range job.Status.Conditions {
+					if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
+						events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+							cond.LastTransitionTime.Time, "failed", cond.Message, timeline.HealthUnhealthy, owner, labels))
+						break
+					}
+				}
 			}
 		}
 
